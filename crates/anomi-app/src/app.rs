@@ -201,13 +201,13 @@ impl App {
             Message::Clock(tick) => crate::clocks::update(self, tick),
             Message::Composer(done) => intent::chat::composer::done(self, done),
             Message::Pickers(due) => intent::chat::pickers::due(self, due),
-            Message::Act(action) => match action.take() {
-                Some(action) => self.dispatch(action),
-                None => Task::none(),
-            },
+            Message::Act(action) => action
+                .take()
+                .map_or_else(Task::none, |action| self.dispatch(action)),
             Message::Voice(due) => intent::voice::due(self, due),
             Message::Settings(due) => intent::settings::due(self, due),
             Message::ServerSettings(due) => intent::server_settings::due(self, due),
+            Message::Gpu(due) => crate::gpu::due(self, due),
             #[cfg(feature = "discord")]
             Message::Linking(run, step) => effects::link::progress(self, run, step),
         };
@@ -260,9 +260,9 @@ impl App {
         zoom::keys(platform::keybinds::scope(self, scope))
     }
 
-    /// The window's events; nothing ticks (`crate::clocks` keeps one wait per clock).
+    /// The window's events and what draws it; nothing ticks (`crate::clocks`, `crate::gpu`).
     pub fn subscription(&self) -> Subscription<Message> {
-        crate::window::subscription()
+        Subscription::batch([crate::window::subscription(), crate::gpu::subscription()])
     }
 
     pub fn theme(&self, _window: window::Id) -> Theme {

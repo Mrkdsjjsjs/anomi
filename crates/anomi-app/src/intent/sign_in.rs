@@ -60,8 +60,8 @@ pub fn handle(app: &mut App, intent: sign_in::Intent) -> Task<Message> {
             }
         }
         Intent::OpenCaptcha => return app.dispatch(Action::OpenDiscordCaptcha),
-        // Nothing in this build draws with the GPU, so nothing sets it;
-        // put away, it stays away.
+        // `crate::gpu` sets it as a graphics adapter fails or can't be
+        // used; put away, it stays away until the next.
         Intent::DismissNotice => sign_in.graphics_notice = None,
         intent => tracing::debug!(?intent, "not handled by the iced interface yet"),
     }

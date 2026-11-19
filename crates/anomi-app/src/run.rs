@@ -1,6 +1,6 @@
 //! Runs the program: the daemon iced keeps going without a window, while
-//! the app sits in the tray; its fonts, theme and executor; and the
-//! processor's cores it runs on.
+//! the app sits in the tray; its fonts, theme and executor; what draws its
+//! window; and the processor's cores it runs on.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -15,9 +15,15 @@ use crate::app::App;
 use crate::cli::Start;
 use crate::executor::Small;
 use crate::layout::{CpuChoice, Layout, Saved};
-use crate::{language, pictures};
+use crate::{gpu, language, pictures};
 
-pub fn run(runtime: BackgroundRuntime, root: PathBuf, layout: Layout, start: Start) -> Result<()> {
+pub fn run(
+    runtime: BackgroundRuntime,
+    root: PathBuf,
+    mut layout: Layout,
+    start: Start,
+    plan: gpu::Plan,
+) -> Result<()> {
     // Before any picture is decoded.
     pictures::install();
     // Before the first frame: the fonts with Twemoji ahead of any system
@@ -28,6 +34,10 @@ pub fn run(runtime: BackgroundRuntime, root: PathBuf, layout: Layout, start: Sta
         return Ok(());
     };
     language::start(layout.language());
+    // Before the window opens, the GPU the plan chose may start: only here,
+    // never in `App::new`, so the app's tests draw on the processor.
+    let on_gpu = gpu::begin(&mut layout, plan, start.background);
+    iced_wgpu::enabled::set_enabled(on_gpu);
     // Discord's cookies and the account as last seen, and beside them the
     // caches: pictures, messages, profiles and the favourite GIFs'
     // thumbnails, which come from there (`src/main.rs`'s `launch`).
@@ -39,6 +49,8 @@ pub fn run(runtime: BackgroundRuntime, root: PathBuf, layout: Layout, start: Sta
     let app = Cell::new(Some(app));
     let boot = move || app.take().expect("the program boots once").boot(&start);
     iced::daemon(boot, App::update, App::view)
+        // First: it sets every setting, the font below included.
+        .settings(gpu::settings())
         .title(App::title)
         .theme(App::theme)
         // Moved as the person's font changes, so every pixel is drawn again.

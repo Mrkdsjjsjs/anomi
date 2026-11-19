@@ -212,6 +212,30 @@ fn optimization_keeps_where_streams_encode_and_the_cores_mode() {
     assert_eq!(file["cpu_mode"], "all");
 }
 
+/// Optimization: what draws the interface is kept as its key, marked at
+/// once, and the Slint app's switch stays as it came. Only the processor
+/// is chosen: a graphics adapter would start a GPU under the tests.
+#[test]
+fn optimization_keeps_what_draws_the_interface() {
+    use anomi_vm::settings::advanced::Intent as Advanced;
+    let mut window = opened("settings-renderer", Page::Advanced);
+    let app = &mut window.app;
+    let page = &app.vm.settings.advanced;
+    let keys: Vec<&str> = page.renderers.iter().map(|row| row.key.as_str()).collect();
+    assert_eq!(keys.get(..2), Some(&["auto", "processor"][..]));
+    assert_eq!(page.renderer, 0, "Automatic until chosen");
+    assert!(!page.renderer_line.is_empty(), "what draws now");
+    send(
+        app,
+        Intent::Advanced(Advanced::Renderer("processor".into())),
+    );
+    assert_eq!(app.vm.settings.advanced.renderer, 1, "shown at once");
+    send(app, Intent::Advanced(Advanced::Renderer(String::new())));
+    let file = written(app);
+    assert_eq!(file["interface_renderer"], "processor");
+    assert_eq!(file["gpu_rendering"], false, "the Slint app's, as it came");
+}
+
 #[test]
 fn the_sections_search_and_a_copy_change_the_frame_alone() {
     let mut window = opened("settings-frame", Page::About);

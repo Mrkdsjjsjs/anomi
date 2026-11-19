@@ -81,6 +81,9 @@ pub enum Message {
     Settings(crate::intent::settings::Due),
     /// A wait of a server's settings ended: the members' search (I20).
     ServerSettings(crate::intent::server_settings::Due),
+    /// What draws the window: it opened or drew on the GPU, the GPU failed
+    /// under it, a switch ended, the adapters were listed (`crate::gpu`).
+    Gpu(crate::gpu::Due),
     /// A step of linking Discord, from the run numbered so
     /// (`crate::effects::link`).
     #[cfg(feature = "discord")]

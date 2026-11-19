@@ -54,8 +54,9 @@ With `tiny-skia` and `wgpu-bare` both in the workspace's `iced`,
 `fallback::Renderer<iced_wgpu::Renderer, iced_tiny_skia::Renderer>`, in
 every crate: wgpu is tried first wherever a renderer is made, tiny-skia when
 it refuses. The vendored wgpu refuses until the app enables it, so tiny-skia
-draws unless the app's GPU setting is on, and always in tests and shots
-(`vendor/iced_wgpu/PATCHES.md`):
+draws unless the app's choice puts a graphics adapter to work (`anomi-app`'s
+`gpu`, [README](README.md#choosing-what-draws)), and always in tests and
+shots (`vendor/iced_wgpu/PATCHES.md`):
 
 - `iced_wgpu::enabled::set_enabled(true)` lets it start, read when a
   compositor or a headless renderer is made: before the window opens, or
@@ -282,8 +283,10 @@ let intents: Vec<Intent> = ui.into_messages().collect();
 
 ## The program
 
-`anomi-app/src/run.rs`: `fonts::install()`, then
-`iced::daemon(boot, App::update, App::view)` with `.title`, `.theme`,
+`anomi-app/src/run.rs`: `fonts::install()`, `gpu::begin` and
+`iced_wgpu::enabled::set_enabled` for what draws, then
+`iced::daemon(boot, App::update, App::view)` with `.settings(gpu::settings())`
+first (it replaces every setting, the font included), `.title`, `.theme`,
 `.subscription`, `.font(typography::UI)` and
 `.executor::<executor::Small>()` (Tokio with two workers; iced's own
 executors take a thread a core). A daemon runs with no

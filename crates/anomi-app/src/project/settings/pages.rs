@@ -2,7 +2,8 @@
 //! Advanced and About, as the Slint app's `Layout::apply` sets their
 //! properties (`src/ui.rs:1728`) and `src/ui/updates.rs` fills About. Each
 //! is built again only after the layout changed. Advanced's Optimization
-//! also reads the processor and the graphics cards from the system then.
+//! also reads the processor and the graphics cards from the system then,
+//! and what draws the interface (`super::drawing`).
 
 use anomi_vm::settings::{about, advanced, messages, notifications, sounds};
 use yapfast_core::new_tags;
@@ -97,7 +98,9 @@ pub(super) fn advanced(layout: &Layout, kept: &Kept, page: &mut advanced::Advanc
     use anomi_desktop::{autostart, protocol};
     let links = cfg!(feature = "discord") && protocol::SUPPORTED;
     let (cpu_line, core_groups) = processor(layout);
-    let encoding = encoding(layout);
+    let cards = yapfast_core::adapters::list();
+    let drawing = super::drawing::drawing(layout, &cards);
+    let encoding = encoding(layout, &cards);
     let mode = match layout.cores() {
         CpuChoice::Auto => advanced::CpuMode::Auto,
         CpuChoice::All => advanced::CpuMode::All,
@@ -115,6 +118,9 @@ pub(super) fn advanced(layout: &Layout, kept: &Kept, page: &mut advanced::Advanc
         cpu_mode: mode.index(),
         cpu_line,
         core_groups,
+        renderers: drawing.rows,
+        renderer: drawing.chosen,
+        renderer_line: drawing.line,
         encoders: encoding.names,
         encoder_keys: encoding.keys,
         encoder: encoding.chosen,
@@ -239,10 +245,9 @@ struct Encoding {
 
 /// Auto, each graphics card by name and the processor, the one chosen, and
 /// what that does now: what Auto takes, or that the card chosen is gone.
-fn encoding(layout: &Layout) -> Encoding {
+fn encoding(layout: &Layout, cards: &[yapfast_core::adapters::Adapter]) -> Encoding {
     use yapfast_core::adapters;
-    let cards = adapters::list();
-    let auto = adapters::auto_encoder(&cards, adapters::machine());
+    let auto = adapters::auto_encoder(cards, adapters::machine());
     let mut names = vec![tr!("Auto").to_owned()];
     let mut keys = vec![ENCODE_AUTO.to_owned()];
     // Only the cards this build encodes on are choices.

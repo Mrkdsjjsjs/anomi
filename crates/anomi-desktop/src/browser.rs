@@ -31,6 +31,9 @@ fn xdg_open(page: &str) -> std::io::Result<()> {
     command
         .arg(page)
         .env_remove("LD_LIBRARY_PATH")
+        // The client limits which Vulkan drivers load into itself; the
+        // browser must see every adapter.
+        .env_remove("VK_LOADER_DRIVERS_SELECT")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

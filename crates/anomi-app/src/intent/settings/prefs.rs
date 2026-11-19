@@ -5,7 +5,8 @@
 //! the core, the clocks, the call's audio or the desktop. A switch the rest
 //! of the window shows (the clock, compact messages, the text's size) shows
 //! there at once. Advanced's Optimization moves the program onto the cores
-//! chosen and tells the stream workers where to encode, at once.
+//! chosen, switches what draws the interface (`crate::gpu::choose`) and
+//! tells the stream workers where to encode, at once.
 
 use iced::Task;
 use yapfast_core::application::Action;
@@ -341,6 +342,12 @@ pub(super) fn advanced(app: &mut App, intent: advanced::Intent) -> Task<Message>
                 .edit(|saved| saved.set_encoder(&Encoder::of(&key)));
             #[cfg(feature = "discord")]
             yapfast_core::stream_worker::set_encode_on(app.layout.encoder().key());
+        }
+        I::Renderer(key) if !key.is_empty() => {
+            let choice = crate::gpu::Choice::parse(Some(key.as_str()));
+            let switched = crate::gpu::choose(app, choice);
+            app.show(Reach::SETTINGS);
+            return switched;
         }
         intent => tracing::debug!(?intent, "nothing to change"),
     }

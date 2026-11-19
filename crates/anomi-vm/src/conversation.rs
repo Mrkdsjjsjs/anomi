@@ -5,8 +5,9 @@
 //! areas' own view-models; this says which of them show and where. What
 //! the column's own parts ask for (the forum post's bar) is the window's
 //! [`crate::shell::Intent`]. The Slint column's graphics note
-//! (`graphics-notice`, `:3469`) has no part here: it says the GPU failed,
-//! and the iced interface draws with tiny-skia alone.
+//! (`graphics-notice`, `:3469`), which says the GPU failed and the
+//! processor draws, is `sign_in.graphics_notice`, which the column's
+//! banners show too.
 
 /// What the conversation column shows beyond its areas' own view-models.
 #[derive(Clone, Debug, Default, PartialEq)]

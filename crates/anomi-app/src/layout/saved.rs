@@ -8,10 +8,10 @@
 //! [`Saved::other`] and go back into the file as they came.
 //!
 //! Anomi's own keys, which the Slint app doesn't have (the processor's
-//! cores, where streams encode, echo cancellation and the people whose
-//! voice is cleaned), are written only once set, so a file the Slint app
-//! wrote reads and writes back unchanged; it keeps them through its own
-//! catch-all.
+//! cores, what draws the interface, where streams encode, echo cancellation
+//! and the people whose voice is cleaned), are written only once set, so a
+//! file the Slint app wrote reads and writes back unchanged; it keeps them
+//! through its own catch-all.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -180,8 +180,20 @@ pub struct Saved {
     pub adjust_each_sound: bool,
     /// Each sound's own volume as a percentage up to 100%, if it isn't 100%.
     pub each_sound: BTreeMap<Sound, u8>,
-    /// The Slint app draws with Skia GPU from its next start.
+    /// The Slint app draws with Skia GPU from its next start. Anomi keeps it
+    /// as it came and chooses with `interface_renderer`.
     pub gpu_rendering: bool,
+    /// What draws Anomi's interface: unset or `"auto"` for Automatic (the
+    /// integrated graphics, else the processor), `"processor"`, or a
+    /// graphics adapter's key from `yapfast_core::adapters`
+    /// (`"pci:0000:73:00.0"`), as `crate::gpu::Choice::parse` reads it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface_renderer: Option<String>,
+    /// How many times in a row the graphics adapter failed to start or was
+    /// lost; `crate::gpu` counts them and turns to the processor after
+    /// three.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub renderer_failures: u8,
     /// Screen sharing encodes on the GPU where it can; on unless turned off.
     /// Anomi chooses with `stream_encoder` and keeps this beside it for the
     /// Slint app: off for the processor, on for anything else.
@@ -276,6 +288,11 @@ impl Saved {
             self.each_sound.insert(Sound::Mention, 0);
         }
     }
+}
+
+/// A count that is written only once something counted.
+fn is_zero(count: &u8) -> bool {
+    *count == 0
 }
 
 /// `stream_encoder`'s keys for Auto and for the processor.

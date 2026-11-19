@@ -1,6 +1,8 @@
 //! The Advanced settings page: task S10's tests, driving
 //! `anomi_settings::advanced::view` over its fixtures in the simulator
-//! (`super::support`), and Optimization's choices.
+//! (`super::support`), and Optimization's choices. "Interface rendering"
+//! comes before "Encode streams on" and names the same adapters and the
+//! processor, so a click by name finds its row first.
 
 use iced::Widget as _;
 use iced_test::simulator::Simulator;
@@ -14,7 +16,15 @@ use super::support::{SIZE, asked, front, settings};
 /// With Optimization the page runs past the window's height, where the
 /// frame scrolls it: the simulator gets room for all of it.
 fn simulate(page: &Advanced) -> Simulator<'_, Intent, anomi_theme::Theme, anomi_theme::Renderer> {
-    let tall = iced::Size::new(SIZE.width, 1600.0);
+    simulate_at(page, SIZE.width)
+}
+
+/// [`simulate`] `width` wide.
+fn simulate_at(
+    page: &Advanced,
+    width: f32,
+) -> Simulator<'_, Intent, anomi_theme::Theme, anomi_theme::Renderer> {
+    let tall = iced::Size::new(width, 1800.0);
     Simulator::with_size(settings(), tall, view(page, front()).boxed())
 }
 
@@ -44,14 +54,40 @@ fn a_switch_asks_for_its_opposite() {
 }
 
 #[test]
-fn the_gpu_rendering_switch_is_a_line_here() {
+fn the_gpu_rendering_switch_is_a_choice_here_with_no_restart() {
     let page = sample::advanced();
     let mut ui = simulate(&page);
     assert!(ui.find("Render with the GPU").is_err());
     assert!(ui.find("Restart Yapfast").is_err());
+    assert!(ui.find("Interface rendering").is_ok());
+    assert!(ui.find("Automatic").is_ok());
     assert!(
-        ui.find("The interface draws on the processor and leaves the graphics cards free.")
-            .is_ok()
+        ui.find(page.renderer_line.as_str()).is_ok(),
+        "what draws now"
+    );
+}
+
+#[test]
+fn interface_rendering_chooses_by_key_and_not_an_adapter_that_cant_draw() {
+    let page = sample::advanced();
+    // The page's column in the small window, 1000 wide less the sections
+    // (266) and the column's sides (32 each): every row is there to press.
+    let mut ui = simulate_at(&page, 670.0);
+    let radeon = &page.renderers[3];
+    assert!(ui.find(radeon.description.as_str()).is_ok(), "says why");
+    ui.click("Processor").expect("the processor");
+    ui.click("NVIDIA GeForce RTX 3080")
+        .expect("each adapter by name");
+    ui.click("AMD Radeon 610M").expect("shown, faded");
+    ui.click("Automatic").expect("and Automatic");
+    assert_eq!(
+        asked(ui),
+        [
+            Intent::Renderer("processor".into()),
+            Intent::Renderer("pci:0000:01:00.0".into()),
+            Intent::Renderer("auto".into()),
+        ],
+        "the Radeon, without its Vulkan driver, answers no click"
     );
 }
 
@@ -76,7 +112,11 @@ fn optimization_chooses_how_the_cores_are_spread_and_says_so() {
 
 #[test]
 fn optimization_chooses_where_streams_encode_by_key() {
-    let page = sample::advanced();
+    // Without the renderer's rows, whose names come first.
+    let page = Advanced {
+        renderers: Vec::new(),
+        ..sample::advanced()
+    };
     let mut ui = simulate(&page);
     assert!(ui.find(page.encoder_line.as_str()).is_ok());
     ui.click("NVIDIA GeForce RTX 3080")

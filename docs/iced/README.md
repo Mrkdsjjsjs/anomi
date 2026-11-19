@@ -71,7 +71,8 @@ its renderers in every build: wgpu on a graphics adapter first
 starts only once the program enables it and an adapter is chosen, which
 only `anomi-app` does, from Settings; it falls back to the processor when
 the adapter can't start or is lost, and the person can switch while the
-window is open (`iced::backend::configure`). So:
+window is open (`iced::backend::configure`; [below](#choosing-what-draws)).
+So:
 
 - Widgets and views draw through iced's renderer traits only (quads,
   text, pictures, SVG, geometry, layers and transformations), which both
@@ -86,6 +87,69 @@ window is open (`iced::backend::configure`). So:
 - What must draw on the processor whatever the window uses makes a renderer
   of its own with `anomi_theme::renderer::software(settings)`: the shots,
   the tests' renderers, and a faded styled name's picture.
+
+### Choosing what draws
+
+`anomi-app/src/gpu` decides by the owner's rule: on a computer with
+integrated graphics the window draws on them, so the discrete card stays
+with the game; where none can, on the processor; on a discrete card only
+when it's chosen by hand. Settings' Advanced offers Automatic (the
+default), the processor and each adapter; `layout.json` keeps the choice
+as `interface_renderer` (`"auto"`, `"processor"` or an adapter's key from
+`yapfast_core::adapters`, `"pci:0000:73:00.0"`) and the GPU's failures in
+a row as `renderer_failures`; the Slint app's `gpu_rendering` stays as it
+came and decides nothing here. `--renderer auto|gpu|software` and
+`--adapter 0000:73:00.0` choose for one run.
+
+- **At the start**, before any thread, `cli::main` reads the choice, the
+  system's adapters (sysfs: no driver loads) and which Vulkan drivers are
+  installed (their manifests), and sets `VK_LOADER_DRIVERS_SELECT` to the
+  driver of the adapter that may draw, so the Vulkan loader never loads
+  another into the process (while the processor draws, Automatic's
+  adapter's, for a switch; without integrated graphics, every adapter's).
+  A variable of the loader's the person set stands. An adapter without a
+  Vulkan driver, one chosen and gone, or three failures in a row leave
+  the processor, and Settings says why; over the window too where the
+  adapter was chosen by hand. `run`, never `App::new`, then enables wgpu
+  with that adapter (`iced_wgpu::enabled`, `iced_wgpu::adapter::choose`),
+  so the app's tests draw on the processor. iced's backend is `Best` (wgpu
+  if enabled, else tiny-skia), presenting at the display's pace (FIFO),
+  paths antialiased (MSAA x4).
+- **The adapters Settings lists** come from `anomi --list-adapters`, a
+  child process started once a run, the first time the page asks:
+  enumerating Vulkan's adapters loads every installed driver, which would
+  stay in the window's process. It prints the system's adapters as JSON,
+  each usable where Vulkan offers it (matched by PCI address). Until it
+  answers the page shows the system's list, each usable where its driver
+  is installed, and it's built again when the answer comes.
+- **Switching** (`gpu::choose`) keeps the choice, forgets the failures and
+  makes the window's renderer again through `iced::backend::configure`: no
+  restart, and a call goes on. A driver the start didn't let load waits
+  for the next start, and so does the memory of one loaded: after a GPU
+  the processor draws, but the driver's libraries stay in the process.
+  Settings says both.
+- **Failures.** A GPU that doesn't start (iced's fallback has tiny-skia
+  draw) or fails under the window (`iced_wgpu::lost`: a lost device, an
+  error wgpu caught, a surface it couldn't make) gives way to the
+  processor from the next frame (`configure` with `Backend::Software`); the
+  hook runs on a renderer's thread and hands `update` a message through a
+  channel the app's subscription waits on. The banner over the sign-in
+  card and the conversation says why, and `renderer_failures` counts it.
+  The next start tries again; after three in a row the processor draws
+  until a GPU is chosen again. A start that tries the GPU writes its
+  failure ahead, so a crash while it starts counts too, and the first frame
+  drawn on it sets the count back to 0. Automatic finding no integrated
+  graphics in Vulkan is the rule, not a failure.
+- **Idle.** wgpu draws only when iced asks, as tiny-skia does, but the
+  whole window each time. A surface with no image for a second counts as
+  occluded and isn't redrawn in a loop (`vendor/iced_wgpu/PATCHES.md`).
+  `gpu` asks for no frame: its subscription waits on that channel and on
+  windows opening, and follows frames only from a window opening on the
+  GPU with failures counted until its first frame. In the tray iced drops
+  the compositor and with it the device, the swapchain, the atlases and
+  the Vulkan instance; the libraries of a driver once loaded stay mapped
+  until the program ends, and whether its threads go too is to be
+  measured.
 
 ## Modules, files and names
 
@@ -372,7 +436,7 @@ games with this client open. Concretely:
   and the account's snapshots (which mark read, notify and count unread
   for the tray and the title) and the call (whose changes play sounds),
   each a `view` and a layout of the window, which tiny-skia then redraws
-  only where it changed.
+  only where it changed (wgpu redraws all of it).
 - Measured under `scripts/ui-session` on the fake Discord: at rest, behind
   another window and in the tray, 0 CPU, and the main thread and iced's
   executor wake only for a clock that shows (in front, once a minute for a

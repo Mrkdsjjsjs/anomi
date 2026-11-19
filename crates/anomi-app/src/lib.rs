@@ -15,6 +15,7 @@
 //! - [`clocks`], [`keys`], [`media`], [`platform`]: clocks, the window's keys,
 //!   video and voice messages, and what the window needs of the desktop,
 //!   each its task's (docs/iced/tasks/).
+//! - [`gpu`]: what draws the window, the processor or a graphics adapter.
 //!
 //! See docs/iced/README.md for the flow from a click to the core and back.
 
@@ -26,6 +27,7 @@ pub mod clocks;
 pub mod control;
 pub mod effects;
 pub mod executor;
+pub mod gpu;
 pub mod intent;
 pub mod keys;
 pub mod language;

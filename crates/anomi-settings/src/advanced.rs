@@ -5,10 +5,12 @@
 //! Under the switches, Anomi's Optimization: which of the processor's
 //! cores the program runs on, with a line saying what the processor is and
 //! which cores it got, the physical cores to tick by chiplet while they are
-//! chosen by hand; where streams encode, with what that choice does now;
-//! and that the interface draws on the processor, which leaves nothing to
-//! choose for it (the Slint app's "Render with the GPU" changes nothing
-//! here).
+//! chosen by hand; what draws the interface (`drawing`), which switches
+//! at once and so has no restart line (the Slint app's "Render with the
+//! GPU" changes nothing here); and where streams encode, with what that
+//! choice does now.
+
+mod drawing;
 
 use iced::Length::Fill;
 use iced::widget::{column, container, row, text};
@@ -99,10 +101,8 @@ pub fn view(page: &Advanced, motion: Motion) -> impl View<Intent> + '_ {
     parts.push(rule());
     parts.push(heading(tr!("OPTIMIZATION")).boxed());
     parts.push(cores(page, motion));
+    parts.push(drawing::view(page, motion));
     parts.push(encoders(page, motion));
-    parts.push(note(tr!(
-        "The interface draws on the processor and leaves the graphics cards free."
-    )));
     parts.push(
         text(tr!(
             "Icons from Solar by 480 Design (CC BY 4.0), many of them adapted, and from Lucide (ISC)."
@@ -186,10 +186,12 @@ fn encoders(page: &Advanced, motion: Motion) -> Element<'_, Intent> {
 
 /// Its shots for `anomi-shots`: `settings/advanced.png` as the Slint app
 /// showed it, with Optimization under it, and without the system's extras;
-/// the cores chosen by hand, also in the small window.
+/// the cores chosen by hand, also in the small window; the interface drawn
+/// on the integrated graphics, and on the processor after the card chosen
+/// failed (without the system's extras, so the rows show in the window).
 #[cfg(feature = "shots")]
 pub fn shots() -> Vec<crate::shots::Shot> {
-    use anomi_vm::fixtures::settings::advanced::{bare, cores, page};
+    use anomi_vm::fixtures::settings::advanced::{bare, cores, fell_back, gpu, page};
 
     use crate::shots::{GOLDEN, SMALL, Shot};
 
@@ -198,6 +200,8 @@ pub fn shots() -> Vec<crate::shots::Shot> {
         ("advanced_bare", bare, GOLDEN),
         ("advanced_cores", cores, GOLDEN),
         ("advanced_cores_small", cores, SMALL),
+        ("advanced_gpu", gpu, GOLDEN),
+        ("advanced_fell_back", fell_back, GOLDEN),
     ]
     .into_iter()
     .map(|(name, vm, size)| Shot {

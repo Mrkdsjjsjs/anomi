@@ -35,6 +35,9 @@ iced_winit.workspace = true
 # Video frames marked for the renderer to draw from their own bytes, and the
 # hook that scales them (vendor/iced_tiny_skia, patch 13).
 iced_tiny_skia.workspace = true
+# The GPU renderer's switch, the adapter it's asked for and the hook told of
+# a failing GPU (vendor/iced_wgpu, `crate::gpu`).
+iced_wgpu.workspace = true
 anomi-theme.workspace = true
 anomi-widgets.workspace = true
 anomi-vm.workspace = true

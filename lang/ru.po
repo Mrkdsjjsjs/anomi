@@ -10559,8 +10559,83 @@ msgstr "Выбранная видеокарта сейчас не найдена
 msgid "The processor encodes with x264: it takes processor time, and H.265 and AV1 aren't offered."
 msgstr "Процессор кодирует через x264: это нагружает процессор, а H.265 и AV1 недоступны."
 
-msgid "The interface draws on the processor and leaves the graphics cards free."
-msgstr "Интерфейс рисуется процессором и не занимает видеокарты."
+msgid "Interface rendering"
+msgstr "Отрисовка интерфейса"
+
+msgid "Automatic"
+msgstr "Автоматически"
+
+msgid "The integrated graphics, else the processor. Here that's {}."
+msgstr "Встроенная графика, иначе процессор. Здесь это {}."
+
+msgid "The integrated graphics, else the processor. Here that's the processor, until {} can draw."
+msgstr "Встроенная графика, иначе процессор. Здесь это процессор, пока {} не сможет рисовать."
+
+msgid "The integrated graphics, else the processor. This computer has none, so it's the processor."
+msgstr "Встроенная графика, иначе процессор. Встроенной графики здесь нет, поэтому это процессор."
+
+msgid "The graphics cards stay free and the least memory is used, but a large window redraws slower."
+msgstr "Видеокарты остаются свободными и памяти уходит меньше всего, но большое окно перерисовывается медленнее."
+
+msgid "Integrated graphics."
+msgstr "Встроенная графика."
+
+msgid "Integrated graphics, with the monitor connected to it."
+msgstr "Встроенная графика, к ней подключён монитор."
+
+msgid "A discrete card, which games run on."
+msgstr "Дискретная видеокарта, на ней работают игры."
+
+msgid "A discrete card, which games run on, with the monitor connected to it."
+msgstr "Дискретная видеокарта, на ней работают игры и к ней подключён монитор."
+
+msgid "Its Vulkan driver isn't installed: it needs Mesa's Vulkan driver for Radeon (RADV)."
+msgstr "Для неё не установлен драйвер Vulkan: нужен драйвер Vulkan для Radeon из Mesa (RADV)."
+
+msgid "Its Vulkan driver isn't installed: it needs Mesa's Vulkan driver for Intel (ANV)."
+msgstr "Для неё не установлен драйвер Vulkan: нужен драйвер Vulkan для Intel из Mesa (ANV)."
+
+msgid "Its Vulkan driver isn't installed: it needs Mesa's Vulkan driver for NVIDIA (NVK)."
+msgstr "Для неё не установлен драйвер Vulkan: нужен драйвер Vulkan для NVIDIA из Mesa (NVK)."
+
+msgid "Its Vulkan driver isn't installed: it needs the Vulkan part of NVIDIA's driver, which comes with its utilities."
+msgstr "Для неё не установлен драйвер Vulkan: нужна Vulkan-часть драйвера NVIDIA, она входит в его утилиты."
+
+msgid "Its Vulkan driver isn't installed."
+msgstr "Для неё не установлен драйвер Vulkan."
+
+msgid "Its driver doesn't offer Vulkan."
+msgstr "Её драйвер не поддерживает Vulkan."
+
+msgid "Graphics adapter {}"
+msgstr "Видеокарта {}"
+
+msgid "It isn't in this computer now."
+msgstr "Сейчас её нет в компьютере."
+
+msgid "{} draws the interface now."
+msgstr "Сейчас интерфейс рисует {}."
+
+msgid "The processor draws the interface now."
+msgstr "Сейчас интерфейс рисует процессор."
+
+msgid "The graphics adapter stopped, so the processor draws the interface now."
+msgstr "Видеокарта перестала работать, поэтому теперь интерфейс рисует процессор."
+
+msgid "No integrated graphics can draw the interface."
+msgstr "Нет встроенной графики, которая могла бы рисовать интерфейс."
+
+msgid "The graphics adapter chosen isn't in this computer now."
+msgstr "Выбранной видеокарты сейчас нет в компьютере."
+
+msgid "The graphics adapter's Vulkan driver isn't installed."
+msgstr "Для видеокарты не установлен драйвер Vulkan."
+
+msgid "The graphics adapter failed three times in a row, so the processor draws until it's chosen again."
+msgstr "Видеокарта отказала три раза подряд, поэтому интерфейс рисует процессор, пока её не выберут снова."
+
+msgid "The window couldn't be shown with the graphics adapter."
+msgstr "Не удалось показать окно через видеокарту."
 
 msgid "{} graphics"
 msgstr "Графика {}"

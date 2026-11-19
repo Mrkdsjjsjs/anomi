@@ -236,6 +236,8 @@ fn unset_own_keys_arent_written() {
         "echo_cancellation",
         "cpu_mode",
         "stream_encoder",
+        "interface_renderer",
+        "renderer_failures",
     ] {
         assert!(file.get(key).is_none(), "{key}");
     }
@@ -283,6 +285,47 @@ fn the_encoder_follows_the_old_switch_until_chosen() {
     layout.edit(|saved| saved.set_encoder(&Encoder::Card("pci:0000:01:00.0".into())));
     assert_eq!(layout.gpu_encoding, Some(true));
     assert_eq!(Encoder::of(layout.encoder().key()), layout.encoder());
+}
+
+/// What draws the interface is Anomi's own: the Slint app's switch stays
+/// as it came, whatever is chosen here, and the failures in a row are
+/// written only while there are some.
+#[test]
+fn the_renderer_is_chosen_beside_the_slint_apps_switch() {
+    let read = |text: &str| {
+        let values = serde_json::from_str(text).unwrap();
+        Layout::from_values(PathBuf::new(), values)
+    };
+    let file =
+        |layout: &Layout| -> Value { serde_json::from_slice(&layout.bytes().unwrap()).unwrap() };
+    let mut layout = read(r#"{"gpu_rendering": true, "interface_renderer": "pci:0000:73:00.0"}"#);
+    let chosen = layout.interface_renderer.as_deref();
+    assert_eq!(chosen, Some("pci:0000:73:00.0"));
+    assert_eq!(layout.renderer_failures, 0);
+    layout.edit(|saved| {
+        saved.interface_renderer = Some("processor".into());
+        saved.renderer_failures = 2;
+    });
+    let kept = file(&layout);
+    assert_eq!(kept["interface_renderer"], json!("processor"));
+    assert_eq!(kept["renderer_failures"], json!(2));
+    assert_eq!(
+        kept["gpu_rendering"],
+        json!(true),
+        "the Slint app's, untouched"
+    );
+    layout.edit(|saved| saved.renderer_failures = 0);
+    assert!(file(&layout).get("renderer_failures").is_none());
+    let odd = read(r#"{"renderer_failures": 300, "interface_renderer": 7}"#);
+    assert_eq!(odd.renderer_failures, 0);
+    assert_eq!(odd.interface_renderer, None);
+    let kept = file(&odd);
+    assert_eq!(
+        kept["renderer_failures"],
+        json!(300),
+        "kept while unset here"
+    );
+    assert_eq!(kept["interface_renderer"], json!(7));
 }
 
 #[test]

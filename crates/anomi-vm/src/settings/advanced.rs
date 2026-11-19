@@ -1,7 +1,8 @@
 //! The Advanced settings page: what it shows and what it asks for. Task S10
 //! (docs/iced/tasks/settings.md). The Slint side: `AdvancedSettings`
 //! (`ui/settings.slint:1881`). Anomi adds Optimization under the switches:
-//! the processor's cores the program runs on, and where streams encode.
+//! the processor's cores the program runs on, what draws the interface, and
+//! where streams encode.
 
 /// The Advanced settings page: what its screen draws. The window holds it as
 /// `vm.settings.advanced`.
@@ -28,6 +29,12 @@ pub struct Advanced {
     /// The physical cores to tick, by chiplet (or by kind, on a processor
     /// with performance and efficiency cores); shown while choosing.
     pub core_groups: Vec<CoreGroup>,
+    /// "Interface rendering": its rows in order (Automatic, the processor,
+    /// each graphics adapter), which is chosen, and what draws the interface
+    /// now, with why the processor does where an adapter was asked for.
+    pub renderers: Vec<DrawOn>,
+    pub renderer: usize,
+    pub renderer_line: String,
     /// "Encode streams on": the choices' words in order (Auto, each graphics
     /// card by name, the processor), the key each sends, which is chosen,
     /// and what that choice does now, such as the card Auto chose.
@@ -35,6 +42,24 @@ pub struct Advanced {
     pub encoder_keys: Vec<String>,
     pub encoder: usize,
     pub encoder_line: String,
+}
+
+/// A row of "Interface rendering": what may draw the interface.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DrawOn {
+    /// "Automatic", "Processor", or the adapter's name.
+    pub title: String,
+    /// What it is on this computer: what Automatic takes here; whether an
+    /// adapter is integrated or discrete and drives the monitor; why one
+    /// that can't draw can't.
+    pub description: String,
+    /// What choosing it sends ([`Intent::Renderer`]): `layout.json`'s
+    /// `interface_renderer` for it, `"auto"`, `"processor"` or the
+    /// adapter's id (`"pci:0000:73:00.0"`).
+    pub key: String,
+    /// It can draw the window; a row that can't is faded and answers no
+    /// click.
+    pub usable: bool,
 }
 
 /// The processor's cores a page offers to choose from: a chiplet's, or the
@@ -103,6 +128,8 @@ pub enum Intent {
     Core(u32),
     /// Where streams encode, by the key of the choice.
     Encoder(String),
+    /// What draws the interface, by the key of the row ([`DrawOn::key`]).
+    Renderer(String),
 }
 
 #[cfg(test)]

@@ -7,11 +7,13 @@
 //!
 //! A page is built again only when its [`Key`] changed: the page, the
 //! layout's changes, what the intents keep beside it ([`Kept::version`])
-//! and a stamp of the core's state the page reads, made without copying it.
+//! and a stamp of the core's state the page reads, made without copying it
+//! (on Advanced, of what draws the interface).
 //! Typing in a field (the sections' search, a game's, the theme editor's)
 //! changes the view-model alone and builds nothing.
 
 pub(crate) mod appearance;
+mod drawing;
 pub(crate) mod pages;
 mod people;
 pub(crate) mod voice;
@@ -138,6 +140,16 @@ fn stamp(core: &Application, page: Page) -> u64 {
             )
                 .hash(&mut hasher);
             state.discord_show_game.hash(&mut hasher);
+        }
+        // What draws the interface changes without the layout: a switch
+        // that finished, a fallback to the processor, the adapters listed
+        // anew.
+        Page::Advanced => {
+            let running = crate::gpu::running();
+            (&running.adapter, &running.name, &running.why_not).hash(&mut hasher);
+            let listed = crate::gpu::adapters();
+            let at = std::sync::Arc::as_ptr(&listed).cast::<()>() as usize;
+            (at, listed.len()).hash(&mut hasher);
         }
         _ => {}
     }

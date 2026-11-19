@@ -111,7 +111,7 @@ fn tree_of(view: &mut Paragraph<'_, Asked>, width: f32) -> (Tree, f32) {
     use iced::advanced::layout::Limits;
     use iced::advanced::widget::Widget as _;
     fonts::install();
-    let renderer = Renderer::new(iced::advanced::renderer::Settings {
+    let renderer = anomi_theme::renderer::software(iced::advanced::renderer::Settings {
         font: typography::UI,
         text_size: iced::Pixels(15.0),
         ..iced::advanced::renderer::Settings::default()

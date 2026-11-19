@@ -3,30 +3,23 @@
 //! the simulator's snapshot at scale 2.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::task::{Context, Poll, Waker};
 
 use iced::advanced::layout::Limits;
-use iced::advanced::renderer::{Headless, Settings};
+use iced::advanced::renderer::Settings;
 use iced::advanced::widget::{Tree, Widget};
 use iced::{Event, Point, Size, mouse};
 use iced_test::Simulator;
 
-use anomi_theme::{Renderer, Theme, fonts, typography};
+use anomi_theme::{Renderer, Theme, fonts, renderer::software, typography};
 
-/// A headless renderer with the interface's fonts installed.
+/// A headless renderer with the interface's fonts installed: the
+/// processor's, as every test draws whatever the window would use.
 pub(crate) fn renderer() -> Renderer {
     fonts::install();
-    let settings = Settings {
+    software(Settings {
         font: typography::UI,
         ..Settings::default()
-    };
-    let mut future = std::pin::pin!(<Renderer as Headless>::new(settings, None));
-    let mut context = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(renderer) = future.as_mut().poll(&mut context) {
-            return renderer.expect("a headless renderer");
-        }
-    }
+    })
 }
 
 /// The simulator's settings: the interface's font for text that names none,

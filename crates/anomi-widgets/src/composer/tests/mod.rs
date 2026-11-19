@@ -150,7 +150,7 @@ impl Rig {
         tree.diff(field);
         let mut rig = Self {
             tree,
-            renderer: Renderer::new(Look::default()),
+            renderer: anomi_theme::renderer::software(Look::default()),
             cursor: mouse::Cursor::Unavailable,
         };
         rig.lay_out(field);

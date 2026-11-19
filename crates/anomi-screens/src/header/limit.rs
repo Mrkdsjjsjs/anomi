@@ -275,7 +275,8 @@ mod tests {
     use iced::widget::{container, row, space};
     use iced::{Fill, Size};
 
-    use anomi_theme::{Element, Renderer};
+    use anomi_theme::Element;
+    use anomi_theme::renderer::software;
     use iced::Widget as _;
     use iced::advanced::Widget as _;
 
@@ -289,7 +290,7 @@ mod tests {
         let mut line: Element<'_, ()> = row![title, leaves(search, 42.0).boxed()].boxed();
         let mut tree = Tree::empty();
         tree.diff(&mut line);
-        let renderer = Renderer::new(Settings::default());
+        let renderer = software(Settings::default());
         line.layout(
             &mut tree,
             &renderer,

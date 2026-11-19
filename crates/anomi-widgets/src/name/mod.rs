@@ -15,11 +15,12 @@
 //! - Each colour is first made to read against the member list's ground,
 //!   one set for dark themes and one for light (`colours`), and the
 //!   outlines are made once and kept in the widget's tree state until the
-//!   name, its width, the style or the theme's darkness changes (`drawn`).
+//!   name, its width, the style, the theme's darkness or the window's kind
+//!   of renderer (graphics adapter or processor) changes (`drawn`).
 //! - A name is faded as a whole, as Slint fades the element: neon, toon
 //!   and pop at an opacity below 1 are drawn once into a picture at full
-//!   opacity, and the picture faded, so their edges never show through the
-//!   letters.
+//!   opacity, on the processor whatever draws the window, and the picture
+//!   faded, so their edges never show through the letters.
 //! - It reports its text to operations, so `ui.click("Bob")` finds a row
 //!   by the name drawn in it.
 //!

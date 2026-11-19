@@ -280,7 +280,7 @@ fn install_registers_once_and_iced_loads_nothing_after() {
 
 #[test]
 fn the_renderer_draws_an_emoji_in_colour_in_any_text() {
-    use iced::advanced::renderer::{Headless, Settings};
+    use iced::advanced::renderer::{Headless as _, Settings};
     use iced::advanced::text::{self, Renderer as _, Text};
     use iced::{Color, Pixels, Point, Rectangle, Size, alignment};
     let _turn = global();
@@ -289,13 +289,8 @@ fn the_renderer_draws_an_emoji_in_colour_in_any_text() {
         font: crate::typography::UI,
         ..Settings::default()
     };
-    let mut future = std::pin::pin!(<crate::Renderer as Headless>::new(settings, None));
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut renderer = loop {
-        if let std::task::Poll::Ready(renderer) = future.as_mut().poll(&mut context) {
-            break renderer.expect("a headless renderer");
-        }
-    };
+    // On the processor, as every test draws.
+    let mut renderer = crate::renderer::software(settings);
     let size = Size::new(96.0, 48.0);
     renderer.fill_text(
         Text {

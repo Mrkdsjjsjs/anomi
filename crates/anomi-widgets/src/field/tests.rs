@@ -202,7 +202,7 @@ fn frame_asked(mut element: Element<'_, Msg>) -> iced::window::RedrawRequest {
 
     let mut tree = Tree::empty();
     tree.diff(&mut element);
-    let renderer = Renderer::new(Settings::default());
+    let renderer = anomi_theme::renderer::software(Settings::default());
     let room = Size::new(320.0, 120.0);
     element.layout(&mut tree, &renderer, &Limits::new(Size::ZERO, room));
     let layout = Layout::new(tree.size);

@@ -111,7 +111,7 @@ fn asked(motion: Motion, bounds: Rectangle) -> RedrawRequest {
     let mut tree = Tree::empty();
     tree.tag = Widget::<(), Theme, Renderer>::tag(&widget);
     tree.state = Widget::<(), Theme, Renderer>::state(&widget);
-    let renderer = Renderer::new(Settings::default());
+    let renderer = anomi_theme::renderer::software(Settings::default());
     let mut bus = Bus::<()>::new();
     let mut shell = Shell::new(&window::Headless, Waker::noop(), &mut bus);
     let viewport = Rectangle::new(iced::Point::ORIGIN, Size::new(300.0, 300.0));

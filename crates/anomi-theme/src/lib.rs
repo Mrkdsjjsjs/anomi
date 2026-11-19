@@ -10,6 +10,8 @@
 //! - [`metrics`] and [`typography`]: sizes and type, as `ClientStyle` has them.
 //! - [`motion`]: durations and easings, and the switch that stops them all.
 //! - [`View`] and [`Element`]: the widget types every view returns.
+//! - [`Renderer`] and [`renderer`]: what draws, on a graphics adapter or the
+//!   processor, and a renderer that always draws on the processor.
 //! - [`custom`]: the person's own themes (S07).
 //!
 //! See docs/iced/README.md for how screens and widgets use it.
@@ -21,6 +23,7 @@ pub mod fonts;
 pub mod metrics;
 pub mod motion;
 mod palette;
+pub mod renderer;
 mod theme;
 pub mod typography;
 
@@ -28,7 +31,10 @@ pub use motion::Motion;
 pub use palette::{Palette, rgb, rgba};
 pub use theme::Theme;
 
-/// The renderer every view draws with: tiny-skia by default.
+/// The renderer every view draws with: iced's fallback renderer, wgpu on a
+/// graphics adapter when the program allows it and it starts, else
+/// tiny-skia on the processor (see [`renderer`]). Views and widgets draw
+/// through iced's renderer traits only, never through one of the two.
 pub type Renderer = iced::Renderer;
 
 /// A boxed widget of the interface, for a value whose widget type varies,

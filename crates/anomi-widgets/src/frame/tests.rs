@@ -23,7 +23,7 @@ const CARD: Size = Size::new(300.0, 500.0);
 
 /// Sends a frame at `now` to `widget` and says what it asked of the window.
 fn frame_at(widget: &mut ProfileFrame<'_>, tree: &mut Tree, now: Instant) -> RedrawRequest {
-    let renderer = Renderer::new(Settings::default());
+    let renderer = anomi_theme::renderer::software(Settings::default());
     let mut bus = Bus::<()>::new();
     let mut shell = Shell::new(&window::Headless, Waker::noop(), &mut bus);
     let viewport = Rectangle::new(Point::ORIGIN, Size::new(400.0, 600.0));

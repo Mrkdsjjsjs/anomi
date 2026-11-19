@@ -41,7 +41,7 @@ flowchart BT
 
 | Crate | Holds | Depends on | Who edits it |
 | --- | --- | --- | --- |
-| `anomi-theme` | the twelve palettes (`builtin/`), `Theme` and every built-in widget's style catalog (`catalog/`), `metrics`, `typography`, `motion`, `fonts` (DM Sans, and `install()`, which puts every font in iced's font system with the fallback the interface wants), the `View` and `Element` types | iced, anomi-fonts | writers |
+| `anomi-theme` | the twelve palettes (`builtin/`), `Theme` and every built-in widget's style catalog (`catalog/`), `metrics`, `typography`, `motion`, `fonts` (DM Sans, and `install()`, which puts every font in iced's font system with the fallback the interface wants), the `View` and `Element` types, the `Renderer` and `renderer` (a processor's renderer of its own, which kind draws) | iced, iced_tiny_skia, anomi-fonts | writers |
 | `anomi-vm` | per area: the view-model a screen draws and the `Intent` it sends, the larger areas in folders (`sidebar/`, `places/`, `chat/`, `people/`, `voice/`, `settings/`); `kind` for shared vocabulary (avatar, presence, tag, status, name style and nameplate, profile effect and frame); `icon` (`Icon`); `text` for spans; `menu`, `shell` (layers); `fixtures` (feature) for samples, the fake's pictures and `Shot` | iced (for `image::Handle`, `svg::Handle`), pulldown-cmark, emojis | writers |
 | `anomi-widgets` | one module per widget ([widgets.md](widgets.md)): compositions (`avatar`, `badge`) and widgets of our own (`list`, `picture`, `paragraph`, `composer`, `layer`, `menu`...) | theme, vm, yapfast-lang, image (PNG) | writers; the hard widgets are Opus tasks |
 | `anomi-screens` | the window (`shell`), its chrome and its areas, one folder per area, one module per component; `shots` (feature) lists what `anomi-shots` renders | theme, widgets, vm, yapfast-lang, the area crates | writers |
@@ -61,6 +61,31 @@ today. A writer's check builds iced and nothing native.
 Every crate takes iced from one entry in the root `Cargo.toml`
 (`[workspace.dependencies] iced`), so the whole graph builds once with one
 feature set; never give a crate iced features of its own.
+
+### What draws
+
+`anomi_theme::Renderer` is iced's fallback renderer, built with both of
+its renderers in every build: wgpu on a graphics adapter first
+(`vendor/iced_wgpu`), tiny-skia on the processor second
+(`vendor/iced_tiny_skia`). The window takes the first that starts. wgpu
+starts only once the program enables it and an adapter is chosen, which
+only `anomi-app` does, from Settings; it falls back to the processor when
+the adapter can't start or is lost, and the person can switch while the
+window is open (`iced::backend::configure`). So:
+
+- Widgets and views draw through iced's renderer traits only (quads,
+  text, pictures, SVG, geometry, layers and transformations), which both
+  renderers implement. None matches on the renderer's variant or names
+  `iced_tiny_skia::Renderer`; `anomi_theme::renderer::is_gpu` is for what
+  the program shows about it.
+- A geometry is drawn only by the kind of renderer that made it, or iced's
+  fallback renderer reaches `unreachable!()`. Make geometry from the
+  renderer being drawn with, in that draw; one kept across frames is kept
+  with the kind it was made for and made anew from an empty cache when the
+  kind changes (`anomi-widgets/src/name/drawn.rs`).
+- What must draw on the processor whatever the window uses makes a renderer
+  of its own with `anomi_theme::renderer::software(settings)`: the shots,
+  the tests' renderers, and a faded styled name's picture.
 
 ## Modules, files and names
 
@@ -397,6 +422,14 @@ without a translation.
   `App::view` in the simulator and hands what came out to `App::update`,
   `shows` finds a text. Tasks returned by `update` (focus, timers, a
   linking's progress) don't run there.
+- **Always on the processor**: shots and tests draw with tiny-skia, so
+  their pixels and the snapshot hashes don't depend on a graphics adapter
+  or its driver. `anomi-shots`, the `frames` example and the tests' own
+  renderers take `anomi_theme::renderer::software`; iced's `Simulator`
+  and `Headless::new(.., None)` take tiny-skia because wgpu refuses to
+  start until the program enables it, which no test does. A test that
+  needs a graphics adapter enables it itself, runs only when an
+  environment variable asks for it, and skips itself otherwise.
 
 ## Checks and builds
 

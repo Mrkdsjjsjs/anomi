@@ -17,6 +17,9 @@ anomi-fonts.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 yapfast-lang = { path = "../yapfast-lang" }
+# renderer::software: the fallback renderer's processor side, which iced
+# builds anyway, made on its own for shots, tests and a faded name.
+iced_tiny_skia.workspace = true
 
 [dev-dependencies]
 # Draws one of each widget headless in the catalog test.

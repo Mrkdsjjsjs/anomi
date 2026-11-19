@@ -49,7 +49,7 @@ impl Rig {
         tree.state = Widget::<Sent, Theme, Renderer>::state(widget);
         Self {
             tree,
-            renderer: Renderer::new(Settings::default()),
+            renderer: anomi_theme::renderer::software(Settings::default()),
             cursor: mouse::Cursor::Unavailable,
             sent: Vec::new(),
         }

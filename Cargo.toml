@@ -15,10 +15,10 @@ default-members = ["."]
 # crates/yapfast-ui is a path dependency outside the workspace: Clippy lints
 # every workspace member it compiles, even one --exclude leaves out, and
 # linting Slint's generated code took 190 s of a 253 s check after a UI change.
-# Outside, rustc checks it in 37 s. vendor/iced_tiny_skia is patched in for
-# the iced crates and tested on its own (its PATCHES.md), so scripts/check's
-# workspace steps don't take iced in.
-exclude = ["crates/yapfast-ui", "vendor/iced_tiny_skia", "vendor/matrix-rtc-livekit", "vendor/webrtc-sys", "vendor/davey", "vendor/x264-src", "vendor/ffmpeg-src"]
+# Outside, rustc checks it in 37 s. vendor/iced_tiny_skia and vendor/iced_wgpu
+# are patched in for the iced crates and tested on their own (their
+# PATCHES.md), so scripts/check's workspace steps don't take iced in.
+exclude = ["crates/yapfast-ui", "vendor/iced_tiny_skia", "vendor/iced_wgpu", "vendor/matrix-rtc-livekit", "vendor/webrtc-sys", "vendor/davey", "vendor/x264-src", "vendor/ffmpeg-src"]
 resolver = "3"
 
 [features]
@@ -139,13 +139,23 @@ anyhow = "1"
 # The iced interface's crates and iced itself, pinned to one commit of its
 # master; every anomi-* crate takes iced from here, so the graph builds once.
 # Bump it as a task of its own: docs/iced/iced-notes.md.
-iced = { git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486", default-features = false, features = ["tiny-skia", "x11", "wayland", "wayland-dlopen", "image-without-codecs", "svg", "canvas", "qr_code", "advanced", "crisp", "tokio"] }
+# Both renderers are built, here, so `iced::Renderer` is the same type in
+# every crate: iced's fallback, wgpu first and tiny-skia second. wgpu is
+# `wgpu-bare`, its Vulkan backend alone (vendor/iced_wgpu/Cargo.toml), and
+# starts only once the app enables it, so a start on the CPU, the tests and
+# the shots draw with tiny-skia as before. `web-colors` blends wgpu's colours
+# in sRGB, as tiny-skia does; it changes nothing in tiny-skia.
+iced = { git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486", default-features = false, features = ["tiny-skia", "wgpu-bare", "web-colors", "x11", "wayland", "wayland-dlopen", "image-without-codecs", "svg", "canvas", "qr_code", "advanced", "crisp", "tokio"] }
 iced_runtime = { git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486" }
 iced_winit = { git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486", default-features = false }
 iced_test = { git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486" }
 # The renderer itself, patched in below, for what it adds to iced's API:
 # pictures drawn from their own bytes (vendor/iced_tiny_skia/PATCHES.md).
 iced_tiny_skia = { git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486", default-features = false, features = ["image"] }
+# The GPU renderer, patched in below, for what it adds to iced's API: the
+# switch that lets it start, the adapter the app chooses and the hook told of
+# a failing GPU (vendor/iced_wgpu/PATCHES.md).
+iced_wgpu = { git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486", default-features = false }
 anomi-theme = { path = "crates/anomi-theme" }
 anomi-widgets = { path = "crates/anomi-widgets" }
 anomi-vm = { path = "crates/anomi-vm" }
@@ -204,10 +214,12 @@ i-slint-core = { path = "vendor/i-slint-core" }
 i-slint-renderer-skia = { path = "vendor/i-slint-renderer-skia" }
 
 # The iced interface's CPU renderer at the iced commit pinned above, with
-# Yapfast's patches ported to it (vendor/iced_tiny_skia/PATCHES.md). Its
-# version is the git package's, or Cargo ignores the patch.
+# Yapfast's patches ported to it (vendor/iced_tiny_skia/PATCHES.md), and its
+# GPU renderer at the same commit with Anomi's (vendor/iced_wgpu/PATCHES.md).
+# Their versions are the git packages', or Cargo ignores the patch.
 [patch."https://github.com/iced-rs/iced"]
 iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
+iced_wgpu = { path = "vendor/iced_wgpu" }
 
 [profile.dev]
 debug = "line-tables-only"
@@ -249,6 +261,8 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.sha2]
 opt-level = 3
+# iced_wgpu, wgpu and naga stay unoptimized here: no test or shot starts them
+# (vendor/iced_wgpu/src/enabled.rs); the GPU tests are opt-in.
 
 # No LTO: on one source, thin LTO grew the Linux binary from 216.5 MiB to
 # 226.6 (zstd 60.8 to 63.1) and the Windows installer from 57.0 MiB to 60.8,

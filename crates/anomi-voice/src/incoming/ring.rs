@@ -154,7 +154,7 @@ mod tests {
         let mut tree = Tree::empty();
         tree.tag = Widget::<(), Theme, Renderer>::tag(&widget);
         tree.state = Widget::<(), Theme, Renderer>::state(&widget);
-        let renderer = Renderer::new(Settings::default());
+        let renderer = anomi_theme::renderer::software(Settings::default());
         let mut bus = Bus::<()>::new();
         let mut shell = Shell::new(&window::Headless, Waker::noop(), &mut bus);
         let size = Size::new(SIZE, SIZE);

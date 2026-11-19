@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use iced::advanced::layout::{Layout, Limits};
-use iced::advanced::renderer::{self, Headless};
+use iced::advanced::renderer::{self, Headless as _};
 use iced::advanced::widget::{Tree, Widget};
 use iced::{Color, Rectangle, Size, mouse};
 
@@ -55,19 +55,13 @@ fn reset(folder: PathBuf, loaded: Loaded) {
     let _ = std::fs::remove_dir_all(folder);
 }
 
-/// A renderer made as the window makes one: its caches empty.
+/// A renderer made as the window makes one: its caches empty. The
+/// processor's, as every test draws.
 fn renderer() -> Renderer {
-    let settings = renderer::Settings {
+    anomi_theme::renderer::software(renderer::Settings {
         font: typography::UI,
         ..renderer::Settings::default()
-    };
-    let mut future = std::pin::pin!(<Renderer as Headless>::new(settings, None));
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    loop {
-        if let std::task::Poll::Ready(renderer) = future.as_mut().poll(&mut context) {
-            return renderer.expect("a headless renderer");
-        }
-    }
+    })
 }
 
 /// Lays `view` out on `tree`, as the frame after an update does, and draws

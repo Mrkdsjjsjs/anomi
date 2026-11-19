@@ -7,11 +7,16 @@ while scrolling", version `0.15.0-dev`, MSRV 1.93), pinned once in the root
 
 ```toml
 iced = { git = "https://github.com/iced-rs/iced", rev = "e5c350f2…", default-features = false,
-         features = ["tiny-skia", "x11", "wayland", "wayland-dlopen", "image-without-codecs",
-                     "svg", "canvas", "qr_code", "advanced", "crisp", "tokio"] }
+         features = ["tiny-skia", "wgpu-bare", "web-colors", "x11", "wayland", "wayland-dlopen",
+                     "image-without-codecs", "svg", "canvas", "qr_code", "advanced", "crisp",
+                     "tokio"] }
 iced_runtime = { git = "…", rev = "e5c350f2…" }  # anomi-shots: UserInterface
 iced_test = { git = "…", rev = "e5c350f2…" }     # dev-dependency only
 ```
+
+Both renderers are vendored at the pin and patched in for iced's git source:
+`vendor/iced_tiny_skia` (the CPU) and `vendor/iced_wgpu` (the GPU), each with
+its `PATCHES.md`.
 
 Read iced's source at this commit, not docs.rs, which documents 0.14: a
 checkout is in `~/.cargo/git/checkouts/iced-*/e5c350f/` after any build.
@@ -32,14 +37,54 @@ tree) is what the next release will have; 0.14's would be a second port.
 
 ## Features left out, on purpose
 
-`wgpu` (3-4x the memory, GPU driver threads waking at idle; keep it for
-experiments), `linux-theme-detection` (zbus threads that wake), `thread-pool`
-(a thread a core; we run our own executor), `wayland-decorations` (Anomi
-draws its frame), `fira-sans` (we ship DM Sans; `iced_test` turns it on in
-tests, which is fine). `image-without-codecs`: the core decodes pictures;
-the PNG codec comes in through `anomi-widgets` for the logo. `canvas` is in
-for paths (names drawn from glyph outlines, the ping graph), `qr_code` for
-the sign-in's code.
+`wgpu` with all its backends (`wgpu-bare` is in, Vulkan alone; below),
+`linux-theme-detection` (zbus threads that wake), `thread-pool` (a thread a
+core; we run our own executor), `wayland-decorations` (Anomi draws its
+frame), `fira-sans` (we ship DM Sans; `iced_test` turns it on in tests,
+which is fine). `image-without-codecs`: the core decodes pictures; the PNG
+codec comes in through `anomi-widgets` for the logo. `canvas` is in for
+paths (names drawn from glyph outlines, the ping graph), `qr_code` for the
+sign-in's code. `web-colors` makes wgpu blend in sRGB, as tiny-skia does,
+and changes nothing in tiny-skia.
+
+## Two renderers, the CPU's unless the app says otherwise
+
+With `tiny-skia` and `wgpu-bare` both in the workspace's `iced`,
+`iced::Renderer` (`anomi_theme::Renderer`) is iced's fallback,
+`fallback::Renderer<iced_wgpu::Renderer, iced_tiny_skia::Renderer>`, in
+every crate: wgpu is tried first wherever a renderer is made, tiny-skia when
+it refuses. The vendored wgpu refuses until the app enables it, so tiny-skia
+draws unless the app's GPU setting is on, and always in tests and shots
+(`vendor/iced_wgpu/PATCHES.md`):
+
+- `iced_wgpu::enabled::set_enabled(true)` lets it start, read when a
+  compositor or a headless renderer is made: before the window opens, or
+  before `iced::backend::configure`, which swaps the renderer of every open
+  window without a restart (it fails and keeps the old one if the new one
+  can't start).
+- `iced_wgpu::adapter::choose(Choice::Auto | Choice::Bus("0000:73:00.0"))`:
+  `Auto` takes an integrated adapter that can present to the window, never
+  a discrete one; a bus id takes that adapter. Otherwise wgpu refuses and
+  tiny-skia draws. Vulkan only. `adapter::seen()` is what the last start
+  enumerated, `active()` what draws now (none on the CPU and in the tray,
+  where iced drops the compositor and the device with it), `last_error()`
+  why it didn't start or stopped; `list()` enumerates without a window and
+  loads every Vulkan driver into the process, so run it in a child process.
+- `iced_wgpu::lost::set_hook(..)` is called once when the window's device
+  is lost or wgpu catches an error (never a panic), on any thread, from
+  inside wgpu: pass the news on and switch to the CPU with
+  `iced::backend::configure` and `Backend::Software`.
+
+Widgets draw through iced's renderer traits only, so they draw on either.
+Where a renderer is made by hand, it's tiny-skia's:
+`anomi_theme::renderer::software(..)`, as `Renderer::new` exists only on
+tiny-skia's; `anomi_theme::renderer::is_gpu(&renderer)` says which draws. A
+canvas geometry built by one renderer can't be drawn by the other
+(`unreachable!` in iced's fallback): `iced::backend::configure` invalidates
+iced's geometry caches, and a geometry kept anywhere else must be built
+again after a switch. wgpu draws the whole window at each frame iced asks
+for, with no damage, and costs 3-4 times the memory with NVIDIA's driver,
+whose thread wakes 4 times a second while a device exists (below).
 
 ## The types every view uses
 
@@ -160,7 +205,7 @@ impl<Message: Clone> widget::Widget<Message, Theme, Renderer> for MyWidget<Messa
   or `shell.write_clipboard(String::from(..))`; it takes a `String`, not a
   `&str`).
 
-## Pictures and tiny-skia
+## Pictures on both renderers
 
 - `image::Handle::from_rgba` makes a new id each call: make a picture's
   handle once and clone it (the app does: `anomi-app/src/pictures/`).
@@ -174,10 +219,13 @@ impl<Message: Clone> widget::Widget<Message, Theme, Renderer> for MyWidget<Messa
   they cost; what the renderer holds for the rest (the core's pictures
   drawn as they are, a spoiler's blur, fixtures) is
   `iced_tiny_skia::converted_bytes()`. Such a handle's bytes aren't RGBA:
-  nothing but the renderer reads them, no copy is made from one, and only
-  this renderer knows the mark (wgpu would swap their red and blue). What
-  pictures hold once drawn, without a window: `cargo run --profile fast -p
-  anomi-widgets --example picture_memory -- [COUNT] [SIDE] [DRAWN]`.
+  nothing but the renderers read them and no copy is made from one. The
+  vendored wgpu reads the same marks and draws such a picture as it is
+  (`vendor/iced_wgpu/PATCHES.md`, "Pictures and video"), so the app marks
+  its pictures and frames, and sets the video hook, through
+  `iced_tiny_skia` whichever renderer draws. What pictures hold once drawn,
+  without a window: `cargo run --profile fast -p anomi-widgets --example
+  picture_memory -- [COUNT] [SIDE] [DRAWN]`.
 - **An image's `border_radius` rounds its clip**, as master's contract and
   its wgpu renderer have it; iced's tiny-skia ignored it (`TODO: Border
   radius`), the vendored one cuts it (`vendor/iced_tiny_skia/PATCHES.md`,
@@ -185,7 +233,7 @@ impl<Message: Clone> widget::Widget<Message, Theme, Renderer> for MyWidget<Messa
   (`picture(handle).radius(r)` or `.round()`), or a `picture::Player` in a
   widget of your own: its copies are made at the pixels drawn, which the
   renderer copies in on whole pixels and cuts the corners of. A turned
-  picture stays square.
+  picture stays square on tiny-skia.
 - The `image` widget shows one frame; animation is ours (F05): a still the
   app registered frames for (`picture::register`) plays in `picture` and
   `Player` while someone may watch (`motion.watched()`), from one clock;
@@ -225,6 +273,9 @@ let intents: Vec<Intent> = ui.into_messages().collect();
   writes the PNG only when missing, then compares. `anomi-shots` renders at
   any scale through `iced_runtime::UserInterface` and the headless renderer
   (`<Renderer as Headless>::new`, called through the trait).
+- Tests and shots draw with tiny-skia: the fallback's wgpu is asked first
+  and refuses, as nothing in them enables it. The vendored wgpu's own tests
+  that need a GPU run only with `ANOMI_GPU_TESTS=1`.
 - Selection and copy are operations: `operation::text::select(from, to,
   Target::Character)`, then `operation::text::copy()` (pattern test
   `rich_text_selects_and_copies`).
@@ -241,8 +292,10 @@ window, for the tray; `window::open(settings)` returns the id and a task.
 
 ## Measured at the pin (version scout, this machine)
 
-- Idle, window behind another, tiny-skia: 0 CPU, 0 wakeups. wgpu: 80 driver
-  and 10 main-thread wakeups in 20 s, 3-4x the memory.
+- Idle, window behind another, tiny-skia: 0 CPU, 0 wakeups. Stock wgpu on
+  the RTX 3080 (NVIDIA's Vulkan driver): 80 driver and 10 main-thread
+  wakeups in 20 s, 3-4x the memory. An integrated adapter (RADV) is not
+  measured yet.
 - A built message row costs about 51 KB of anonymous memory; a rebuild of
   1 000 rows 0.8 ms, of 5 000 5.2 ms. Build only what shows.
 - A full 1920x1080 frame on tiny-skia: 3.9 ms at 1x, 14.8 ms at 2x.
@@ -268,7 +321,7 @@ multi-window starvation on Windows · #3189 Japanese IME popup on Windows ·
 | `Layout<'a>`, `limits.max()` | `Layout`, `limits.bounds()` |
 | `update(.., clipboard, ..)` | no clipboard argument |
 | `on_scroll(\|viewport\| ..)` | `on_scroll(\|scroll: Scroll\| scroll.viewport ..)` |
-| `iced::Renderer::new(..)` in tests | `<iced::Renderer as Headless>::new(..)` |
+| `iced::Renderer::new(..)` in tests | `<iced::Renderer as Headless>::new(..)`, or `anomi_theme::renderer::software(..)` |
 | tooltip styling | on the tooltip's content (#3544) |
 
 ## Moving the pin
@@ -278,7 +331,8 @@ A task of its own: change both `rev`s, `cargo update -p iced`, run
 on the skeleton, focused and not), and read `git log OLD..NEW` in the
 checkout for `Widget`, `layout` and `operation` changes: master breaks the
 custom-widget contract every few weeks, and every widget of our own follows.
-The renderer is vendored at the pin (`vendor/iced_tiny_skia`): take the new
-commit's `tiny_skia` and carry each patch over as its `PATCHES.md` says, set
-its two iced `rev`s, then compare the shots with the old pin's, which must
-come out the same.
+Both renderers are vendored at the pin (`vendor/iced_tiny_skia`,
+`vendor/iced_wgpu`): take the new commit's `tiny_skia` and `wgpu`, carry
+each patch over as their `PATCHES.md` say, set their iced `rev`s, then
+compare the shots with the old pin's, which must come out the same, and run
+the vendored wgpu's GPU tests (`ANOMI_GPU_TESTS=1`) on a machine with one.

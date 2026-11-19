@@ -1,0 +1,91 @@
+# iced_wgpu from iced's master at the commit the workspace pins
+# (e5c350f271a8046f875c6662d452fde9e462d486), with Anomi's patches: see
+# PATCHES.md. The root Cargo.toml patches it in for the iced git source; its
+# name and version must stay those of the git package, or Cargo ignores the
+# patch. iced's workspace fields and lints are written out here, and its
+# dependencies taken from the same commit.
+
+[package]
+name = "iced_wgpu"
+version = "0.15.0-dev"
+description = "A renderer for iced on top of wgpu"
+authors = ["Héctor Ramón Jiménez <hector@hecrj.dev>"]
+edition = "2024"
+rust-version = "1.93"
+license = "MIT"
+repository = "https://github.com/iced-rs/iced"
+homepage = "https://iced.rs"
+categories = ["gui"]
+keywords = ["gui", "ui", "graphics", "interface", "widgets"]
+publish = false
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+all-features = true
+
+# Stock, `default` turned on every wgpu backend (Vulkan, GL, Metal, DX12,
+# WebGPU). Anomi draws on Vulkan alone, built in below whatever the features:
+# its adapters carry the PCI bus id the app chooses by, and GL's drag in
+# EGL. The workspace enables iced's `wgpu-bare`, which leaves `default` off.
+[features]
+default = []
+geometry = ["iced_graphics/geometry", "lyon"]
+image = ["iced_graphics/image", "guillotiere"]
+svg = ["iced_graphics/svg", "resvg", "guillotiere"]
+svg-text = ["svg", "resvg/text", "resvg/system-fonts", "resvg/memmap-fonts"]
+svg-raster-images = ["svg", "resvg/raster-images"]
+web-colors = ["iced_graphics/web-colors"]
+webgl = ["wgpu/webgl"]
+strict-assertions = []
+
+[dependencies]
+iced_debug = { version = "0.15.0-dev", git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486" }
+iced_graphics = { version = "0.15.0-dev", git = "https://github.com/iced-rs/iced", rev = "e5c350f271a8046f875c6662d452fde9e462d486" }
+# The vendored CPU renderer, for what the app marks there and this renderer
+# reads too: pictures and video frames already premultiplied BGRA
+# (`premultiplied`) and the video hook (`video`). By path, the same package
+# the root Cargo.toml patches in for iced's git source, so the two
+# renderers share one registry; the path also serves this crate's own tests.
+iced_tiny_skia = { version = "0.15.0-dev", path = "../iced_tiny_skia", default-features = false }
+
+bitflags = "2.0"
+bytemuck = { version = "1.0", features = ["derive"] }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+cryoglyph = { git = "https://github.com/iced-rs/cryoglyph.git", rev = "cf38ed5ea0cfe95270b31ced2910560a7fcc5003" }
+log = "0.4"
+rustc-hash = "2.0"
+thiserror = "2"
+# iced's `std` and `wgsl`, and Vulkan, the one backend (see the features).
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "vulkan"] }
+
+lyon = { version = "1.0", optional = true }
+guillotiere = { version = "0.6", optional = true }
+resvg = { version = "0.48", default-features = false, optional = true }
+
+[lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+missing_docs = "deny"
+unsafe_code = "deny"
+unused_results = "deny"
+
+[lints.clippy]
+type_complexity = "allow"
+map_entry = "allow"
+large_enum_variant = "allow"
+result_large_err = "allow"
+manual_filter = "allow"
+semicolon_if_nothing_returned = "deny"
+trivially_copy_pass_by_ref = "deny"
+default_trait_access = "deny"
+match_wildcard_for_single_variants = "deny"
+redundant_closure_for_method_calls = "deny"
+filter_map_next = "deny"
+manual_let_else = "deny"
+unused_async = "deny"
+from_over_into = "deny"
+needless_borrow = "deny"
+new_without_default = "deny"
+useless_conversion = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "forbid"

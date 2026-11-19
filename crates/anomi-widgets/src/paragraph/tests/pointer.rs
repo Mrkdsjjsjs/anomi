@@ -124,7 +124,7 @@ fn the_hand_shows_over_links_and_the_beam_over_text() {
         iced::advanced::Layout::new(tree.size),
         mouse::Cursor::Available(Point::new(590.0, 8.0)),
         &iced::Rectangle::with_size(SIZE),
-        &Renderer::new(Default::default()),
+        &anomi_theme::renderer::software(Default::default()),
     );
     assert_eq!(interaction, mouse::Interaction::None);
 }

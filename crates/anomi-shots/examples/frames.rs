@@ -32,7 +32,7 @@ mod scroll;
 
 use std::time::{Duration, Instant};
 
-use iced::advanced::renderer::{self, Headless};
+use iced::advanced::renderer::{self, Headless as _};
 use iced::advanced::{mouse, shell};
 use iced::theme::Base;
 use iced::{Event, Point, Size, window};
@@ -96,7 +96,9 @@ impl Window {
             font: typography::UI,
             ..renderer::Settings::default()
         };
-        let renderer = block_on(<Renderer as Headless>::new(settings, None)).expect("a renderer");
+        // The processor's, whatever the window would draw with: the frames
+        // go into tiny-skia's buffers, and its counters are what's printed.
+        let renderer = anomi_theme::renderer::software(settings);
         let physical = Size::new(
             (size.width * options.scale).round() as u32,
             (size.height * options.scale).round() as u32,
@@ -191,9 +193,10 @@ impl Window {
             self.cursor,
         );
         self.totals.layers += start.elapsed();
-        let drawn = self
-            .offscreen
-            .draw(&mut self.renderer, &self.viewport, base.background_color);
+        let Renderer::Secondary(software) = &mut self.renderer else {
+            unreachable!("Window::new makes the processor's renderer");
+        };
+        let drawn = self.offscreen.draw(software, &self.viewport, base.background_color);
         if std::env::var_os("FRAMES_REGIONS").is_some() {
             let regions: Vec<String> = drawn
                 .regions
@@ -323,17 +326,5 @@ fn main() {
     }
     if let Some(path) = &options.png {
         window.png(path);
-    }
-}
-
-/// Waits for a future on this thread; the headless renderer is ready at once.
-fn block_on<T>(future: impl Future<Output = T>) -> T {
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    loop {
-        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        std::thread::yield_now();
     }
 }

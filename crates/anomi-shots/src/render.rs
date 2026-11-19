@@ -1,11 +1,11 @@
 //! Draws a view headless and writes it as a PNG: iced's `UserInterface` and
-//! its headless renderer, at any scale (`iced_test`'s snapshots are always
+//! the processor's renderer, at any scale (`iced_test`'s snapshots are always
 //! at 2x and write only when missing).
 
 use std::path::Path;
 use std::time::Instant;
 
-use iced::advanced::renderer::{self, Headless};
+use iced::advanced::renderer::{self, Headless as _};
 use iced::advanced::{mouse, shell};
 use iced::theme::Base;
 use iced::{Event, Size, window};
@@ -14,27 +14,14 @@ use iced_runtime::{UserInterface, user_interface};
 use anomi_theme::{Renderer, Theme, View, fonts, typography};
 use anomi_widgets::picture;
 
+/// Always the processor's renderer (tiny-skia), whatever the window would
+/// draw with: shots are compared byte for byte, and a graphics adapter's
+/// pixels differ from it at edges and between drivers.
 fn renderer() -> Renderer {
-    let settings = renderer::Settings {
+    anomi_theme::renderer::software(renderer::Settings {
         font: typography::UI,
         ..renderer::Settings::default()
-    };
-    let backend = std::env::var("ICED_TEST_BACKEND").ok();
-    block_on(<Renderer as Headless>::new(settings, backend.as_deref()))
-        .expect("a headless renderer")
-}
-
-/// Waits for a future on this thread. The headless renderers are ready at
-/// once or after a little work; nothing here waits on I/O.
-fn block_on<T>(future: impl Future<Output = T>) -> T {
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    loop {
-        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
-        std::thread::yield_now();
-    }
+    })
 }
 
 /// Lays `view` out at `size` logical pixels, draws it once settled, and

@@ -10,10 +10,6 @@
 //! grown, the text selected, and off; at 1x and 2x, in Bonfire and Latte.
 //! `gallery_menu` adds the edit menu open over a selection.
 
-use std::future::Future;
-use std::pin::pin;
-use std::task::{Context, Poll, Waker as TaskWaker};
-
 use iced::advanced::renderer::{Headless as _, Renderer as _, Style};
 use iced::theme::Base as _;
 use iced::widget::container;
@@ -29,21 +25,13 @@ use super::*;
 /// plus button and the three on the right.
 pub(super) const FRAME: f32 = 742.0;
 
+/// The processor's renderer, as every test draws.
 pub(super) fn renderer() -> Renderer {
     fonts::install();
-    let settings = Look {
+    anomi_theme::renderer::software(Look {
         font: typography::UI,
         ..Look::default()
-    };
-    let mut future = pin!(<Renderer as iced::advanced::renderer::Headless>::new(
-        settings, None
-    ));
-    let mut context = Context::from_waker(TaskWaker::noop());
-    loop {
-        if let Poll::Ready(renderer) = future.as_mut().poll(&mut context) {
-            return renderer.expect("a headless renderer");
-        }
-    }
+    })
 }
 
 /// The field framed as `ComposerFrame` (`ui/composer.slint:68`) draws it,

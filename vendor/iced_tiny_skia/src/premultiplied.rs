@@ -203,6 +203,16 @@ pub fn is_premultiplied(handle: &Handle) -> bool {
     }
 }
 
+/// Whether `handle` draws from a live video frame of [`frame`] or
+/// [`frame_of`]: the GPU renderer gives such a picture a texture of its own
+/// at any size (`vendor/iced_wgpu/PATCHES.md`, "Pictures and video").
+pub fn is_frame(handle: &Handle) -> bool {
+    match handle {
+        Handle::Rgba { pixels, .. } => entry(pixels).is_some_and(|entry| entry.frame),
+        Handle::Path(..) | Handle::Bytes(..) => false,
+    }
+}
+
 /// Whether `bytes` are the whole of a live buffer of [`from_rgba`] or
 /// [`frame`].
 pub(crate) fn registered(bytes: &[u8]) -> bool {

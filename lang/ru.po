@@ -10619,9 +10619,6 @@ msgstr "Сейчас интерфейс рисует {}."
 msgid "The processor draws the interface now."
 msgstr "Сейчас интерфейс рисует процессор."
 
-msgid "The graphics adapter stopped, so the processor draws the interface now."
-msgstr "Видеокарта перестала работать, поэтому теперь интерфейс рисует процессор."
-
 msgid "No integrated graphics can draw the interface."
 msgstr "Нет встроенной графики, которая могла бы рисовать интерфейс."
 
@@ -10636,6 +10633,27 @@ msgstr "Видеокарта отказала три раза подряд, по
 
 msgid "The window couldn't be shown with the graphics adapter."
 msgstr "Не удалось показать окно через видеокарту."
+
+msgid "{} couldn't start."
+msgstr "Не удалось запустить {}."
+
+msgid "{} stopped working."
+msgstr "{} больше не работает."
+
+msgid "{} reported an error while drawing."
+msgstr "При отрисовке на {} произошла ошибка."
+
+msgid "After three failures in a row it's tried again only once it's chosen again in Settings."
+msgstr "После трёх сбоев подряд видеокарту попробуют снова, только если выбрать её заново в настройках."
+
+msgid "It's tried again at the next start."
+msgstr "Видеокарту попробуют снова при следующем запуске."
+
+msgid "The processor draws the window now."
+msgstr "Теперь окно рисует процессор."
+
+msgid "{} draws from the next start, when its driver is loaded."
+msgstr "{} будет рисовать после перезапуска, когда загрузится драйвер."
 
 msgid "{} graphics"
 msgstr "Графика {}"

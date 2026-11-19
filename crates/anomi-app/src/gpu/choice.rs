@@ -42,7 +42,7 @@ impl Choice {
 }
 
 /// An adapter Settings offers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Row {
     /// Its key in `yapfast_core::adapters`, which `interface_renderer` keeps.
     pub id: String,

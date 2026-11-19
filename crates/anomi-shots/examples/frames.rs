@@ -196,7 +196,9 @@ impl Window {
         let Renderer::Secondary(software) = &mut self.renderer else {
             unreachable!("Window::new makes the processor's renderer");
         };
-        let drawn = self.offscreen.draw(software, &self.viewport, base.background_color);
+        let drawn = self
+            .offscreen
+            .draw(software, &self.viewport, base.background_color);
         if std::env::var_os("FRAMES_REGIONS").is_some() {
             let regions: Vec<String> = drawn
                 .regions

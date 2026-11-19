@@ -30,7 +30,7 @@ all-features = true
 [features]
 default = []
 geometry = ["iced_graphics/geometry", "lyon"]
-image = ["iced_graphics/image", "guillotiere"]
+image = ["iced_graphics/image", "guillotiere", "iced_tiny_skia/image"]
 svg = ["iced_graphics/svg", "resvg", "guillotiere"]
 svg-text = ["svg", "resvg/text", "resvg/system-fonts", "resvg/memmap-fonts"]
 svg-raster-images = ["svg", "resvg/raster-images"]
@@ -61,6 +61,11 @@ wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "v
 lyon = { version = "1.0", optional = true }
 guillotiere = { version = "0.6", optional = true }
 resvg = { version = "0.48", default-features = false, optional = true }
+
+# For this crate's own tests: tiny-skia's window buffers need a window
+# system, which iced turns on in the app's build (its `x11`, `wayland`).
+[dev-dependencies]
+iced_tiny_skia = { version = "0.15.0-dev", path = "../iced_tiny_skia", default-features = false, features = ["wayland"] }
 
 [lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }

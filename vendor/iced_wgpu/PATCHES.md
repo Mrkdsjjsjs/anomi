@@ -22,14 +22,19 @@ Beside iced's sources:
   stock, it turned on every backend): Vulkan's adapters carry the PCI bus id
   the app chooses by, and GL's backend would bring EGL in. It depends on
   `vendor/iced_tiny_skia` by path, the package the root patches in, for the
-  marks the app puts on pictures and frames there and the video hook.
+  marks the app puts on pictures and frames there and the video hook (its
+  `image` with this crate's `image`; its `wayland` for this crate's own
+  tests alone, as a dev-dependency: tiny-skia's window buffers need a window
+  system, which iced turns on in the app's build).
 - `clippy.toml` is iced's, so the crate lints as iced lints it.
 - `Cargo.lock` is the root lock pruned to this crate, for its own tests. The
   crate is outside the workspace (`exclude` in the root `Cargo.toml`), so
   the Slint app's checks don't take iced in. Its tests:
 
       CARGO_TARGET_DIR=$PWD/target cargo test --locked \
-        --manifest-path vendor/iced_wgpu/Cargo.toml --features image,svg,geometry
+        --manifest-path vendor/iced_wgpu/Cargo.toml --features image,svg,geometry,web-colors
+
+  (`scripts/check-iced --review` runs them, and its formatting.)
 
   A test that needs a GPU runs only with `ANOMI_GPU_TESTS=1` (and, to take
   another adapter than the integrated one, `ANOMI_GPU_BUS=0000:01:00.0`),
@@ -151,6 +156,12 @@ reported. And the answers to iced keep its loop still:
   most once a second; stock's "outdated" had it configure and redraw at
   once, each time.
 - Nothing answers "out of memory", on which iced panics.
+- A surface that gives no frame three times in a row (lost, or outdated
+  however it's configured), none presented between, is reported to the
+  app's hook as a surface that couldn't be made (`MISSED`): the window
+  would otherwise stay empty while iced made the surface again once a
+  second, and the app would never fall back. Test: reported once, and a
+  frame presented starts the count over.
 
 FIFO stays the present mode (vsync on): frames are drawn only when iced asks,
 and an animation's are paced by the display. Test: the settings ask for
@@ -158,6 +169,20 @@ Vulkan and vsync.
 
 To carry over: `Surface` as the compositor's surface type (`window.rs`
 re-exports it), `draw`, and `present`'s answers.
+
+## Geometry caches cleared as the GPU starts and goes
+
+`window/compositor.rs` `start`, `Drop`. A geometry one kind of renderer
+cached can't be drawn by the other: iced's fallback reaches
+`unreachable!()`. iced clears every cache (`graphics::cache::invalidate_all`)
+when the app switches renderer at run time, but not when the last window
+closes to the tray and the next opens with a renderer of the other kind (the
+GPU failed to start then, or the app chose the processor meanwhile); the
+window's widgets are made anew then, but a cache the app keeps beside them,
+such as a QR code's `Data`, isn't. So a compositor clears every cache as it
+starts and as it's dropped.
+
+To carry over: the two `invalidate_all` calls.
 
 ## Not done here
 

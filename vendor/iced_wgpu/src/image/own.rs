@@ -322,10 +322,19 @@ mod tests {
     fn frames_large_pictures_and_pictures_wider_than_a_layer_take_their_own() {
         let (atlas, max) = (1024, 8192);
         assert!(wants(Size::new(64, 36), true, atlas, max), "a small frame");
-        assert!(!wants(Size::new(64, 36), false, atlas, max), "a small picture");
+        assert!(
+            !wants(Size::new(64, 36), false, atlas, max),
+            "a small picture"
+        );
         assert!(!wants(Size::new(255, 256), false, atlas, max), "just under");
         assert!(wants(Size::new(256, 256), false, atlas, max), "256 KiB");
-        assert!(wants(Size::new(1100, 40), false, atlas, max), "wider than a layer");
-        assert!(!wants(Size::new(9000, 10), true, atlas, max), "past the device");
+        assert!(
+            wants(Size::new(1100, 40), false, atlas, max),
+            "wider than a layer"
+        );
+        assert!(
+            !wants(Size::new(9000, 10), true, atlas, max),
+            "past the device"
+        );
     }
 }

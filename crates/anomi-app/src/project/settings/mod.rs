@@ -147,9 +147,9 @@ fn stamp(core: &Application, page: Page) -> u64 {
         Page::Advanced => {
             let running = crate::gpu::running();
             (&running.adapter, &running.name, &running.why_not).hash(&mut hasher);
-            let listed = crate::gpu::adapters();
-            let at = std::sync::Arc::as_ptr(&listed).cast::<()>() as usize;
-            (at, listed.len()).hash(&mut hasher);
+            // By what they say: until the child answers, and where the
+            // window's start refused one, the list is made anew each time.
+            crate::gpu::adapters().hash(&mut hasher);
         }
         _ => {}
     }
@@ -178,4 +178,22 @@ pub fn gone(vm: &mut Vm, shown: &mut Shown) {
     settings.keybinds = Default::default();
     settings.advanced = Default::default();
     settings.about = Default::default();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Advanced's stamp reads the adapters by what they say: until the
+    /// child lists them, the list is made anew each time it's asked for,
+    /// which must not build the page again.
+    #[test]
+    fn advanced_keeps_its_stamp_while_the_adapters_it_shows_are_the_same() {
+        let core = Application::default();
+        let first = stamp(&core, Page::Advanced);
+        // Holds a list where the next one might have been made.
+        let held = crate::gpu::adapters();
+        assert_eq!(stamp(&core, Page::Advanced), first);
+        drop(held);
+    }
 }

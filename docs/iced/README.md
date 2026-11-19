@@ -125,13 +125,14 @@ came and decides nothing here. `--renderer auto|gpu|software` and
 - **Switching** (`gpu::choose`) keeps the choice, forgets the failures and
   makes the window's renderer again through `iced::backend::configure`: no
   restart, and a call goes on. A driver the start didn't let load waits
-  for the next start, and so does the memory of one loaded: after a GPU
-  the processor draws, but the driver's libraries stay in the process.
-  Settings says both.
+  for the next start, and Settings says so. From a GPU to the processor
+  the device and the Vulkan instance go, and the loader unloads the
+  driver with them: nothing of it stays in the process.
 - **Failures.** A GPU that doesn't start (iced's fallback has tiny-skia
   draw) or fails under the window (`iced_wgpu::lost`: a lost device, an
-  error wgpu caught, a surface it couldn't make) gives way to the
-  processor from the next frame (`configure` with `Backend::Software`); the
+  error wgpu caught, a surface it couldn't make or that gives no frame
+  three times in a row) gives way to the processor from the next frame
+  (`configure` with `Backend::Software`); the
   hook runs on a renderer's thread and hands `update` a message through a
   channel the app's subscription waits on. The banner over the sign-in
   card and the conversation says why, and `renderer_failures` counts it.
@@ -147,9 +148,11 @@ came and decides nothing here. `--renderer auto|gpu|software` and
   windows opening, and follows frames only from a window opening on the
   GPU with failures counted until its first frame. In the tray iced drops
   the compositor and with it the device, the swapchain, the atlases and
-  the Vulkan instance; the libraries of a driver once loaded stay mapped
-  until the program ends, and whether its threads go too is to be
-  measured.
+  the Vulkan instance, and the loader unloads the driver: no library or
+  thread of RADV's or NVIDIA's stays (measured: docs/measurements/README.md,
+  "Drawing on a graphics adapter"). Behind another window the Radeon wakes
+  nothing; NVIDIA's driver keeps a thread waking 4 times a second while
+  its device lives, so a discrete card is never Automatic's.
 
 ## Modules, files and names
 
@@ -335,7 +338,7 @@ sequenceDiagram
    badges, times as text. Pictures are `iced::widget::image::Handle`s the
    app made from the core's pixels without a copy (`anomi-app/src/pictures/`),
    straight RGBA; `picture` draws them through copies the renderer draws
-   from their own bytes ([iced-notes](iced-notes.md#pictures-and-tiny-skia)).
+   from their own bytes ([iced-notes](iced-notes.md#pictures-on-both-renderers)).
 2. Writes fixtures for it in `anomi-vm/src/fixtures` after the fake
    Discord's data, used by tests and shots.
 3. Writes the view in the screens crate, from the view-model alone.

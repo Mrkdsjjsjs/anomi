@@ -143,7 +143,10 @@ impl StyledName<'_> {
             paint::effect(frame, effect, &paint);
         };
         if !faded {
-            let geometry = kept.outlines.borrow().draw_with_bounds(renderer, clip, draw);
+            let geometry = kept
+                .outlines
+                .borrow()
+                .draw_with_bounds(renderer, clip, draw);
             renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
                 renderer.draw_geometry(geometry);
             });
@@ -260,7 +263,10 @@ mod tests {
         assert!(!drawn_anew(&kept, &renderer, drawn(false)), "then kept");
         assert!(drawn_anew(&kept, &renderer, drawn(true)), "on the GPU");
         assert!(!drawn_anew(&kept, &renderer, drawn(true)), "kept there");
-        assert!(drawn_anew(&kept, &renderer, drawn(false)), "back on the CPU");
+        assert!(
+            drawn_anew(&kept, &renderer, drawn(false)),
+            "back on the CPU"
+        );
     }
 
     #[test]
@@ -288,7 +294,10 @@ mod tests {
         // The middle pixel: red at half its alpha, not multiplied by it.
         let at = (4 * 8 + 4) * 4;
         let pixel = &pixels[at..at + 4];
-        assert!(pixel[0] >= 250 && pixel[1] == 0 && pixel[2] == 0, "{pixel:?}");
+        assert!(
+            pixel[0] >= 250 && pixel[1] == 0 && pixel[2] == 0,
+            "{pixel:?}"
+        );
         assert!((126..=129).contains(&pixel[3]), "{pixel:?}");
         assert!(whole(Settings::default(), Rectangle::default(), 2.0, |_| ()).is_none());
     }

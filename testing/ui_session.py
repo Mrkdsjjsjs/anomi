@@ -29,7 +29,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--state', type=Path, required=True)
 parser.add_argument('--bin', type=Path, required=True)
 parser.add_argument('--size', default='1120x760')
-parser.add_argument('--renderer', choices=['software', 'gpu'], default='software')
+# `settings` passes none: the app draws as its layout.json chooses, which the
+# iced interface's GPU fallback (crate::gpu) needs to be seen at a plain start.
+parser.add_argument('--renderer', choices=['software', 'gpu', 'settings'], default='software')
 parser.add_argument('--discord', action='store_true')
 parser.add_argument('--fake-args', default='')
 parser.add_argument('--tray', type=Path, help='testing/tray_host.rs, built, to run as the tray')
@@ -145,7 +147,8 @@ def launch(extra=()):
     # A new Yapfast would run every line again.
     window_control.write_text('')
     # Yapfast takes --preview only before --data-dir.
-    yapfast = subprocess.Popen([str(args.bin), '--renderer', args.renderer, *yapfast_args, *extra,
+    renderer = [] if args.renderer == 'settings' else ['--renderer', args.renderer]
+    yapfast = subprocess.Popen([str(args.bin), *renderer, *yapfast_args, *extra,
                                 '--data-dir', str(data)],
                             env=environment, stdout=(state / 'yapfast.log').open('ab'),
                             stderr=subprocess.STDOUT, start_new_session=True)

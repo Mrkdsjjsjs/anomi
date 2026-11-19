@@ -87,8 +87,6 @@ struct State {
     why: Option<Why>,
     /// `renderer_failures` before this start counted its try ahead.
     ahead: Option<u8>,
-    /// A GPU driver was loaded into this process: its memory stays.
-    loaded: bool,
     /// The system's adapters as last read, for their names.
     cards: Vec<Adapter>,
 }
@@ -100,7 +98,6 @@ impl State {
             target: None,
             why: None,
             ahead: None,
-            loaded: false,
             cards: Vec::new(),
         }
     }

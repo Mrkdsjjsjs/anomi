@@ -37,7 +37,16 @@ pub struct Surface {
     fresh: bool,
     /// Its last frame came suboptimal and was set aside.
     suboptimal: bool,
+    /// Frames in a row it couldn't give, none presented between.
+    missed: u8,
 }
+
+/// Anomi: frames in a row a window's surface may fail to give (lost, or
+/// outdated however it's configured), none presented between, before the
+/// app is told (lost.rs) as of a surface that couldn't be made: a window
+/// that never shows a frame is a GPU that didn't start, and iced only makes
+/// the surface again, at most once a second, for as long as it fails.
+const MISSED: u8 = 3;
 
 impl Surface {
     fn new(raw: Option<wgpu::Surface<'static>>) -> Self {
@@ -46,7 +55,15 @@ impl Surface {
             configured: false,
             fresh: true,
             suboptimal: false,
+            missed: 0,
         }
+    }
+
+    /// Counts a frame it couldn't give: whether that makes [`MISSED`].
+    fn miss(&mut self) -> bool {
+        self.missed = self.missed.saturating_add(1);
+
+        self.missed == MISSED
     }
 }
 
@@ -253,6 +270,15 @@ impl Compositor {
                     engine.watch.serve(generation);
                     adapter::started(generation, info);
 
+                    // Anomi: geometry the processor's renderer cached can't
+                    // be drawn by this one (iced's fallback reaches
+                    // `unreachable!()`). iced clears every cache when the app
+                    // switches renderer, but not when a window opens from
+                    // the tray with a renderer of the other kind, and a
+                    // cache the app keeps outside the window's widgets (a
+                    // QR code's) outlives that window.
+                    graphics::cache::invalidate_all();
+
                     return Ok(Compositor {
                         instance,
                         adapter: chosen,
@@ -276,8 +302,11 @@ impl Compositor {
 impl Drop for Compositor {
     fn drop(&mut self) {
         // Anomi: iced drops the compositor when the last window closes (the
-        // tray) or when the app switches renderer; the device goes with it.
+        // tray) or when the app switches renderer; the device goes with it,
+        // and what was cached for it can't be drawn by tiny-skia (see
+        // `start`).
         adapter::stopped(self.generation);
+        graphics::cache::invalidate_all();
     }
 }
 
@@ -313,8 +342,41 @@ pub async fn new(
 ///
 /// Anomi: no failure of the GPU or the surface panics or makes iced loop
 /// (`PATCHES.md`, "Surfaces that fail without a panic or a loop"), and it
-/// never answers `OutOfMemory`, on which iced panics.
+/// never answers `OutOfMemory`, on which iced panics. A surface that keeps
+/// giving no frame is reported to the app ([`MISSED`]).
 pub fn present(
+    renderer: &mut Renderer,
+    surface: &mut Surface,
+    viewport: &Viewport,
+    background_color: Color,
+    on_pre_present: impl FnOnce(),
+) -> Result<(), compositor::SurfaceError> {
+    let answer = give(
+        renderer,
+        surface,
+        viewport,
+        background_color,
+        on_pre_present,
+    );
+
+    match &answer {
+        Ok(()) => surface.missed = 0,
+        Err(compositor::SurfaceError::Lost | compositor::SurfaceError::Other) => {
+            if surface.miss() {
+                renderer.engine.watch.surface(format!(
+                    "the window's surface gave no frame {MISSED} times in a row"
+                ));
+            }
+        }
+        // Hidden, or to be configured again: not a failure.
+        Err(_) => {}
+    }
+
+    answer
+}
+
+/// The frame drawn and presented, or why not.
+fn give(
     renderer: &mut Renderer,
     surface: &mut Surface,
     viewport: &Viewport,
@@ -678,6 +740,20 @@ mod tests {
                 reason: backend::Reason::DidNotMatch { .. },
             }
         ));
+    }
+
+    #[test]
+    fn a_surface_that_keeps_giving_no_frame_is_reported_once() {
+        let mut surface = Surface::new(None);
+
+        assert!(!surface.miss());
+        assert!(!surface.miss());
+        assert!(surface.miss(), "the third in a row");
+        assert!(!surface.miss(), "told once");
+
+        surface.missed = 0;
+
+        assert!(!surface.miss(), "a frame presented starts the count over");
     }
 
     #[test]

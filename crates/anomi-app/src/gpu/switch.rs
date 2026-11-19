@@ -72,9 +72,9 @@ pub fn choose(app: &mut App, choice: Choice) -> Task<Message> {
     let Some(target) = plan.target else {
         iced_wgpu::enabled::set_enabled(false);
         state.target = None;
-        state.loaded |= drawing.is_some();
-        let loaded = state.loaded;
-        state.why = plan.why.or_else(|| loaded.then_some(Why::Memory));
+        // A driver that drew is unloaded with the device: no restart
+        // gives anything more back.
+        state.why = plan.why;
         drop(state);
         tracing::info!("the window is to draw on the processor");
         let gpu = drawing.is_some() && app.window.is_some();

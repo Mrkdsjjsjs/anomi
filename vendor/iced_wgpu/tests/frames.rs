@@ -60,12 +60,8 @@ fn thirty_frames_of_720p_each_show_and_none_is_kept() {
     let whole = Rectangle::with_size(Size::new(WINDOW.width as f32, WINDOW.height as f32));
 
     for at in 0..30 {
-        let frame = premultiplied::frame(
-            WINDOW.width,
-            WINDOW.height,
-            buffers[at % 4].clone(),
-            true,
-        );
+        let frame =
+            premultiplied::frame(WINDOW.width, WINDOW.height, buffers[at % 4].clone(), true);
 
         let window = gpu::draw(
             &mut renderer,
@@ -112,7 +108,10 @@ fn frames_drawn_scaled_and_frames_of_a_new_size_show() {
         let centre = gpu::pixel(&window, WINDOW.width, 640, 360);
         let outside = gpu::pixel(&window, WINDOW.width, 80, 45);
 
-        assert!(gpu::near(centre, shown(&large[at % 4]), 1), "frame {at} scaled");
+        assert!(
+            gpu::near(centre, shown(&large[at % 4]), 1),
+            "frame {at} scaled"
+        );
         assert_eq!(outside, [0, 0, 0, 255], "the ground around it");
     }
 

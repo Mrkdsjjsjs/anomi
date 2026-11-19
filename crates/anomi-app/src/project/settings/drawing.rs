@@ -12,13 +12,8 @@ use anomi_vm::settings::advanced::DrawOn;
 use yapfast_core::adapters::{self, Adapter, Vendor};
 use yapfast_lang::tr;
 
-use crate::gpu::{self, Choice, Row, Running};
+use crate::gpu::{self, AUTO, Choice, PROCESSOR, Row, Running};
 use crate::layout::Layout;
-
-/// `interface_renderer`'s keys for Automatic and the processor, as
-/// [`Choice::parse`] reads them; an adapter's is its id.
-const AUTO: &str = "auto";
-const PROCESSOR: &str = "processor";
 
 /// "Interface rendering" as the page shows it: its rows, the one chosen,
 /// and the line under them.

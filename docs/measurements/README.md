@@ -197,6 +197,62 @@ for a second.
 
 </details>
 
+### Drawing on a graphics adapter
+
+The iced window on the processor (tiny-skia), on the integrated Radeon 610M
+(Automatic, through Mesa's RADV) and on the RTX 3080 (chosen by hand,
+NVIDIA's driver 620), idle on Bob's DM (`crate::gpu`, `vendor/iced_wgpu`).
+Memory is the anonymous memory and, in brackets, RSS, which counts the
+driver's libraries; wakeups a second are the main thread's and all
+threads'.
+
+| | Processor | Radeon 610M | RTX 3080 |
+| --- | --- | --- | --- |
+| In front: memory | 22.2 MiB (96 MiB) | 27.0 MiB (118 MiB) | 61.4 MiB (246 MiB) |
+| In front: threads | 16 | 19 | 22 |
+| In front: wakeups | 2.3 / 17.4 | 3.8 / 20.1 | 4.3 / 65.9 |
+| Behind another window: wakeups | 0.0 / 4.4 | 0.0 / 4.3 | 0.0 / 8.9 |
+| In the tray: memory | 18.8 MiB | 20.0 MiB | 20.9 MiB |
+| In the tray: wakeups | 0.0 / 4.5 | 0.0 / 4.2 | 0.0 / 4.2 |
+| GPU memory | none | 74.9 MiB of the firmware's 512 MiB carve-out, 27.3 MiB of system RAM (GTT) | 84 MiB on the card |
+
+- The Radeon adds Mesa's two shader-cache threads (`yapfast:disk$0`),
+  asleep at rest. In front the main thread wakes 1.5 times a second more,
+  for the caret's frames: each waits on the GPU's fence and the
+  swapchain.
+- The 3080 adds NVIDIA's three threads; `[vkps] Update` wakes 43 times a
+  second in front and 4 times a second behind another window, with nothing
+  drawn: a GPU chosen by hand is the one that breaks "nothing behind a
+  game".
+- In the tray iced drops the compositor, and with the device and the
+  Vulkan instance the loader unloads the driver: no RADV or NVIDIA library
+  stays mapped, no driver thread stays, `nvidia-smi` lists no process and
+  amdgpu's `fdinfo` no memory. The window opening again loads it again.
+  So does a switch from a GPU to the processor in Settings: the driver
+  is unloaded at once.
+- On the processor no Vulkan library loads at all: `VK_LOADER_DRIVERS_SELECT`
+  limits the loader to Automatic's driver, which loads only once wgpu
+  starts.
+
+<details>
+<summary>How these were measured</summary>
+
+On 19 November 2026, on the PC above with Mesa 26.2.7, a `fast` build
+of `anomi` (`fast` leaves only the Slint interface unoptimized), in one
+`scripts/ui-session --discord --anomi --tray --renderer settings` session
+(Weston 15 headless at 1400×860, its GL renderer on NVIDIA's EGL, so the
+Radeon's frames cross to another GPU, as on a desktop whose monitor is on
+the discrete card), against `testing/fake_discord.ts --nitro
+--member-looks --members 30 --dms 6 --servers 3`, each renderer a fresh
+start (`relaunch` with `--renderer software`, none, `--adapter
+0000:01:00.0`). Each sample is 20 s after 15 s settling (8 s behind,
+10 s in the tray), once per renderer, by `scripts/measure-process`;
+`weston-flower` over the window for behind; `window close` for the tray.
+GPU memory: `drm-memory-vram` and `drm-memory-gtt` of the process's
+amdgpu file in `/proc/PID/fdinfo`, and `nvidia-smi`.
+
+</details>
+
 ## Targets
 
 | Scenario | Ceiling |

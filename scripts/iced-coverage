@@ -32,6 +32,7 @@ TASK = re.compile(r"^### ([A-Z]\d+) ", re.M)
 # Files of the writers' crates no task owns on purpose, and why.
 ELSEWHERE = {
     "anomi-screens/tests/patterns.rs": "the task that moves the iced pin (iced-notes.md)",
+    "anomi-theme/src/renderer.rs": "GPU rendering, with vendor/iced_wgpu and anomi-app's gpu (docs/iced/README.md, \"What draws\")",
 }
 # Which screens crate tests a view-model folder's modules.
 TESTED_IN = {"chat": "anomi-chat", "people": "anomi-people", "voice": "anomi-voice",

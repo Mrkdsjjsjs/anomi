@@ -76,7 +76,10 @@ pub fn draw(
     size: Size<u32>,
     background: Color,
 ) -> Vec<u8> {
-    gpu.reset(Rectangle::with_size(Size::new(size.width as f32, size.height as f32)));
+    gpu.reset(Rectangle::with_size(Size::new(
+        size.width as f32,
+        size.height as f32,
+    )));
     gpu.draw_image(picture, bounds, bounds);
 
     renderer::Headless::screenshot(gpu, size, 1.0, background)

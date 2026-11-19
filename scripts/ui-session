@@ -2,7 +2,7 @@
 """Run Yapfast on a private Weston display and drive it, for screenshots and UI checks.
 
   scripts/ui-session start [--discord [--fake-args '--servers 3 --dms 50']] [--live]
-                           [--size 1120x760] [--renderer software|gpu] [--tray]
+                           [--size 1120x760] [--renderer software|gpu|settings] [--tray]
                            [--zoom 1.2] [--scale 2] [--layout JSON] [--cursor [SIZE]] [--desktop]
                            [--profile fast|measure]
                            [--bin PATH | --no-build | --anomi]
@@ -309,7 +309,7 @@ starting.add_argument('--discord', action='store_true', help='Discord-only build
 starting.add_argument('--live', action='store_true', help='reload ui/*.slint on each save, without a rebuild')
 starting.add_argument('--fake-args', default='', help="arguments for testing/fake_discord.ts, such as '--dms 50'")
 starting.add_argument('--size', default='1120x760')
-starting.add_argument('--renderer', choices=['software', 'gpu'], default='software')
+starting.add_argument('--renderer', choices=['software', 'gpu', 'settings'], default='software')
 starting.add_argument('--profile', choices=['fast', 'measure'], default='fast',
                       help='Cargo profile to build with; measure optimizes the interface too')
 starting.add_argument('--tray', action='store_true', help='run a stand-in tray on the private bus')

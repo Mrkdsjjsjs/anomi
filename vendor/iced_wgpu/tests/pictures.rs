@@ -138,8 +138,14 @@ fn a_marked_picture_keeps_red_red_and_blue_blue() {
             AT.1 + height / 2,
         );
 
-        assert!(gpu::near(left, [255, 0, 0, 255], 1), "{width}x{height}: {left:?}");
-        assert!(gpu::near(right, [0, 0, 255, 255], 1), "{width}x{height}: {right:?}");
+        assert!(
+            gpu::near(left, [255, 0, 0, 255], 1),
+            "{width}x{height}: {left:?}"
+        );
+        assert!(
+            gpu::near(right, [0, 0, 255, 255], 1),
+            "{width}x{height}: {right:?}"
+        );
     }
 }
 

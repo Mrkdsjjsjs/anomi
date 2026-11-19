@@ -55,8 +55,6 @@ pub(super) enum Why {
     Stopped,
     /// Chosen while running, its driver wasn't let load at the start.
     NextStart(String),
-    /// Switched to the processor: the driver's memory stays until a restart.
-    Memory,
     /// It failed: how, and whether it was the third time in a row.
     Failed {
         failure: Failure,
@@ -81,9 +79,6 @@ impl Why {
                 "{} draws from the next start, when its driver is loaded.",
                 name
             ),
-            Self::Memory => {
-                tr!("The graphics driver's memory is given back at the next start.").to_owned()
-            }
             Self::Failed {
                 failure,
                 name,

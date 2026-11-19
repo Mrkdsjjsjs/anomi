@@ -79,11 +79,8 @@ pub(super) fn opened(app: &mut App) -> Task<Message> {
         return refused(app);
     };
     tracing::info!(adapter = %info.name, bus = %info.bus, driver = %info.driver, "the window draws on the graphics adapter");
-    let mut state = state();
-    state.loaded = true;
     // Failures counted wait for a frame drawn on it to be forgotten.
-    let unsettled = state.ahead.is_some() || app.layout.renderer_failures != 0;
-    drop(state);
+    let unsettled = state().ahead.is_some() || app.layout.renderer_failures != 0;
     FIRST_FRAME.store(unsettled, Ordering::Relaxed);
     Task::none()
 }
@@ -128,10 +125,7 @@ pub(super) fn switched(app: &mut App, error: Option<String>) -> Task<Message> {
         return refused(app);
     };
     tracing::info!(adapter = %info.name, bus = %info.bus, "the window draws on the graphics adapter");
-    let mut state = state();
-    state.loaded = true;
-    state.why = None;
-    drop(state);
+    state().why = None;
     app.show(Reach::SETTINGS);
     Task::none()
 }
@@ -149,7 +143,6 @@ fn refused(app: &mut App) -> Task<Message> {
         return failed(app, Failure::Start);
     }
     iced_wgpu::enabled::set_enabled(false);
-    state.loaded = true;
     state.target = None;
     state.why = Some(Why::NoIntegrated);
     let ahead = state.ahead.take();
@@ -178,7 +171,6 @@ fn failed(app: &mut App, failure: Failure) -> Task<Message> {
     }
     let last = failures >= LIMIT;
     let mut state = state();
-    state.loaded = true;
     // Always set while a GPU may draw; "GPU" reads in either language.
     let name = (state.target.take()).map_or_else(|| String::from("GPU"), |(_id, name)| name);
     let what = failure.text(&name);

@@ -293,6 +293,7 @@ dependencies = [
  "iced_runtime",
  "iced_test",
  "iced_tiny_skia",
+ "iced_wgpu",
  "iced_winit",
  "image",
  "rfd",
@@ -430,6 +431,7 @@ dependencies = [
  "anomi-fonts",
  "iced",
  "iced_test",
+ "iced_tiny_skia",
  "serde",
  "serde_json",
  "yapfast-lang",
@@ -4248,7 +4250,6 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.15.0-dev"
-source = "git+https://github.com/iced-rs/iced?rev=e5c350f271a8046f875c6662d452fde9e462d486#e5c350f271a8046f875c6662d452fde9e462d486"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -4257,6 +4258,7 @@ dependencies = [
  "guillotiere",
  "iced_debug",
  "iced_graphics",
+ "iced_tiny_skia",
  "log",
  "lyon",
  "resvg 0.48.1",

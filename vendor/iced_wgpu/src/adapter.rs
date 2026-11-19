@@ -9,9 +9,14 @@
 //! compositor enumerates Vulkan's adapters itself (Vulkan only: its
 //! adapters carry their PCI bus id, which ties one to the card the system
 //! lists, `/sys/class/drm/cardN/device`) and takes the one [`choose`] asks
-//! for, if it can present to the window; otherwise it refuses, as when no
-//! adapter exists, and iced's fallback draws with tiny-skia. A CPU adapter
-//! (lavapipe, llvmpipe) is never taken: it draws slower than tiny-skia.
+//! for; with none, it refuses, and iced's fallback draws with tiny-skia. A
+//! CPU adapter (lavapipe, llvmpipe) is never taken: it draws slower than
+//! tiny-skia.
+//!
+//! How the frames reach the window is [`path`]'s: straight into a Vulkan
+//! surface only on the adapter the desktop composites on, which the app
+//! names ([`set_display_adapter`]); any other adapter's are read back and
+//! shown through shared memory (`window/shared.rs`).
 //!
 //! What the last start saw, what draws now and why the last start failed are
 //! kept here for the app's Settings page ([`seen`], [`active`],
@@ -26,8 +31,7 @@ use std::task::{Context, Poll, Waker};
 /// The adapter the app asks for.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Choice {
-    /// The first integrated adapter that can present to the window, or
-    /// none: never a discrete one.
+    /// The first integrated adapter, or none: never a discrete one.
     #[default]
     Auto,
     /// The adapter at this PCI bus id, as Vulkan and sysfs write it
@@ -65,13 +69,16 @@ pub struct Info {
     pub driver: String,
     /// The driver's version, as it writes it.
     pub driver_info: String,
-    /// Whether it can present to the window: known for the adapters a
-    /// compositor saw at its start ([`seen`]), `None` from [`list`].
-    pub presents: Option<bool>,
+    /// Whether its frames go straight into the window's Vulkan surface
+    /// (`true`) or are read back and shown through shared memory (`false`),
+    /// as [`path`] decides: known for the adapters a compositor saw at its
+    /// start ([`seen`]) and the one drawing ([`active`]), `None` from
+    /// [`list`].
+    pub direct: Option<bool>,
 }
 
 impl Info {
-    fn new(info: &wgpu::AdapterInfo, presents: Option<bool>) -> Self {
+    fn new(info: &wgpu::AdapterInfo) -> Self {
         Self {
             name: info.name.clone(),
             bus: info.device_pci_bus_id.clone(),
@@ -86,7 +93,7 @@ impl Info {
             },
             driver: info.driver.clone(),
             driver_info: info.driver_info.clone(),
-            presents,
+            direct: None,
         }
     }
 
@@ -108,6 +115,53 @@ pub fn choice() -> Choice {
     state().choice.clone()
 }
 
+/// Says which adapter the desktop composites on, by its PCI bus id
+/// (`"0000:01:00.0"`), or that it isn't known (`None`, the default). Read
+/// when a compositor starts, as [`choose`] is: the app finds it (the
+/// Wayland compositor's own word, or the one adapter a monitor is plugged
+/// into) and says it before the window opens.
+pub fn set_display_adapter(bus: Option<String>) {
+    state().display = bus;
+}
+
+/// The adapter the desktop composites on, as last said; `None` when not
+/// known.
+pub fn display_adapter() -> Option<String> {
+    state().display.clone()
+}
+
+/// How a window shows what an adapter draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Path {
+    /// Into a Vulkan surface of the window, which hands the desktop's
+    /// compositor the adapter's own buffers to import.
+    Direct,
+    /// Into a texture of the adapter's own, copied back to memory and shown
+    /// through shared memory, as the processor's frames are: the compositor
+    /// needs nothing from the adapter.
+    Shared,
+}
+
+/// The way the frames of `info` reach the window, given the adapter the
+/// desktop composites on (`display`, [`set_display_adapter`]): straight
+/// only on that one. Any other adapter, or every one when that isn't
+/// known, is read back. Vulkan's own answer can't decide this:
+/// `Adapter::is_surface_supported` says whether the driver can speak to
+/// the window system, not whether the compositor can import what it
+/// makes, and a Wayland compositor that can't (mutter on an NVIDIA card,
+/// a Radeon's buffers) ends the client's connection with a protocol error,
+/// which nothing in the process survives.
+pub fn path(info: &Info, display: Option<&str>) -> Path {
+    match display {
+        Some(display)
+            if !info.bus.is_empty() && info.bus.trim().eq_ignore_ascii_case(display.trim()) =>
+        {
+            Path::Direct
+        }
+        _ => Path::Shared,
+    }
+}
+
 /// Vulkan's adapters, enumerated now, without a window, CPU adapters left
 /// out. It blocks while the Vulkan loader loads every installed driver into
 /// this process, and their libraries stay mapped after it returns: the app
@@ -116,15 +170,15 @@ pub fn choice() -> Choice {
 pub fn list() -> Vec<Info> {
     let instance = instance_without_window();
 
-    ready(candidates(&instance, wgpu::Backends::VULKAN, None))
+    ready(candidates(&instance, wgpu::Backends::VULKAN))
         .unwrap_or_default()
         .into_iter()
         .map(|(_adapter, info)| info)
         .collect()
 }
 
-/// The adapters the last compositor start enumerated, with whether each can
-/// present to the window; empty until one started.
+/// The adapters the last compositor start enumerated, with the way each
+/// would show its frames ([`Info::direct`]); empty until one started.
 pub fn seen() -> Vec<Info> {
     state().seen.clone()
 }
@@ -147,6 +201,8 @@ pub fn last_error() -> Option<String> {
 
 struct State {
     choice: Choice,
+    /// The PCI bus id of the adapter the desktop composites on.
+    display: Option<String>,
     seen: Vec<Info>,
     /// The adapter drawing, with the generation of the compositor drawing
     /// on it: `iced::backend::configure` makes the next compositor before it
@@ -157,6 +213,7 @@ struct State {
 
 static STATE: Mutex<State> = Mutex::new(State {
     choice: Choice::Auto,
+    display: None,
     seen: Vec::new(),
     active: None,
     last_error: None,
@@ -214,12 +271,11 @@ pub(crate) fn instance_without_window() -> wgpu::Instance {
 }
 
 /// The adapters of `instance` this renderer may draw on, each with what's
-/// known of it: every one but a CPU's, with whether it can present to
-/// `surface` when there is one.
+/// known of it: every one but a CPU's. No window's surface is asked: one is
+/// made only for the adapter [`path`] lets draw into it.
 pub(crate) async fn candidates(
     instance: &wgpu::Instance,
     backends: wgpu::Backends,
-    surface: Option<&wgpu::Surface<'_>>,
 ) -> Vec<(wgpu::Adapter, Info)> {
     instance
         .enumerate_adapters(backends)
@@ -232,38 +288,21 @@ pub(crate) async fn candidates(
                 return None;
             }
 
-            let presents = surface.map(|surface| adapter.is_surface_supported(surface));
-            let info = Info::new(&info, presents);
+            let info = Info::new(&info);
 
             Some((adapter, info))
         })
         .collect()
 }
 
-/// Which of `candidates` `choice` takes, or why none. For a window
-/// (`window`) the adapter must be able to present to it.
-pub(crate) fn pick(candidates: &[Info], choice: &Choice, window: bool) -> Result<usize, String> {
-    let presents = |info: &Info| !window || info.presents == Some(true);
-
+/// Which of `candidates` `choice` takes, or why none. Any adapter can draw
+/// for a window: [`path`] decides how its frames reach it.
+pub(crate) fn pick(candidates: &[Info], choice: &Choice) -> Result<usize, String> {
     match choice {
-        Choice::Auto => {
-            let mut integrated = candidates
-                .iter()
-                .enumerate()
-                .filter(|(_index, info)| info.kind == Kind::Integrated)
-                .peekable();
-
-            let Some((_index, first)) = integrated.peek() else {
-                return Err(String::from("Vulkan offers no integrated graphics adapter"));
-            };
-
-            let name = first.name.clone();
-
-            integrated
-                .find(|&(_index, info)| presents(info))
-                .map(|(index, _info)| index)
-                .ok_or_else(|| format!("the integrated adapter {name} can't present to the window"))
-        }
+        Choice::Auto => candidates
+            .iter()
+            .position(|info| info.kind == Kind::Integrated)
+            .ok_or_else(|| String::from("Vulkan offers no integrated graphics adapter")),
         Choice::Bus(wanted) => {
             let wanted = wanted.trim().to_ascii_lowercase();
 
@@ -272,20 +311,7 @@ pub(crate) fn pick(candidates: &[Info], choice: &Choice, window: bool) -> Result
                 .position(|info| !info.bus.is_empty() && info.bus.eq_ignore_ascii_case(&wanted))
                 .or_else(|| candidates.iter().position(|info| info.ids() == wanted));
 
-            let Some(index) = index else {
-                return Err(format!("Vulkan offers no adapter at {wanted}"));
-            };
-
-            let info = &candidates[index];
-
-            if presents(info) {
-                Ok(index)
-            } else {
-                Err(format!(
-                    "{} ({wanted}) can't present to the window",
-                    info.name
-                ))
-            }
+            index.ok_or_else(|| format!("Vulkan offers no adapter at {wanted}"))
         }
     }
 }
@@ -309,7 +335,7 @@ pub(crate) fn ready<T>(future: impl Future<Output = T>) -> Option<T> {
 mod tests {
     use super::*;
 
-    fn adapter(name: &str, bus: &str, kind: Kind, presents: Option<bool>) -> Info {
+    fn adapter(name: &str, bus: &str, kind: Kind) -> Info {
         Info {
             name: name.to_owned(),
             bus: bus.to_owned(),
@@ -326,88 +352,107 @@ mod tests {
             kind,
             driver: String::new(),
             driver_info: String::new(),
-            presents,
+            direct: None,
         }
     }
 
     /// The owner's desktop with `vulkan-radeon` installed: the 3080 first,
-    /// as NVIDIA's driver lists it, then the Radeon.
-    fn desktop(radeon_presents: bool) -> Vec<Info> {
+    /// as NVIDIA's driver lists it, then the Radeon. The monitor, and
+    /// mutter with it, are on the 3080.
+    fn desktop() -> Vec<Info> {
         vec![
-            adapter(
-                "NVIDIA GeForce RTX 3080",
-                "0000:01:00.0",
-                Kind::Discrete,
-                Some(true),
-            ),
+            adapter("NVIDIA GeForce RTX 3080", "0000:01:00.0", Kind::Discrete),
             adapter(
                 "AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)",
                 "0000:73:00.0",
                 Kind::Integrated,
-                Some(radeon_presents),
             ),
         ]
     }
 
+    const DISPLAY: Option<&str> = Some("0000:01:00.0");
+
     #[test]
     fn automatic_takes_the_integrated_adapter() {
-        assert_eq!(pick(&desktop(true), &Choice::Auto, true), Ok(1));
+        assert_eq!(pick(&desktop(), &Choice::Auto), Ok(1));
     }
 
     #[test]
     fn automatic_never_takes_a_discrete_adapter() {
-        let only_nvidia = vec![desktop(true).remove(0)];
+        let only_nvidia = vec![desktop().remove(0)];
 
-        assert!(pick(&only_nvidia, &Choice::Auto, true).is_err());
-        assert!(pick(&only_nvidia, &Choice::Auto, false).is_err());
-        assert!(pick(&[], &Choice::Auto, true).is_err());
+        assert!(pick(&only_nvidia, &Choice::Auto).is_err());
+        assert!(pick(&[], &Choice::Auto).is_err());
     }
 
     #[test]
-    fn an_adapter_that_cannot_present_is_refused_for_a_window() {
-        assert!(pick(&desktop(false), &Choice::Auto, true).is_err());
-        assert!(pick(&desktop(false), &Choice::Bus("0000:73:00.0".into()), true).is_err());
+    fn on_this_desktop_the_radeon_is_read_back_and_shown_through_shared_memory() {
+        let adapters = desktop();
 
-        // A headless renderer presents nothing.
-        assert_eq!(pick(&desktop(false), &Choice::Auto, false), Ok(1));
+        assert_eq!(
+            pick(&adapters, &Choice::Auto),
+            Ok(1),
+            "Automatic: the Radeon"
+        );
+        assert_eq!(path(&adapters[1], DISPLAY), Path::Shared);
+    }
+
+    #[test]
+    fn only_the_adapter_the_desktop_composites_on_draws_into_the_window() {
+        let adapters = desktop();
+
+        assert_eq!(path(&adapters[0], DISPLAY), Path::Direct);
+        assert_eq!(path(&adapters[0], Some(" 0000:01:00.0 ")), Path::Direct);
+        assert_eq!(
+            path(&adapters[1], Some("0000:73:00.0")),
+            Path::Direct,
+            "a laptop's integrated graphics, which composite its desktop"
+        );
+    }
+
+    #[test]
+    fn where_the_desktops_adapter_isnt_known_every_adapter_is_read_back() {
+        let mut adapters = desktop();
+
+        assert!(adapters.iter().all(|info| path(info, None) == Path::Shared));
+
+        // A driver that doesn't say its bus is never taken for the desktop's.
+        adapters[0].bus.clear();
+
+        assert_eq!(path(&adapters[0], Some("")), Path::Shared);
+        assert_eq!(path(&adapters[0], DISPLAY), Path::Shared);
     }
 
     #[test]
     fn a_bus_id_takes_that_adapter() {
-        let adapters = desktop(true);
+        let adapters = desktop();
 
+        assert_eq!(pick(&adapters, &Choice::Bus("0000:01:00.0".into())), Ok(0));
         assert_eq!(
-            pick(&adapters, &Choice::Bus("0000:01:00.0".into()), true),
-            Ok(0)
-        );
-        assert_eq!(
-            pick(&adapters, &Choice::Bus(" 0000:73:00.0 ".into()), true),
+            pick(&adapters, &Choice::Bus(" 0000:73:00.0 ".into())),
             Ok(1)
         );
         assert_eq!(
-            pick(&adapters, &Choice::Bus("0000:73:00.0".to_uppercase()), true),
+            pick(&adapters, &Choice::Bus("0000:73:00.0".to_uppercase())),
             Ok(1)
         );
-        assert!(pick(&adapters, &Choice::Bus("0000:02:00.0".into()), true).is_err());
+        assert!(pick(&adapters, &Choice::Bus("0000:02:00.0".into())).is_err());
     }
 
     #[test]
     fn vendor_and_device_stand_in_for_a_bus_id() {
-        let mut adapters = desktop(true);
+        let mut adapters = desktop();
 
         adapters[1].bus.clear();
 
         assert_eq!(adapters[1].ids(), "1002:13c0");
-        assert_eq!(
-            pick(&adapters, &Choice::Bus("1002:13C0".into()), true),
-            Ok(1)
-        );
-        assert!(pick(&adapters, &Choice::Bus("0000:73:00.0".into()), true).is_err());
+        assert_eq!(pick(&adapters, &Choice::Bus("1002:13C0".into())), Ok(1));
+        assert!(pick(&adapters, &Choice::Bus("0000:73:00.0".into())).is_err());
     }
 
     #[test]
     fn only_the_compositor_of_the_active_adapter_clears_it() {
-        let radeon = desktop(true).remove(1);
+        let radeon = desktop().remove(1);
         let first = next_generation();
         let second = next_generation();
 
@@ -436,7 +481,7 @@ mod tests {
             println!("{adapter:?} ({})", adapter.ids());
 
             assert!(!adapter.name.is_empty());
-            assert_eq!(adapter.presents, None);
+            assert_eq!(adapter.direct, None);
         }
     }
 }

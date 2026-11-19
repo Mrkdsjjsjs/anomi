@@ -25,7 +25,8 @@ Beside iced's sources:
   marks the app puts on pictures and frames there and the video hook (its
   `image` with this crate's `image`; its `wayland` for this crate's own
   tests alone, as a dev-dependency: tiny-skia's window buffers need a window
-  system, which iced turns on in the app's build).
+  system, which iced turns on in the app's build), and softbuffer, at
+  tiny-skia's version, for the window's shared memory (below).
 - `clippy.toml` is iced's, so the crate lints as iced lints it.
 - `Cargo.lock` is the root lock pruned to this crate, for its own tests. The
   crate is outside the workspace (`exclude` in the root `Cargo.toml`), so
@@ -67,24 +68,24 @@ To carry over: the check at the top of `Compositor::new` and of
 preference (`WGPU_POWER_PREF` or the settings') among every backend, and
 enumerated adapters only for the log; headless, it asked for a "high
 performance" one. Here the compositor enumerates Vulkan's adapters, leaves
-out CPU ones (lavapipe, llvmpipe: slower than tiny-skia), asks each whether
-it can present to the window (`Adapter::is_surface_supported`), and takes the
-one `adapter::choose` asks for:
+out CPU ones (lavapipe, llvmpipe: slower than tiny-skia), asks none of them
+about the window, and takes the one `adapter::choose` asks for:
 
-- `Choice::Auto` (the default): the first integrated adapter that can
-  present to the window, or none. Never a discrete one, so on a desktop the
-  card the games use stays theirs; with no integrated adapter Vulkan can
-  use, the compositor refuses and tiny-skia draws.
+- `Choice::Auto` (the default): the first integrated adapter, or none.
+  Never a discrete one, so on a desktop the card the games use stays
+  theirs; with no integrated adapter Vulkan can use, the compositor refuses
+  and tiny-skia draws.
 - `Choice::Bus("0000:73:00.0")`: the adapter at that PCI bus id, as Vulkan
   (`VK_EXT_pci_bus_info`) and sysfs write it, or, when no adapter's bus id
-  matches, the one whose vendor and device ids do (`"1002:13c0"`); it too
-  must present to the window, or the compositor refuses.
+  matches, the one whose vendor and device ids do (`"1002:13c0"`); with
+  none there, the compositor refuses.
 
-The power preference in the settings is unused. `Backend::Best` and no API
-mean Vulkan (stock: every backend); `WGPU_BACKEND` and `ICED_PRESENT_MODE`
-still override, as stock. The headless renderer takes the same choice
-without a window. What the last start enumerated (`adapter::seen`, with
-whether each presents), the adapter drawing now (`adapter::active`: none
+How its frames reach the window is the next section's. The power
+preference in the settings is unused. `Backend::Best` and no API mean
+Vulkan (stock: every backend); `WGPU_BACKEND` and `ICED_PRESENT_MODE` still
+override, as stock. The headless renderer takes the same choice without a
+window. What the last start enumerated (`adapter::seen`, with the way each
+would show its frames), the adapter drawing now (`adapter::active`: none
 while tiny-skia draws, in the tray, where iced drops the compositor, or once
 the device is lost) and why the last start failed (`adapter::last_error`,
 cleared by a start) are kept for the app's Settings page. A compositor is
@@ -92,14 +93,74 @@ known by a number: `iced::backend::configure` makes the next before it
 drops the one before, whose drop then leaves the new one active.
 `adapter::list` enumerates without a window, loading every Vulkan driver
 into the process (the app runs it in a child process). Tests: the choice on
-the owner's desktop (a 3080 and a Radeon 610M), by bus, by ids, refused
-when it can't present, and the active adapter across two compositors;
-`adapter::list` against the real drivers, opt-in.
+the owner's desktop (a 3080 and a Radeon 610M), by bus, by ids, and the
+active adapter across two compositors; `adapter::list` against the real
+drivers, opt-in.
 
-To carry over: in `Compositor::request`, the surface made first (an error at
-once; stock went on without one), `adapter::candidates`, `pick` and the
-records in place of `request_adapter`; in `Headless::new`, the same with no
-surface; `Settings::from`'s backends.
+To carry over: in `Compositor::request`, `adapter::candidates`, `pick` and
+the records in place of `request_adapter`; in `Headless::new`, the same;
+`Settings::from`'s backends.
+
+## Drawn on one adapter, shown through another
+
+`window/shared.rs` (new), `adapter.rs` `Path`, `path`,
+`set_display_adapter`, `window/compositor.rs` `Shows`, `start`,
+`surface_format`, `create_surface`, `configure_surface`, `give`;
+`Cargo.toml`'s softbuffer. A Vulkan surface hands the desktop's compositor
+the adapter's own buffers to import. On the owner's desktop (mutter on the
+RTX 3080, the monitor on it) Automatic took the Radeon 610M, Vulkan said it
+could present to the window, and 150 ms after the window opened mutter
+failed to import its first buffers and ended the connection:
+
+    gnome-shell: WL: error in client communication (pid …)
+    [destroyed object]: error 7: failed to import supplied dmabufs: Could not bind the given EGLImage to a CoglTexture2D
+    ERROR iced_wgpu::lost: the window's surface could not be set up: Validation Error … In Surface::configure: Surface does not support the adapter's queue family
+    WARN iced_winit: Error Lost when presenting surface. Recovering it.
+    ERROR iced_wgpu::lost: … Surface does not support the adapter's queue family
+    Protocol error 7 on object @0
+
+The swapchain the first configure made had sent its buffers; mutter's
+refusal came back asynchronously, and the next configure (a resize) found
+the connection dead, which Mesa's driver and wgpu report as a surface the
+adapter's queue family can't present to. A Wayland protocol error ends the
+process: nothing can fall back. Stock iced makes a surface before choosing
+an adapter and asks each `is_surface_supported`, which only says whether
+the driver can speak to the window system, not whether the compositor can
+import what it makes.
+
+So the window gets a Vulkan surface only on the adapter the desktop
+composites on: the app says which (`adapter::set_display_adapter`, from the
+Wayland compositor's linux-dmabuf feedback, else the one adapter driving a
+monitor), and `adapter::path` compares bus ids. Any other adapter, or every
+one when the app says nothing, is `Path::Shared`: the compositor makes no
+surface at all (`Shows::Shared`, a softbuffer context on the window
+system's connection), and each window gets softbuffer's shared memory, the
+path tiny-skia's frames take, which a compositor takes from any client.
+Each frame iced presents is drawn into a texture of the window's size on
+the adapter, copied there into a buffer the processor maps, and its rows
+copied once into softbuffer's buffer: `Bgra8Unorm` (sRGB where iced
+corrects gamma, as the surface's format would be) is softbuffer's 0RGB
+pixel byte for byte on a little-endian machine, so nothing converts a
+pixel. The window's thread waits once a frame, for that frame's drawing and
+copy and nothing else, at most a second: on the Radeon 610M under GNOME
+Shell on the 3080, 4.4 ms a frame at 1400 by 868 and 10.4 ms maximised at
+3440 by 1408 while a channel scrolls (`docs/measurements/README.md`, "Drawn
+on the Radeon, shown through shared memory"). The frame is submitted
+before softbuffer's buffer is asked for, so its wait for the compositor
+overlaps the adapter's. Texture and buffer
+are made at the first frame and again when the size changes (no wait: the
+old ones go when the adapter is done with them), and freed with the window.
+Nothing runs between frames. A frame that can't be read back counts toward
+`MISSED`; a lost device answers "occluded", as on the direct path. On the
+desktop's own adapter, a window Vulkan can't present to is read back too.
+Tests: the path on the owner's desktop and a laptop's, when unknown, a
+driver that doesn't say its bus; rows copied without their padding;
+`a_frame_read_back_equals_the_one_drawn_in_place` (GPU, opt-in): a frame
+read back equals, byte for byte (on the Radeon 610M and the RTX 3080), the
+same frame read out by `Renderer::screenshot`, red staying red.
+
+To carry over: `shared.rs`, `Shows` and the surface's `shared`, the path
+chosen in `start` before any surface is made, `surface_format`.
 
 ## A failing GPU reported, never a panic
 
@@ -190,6 +251,9 @@ To carry over: the two `invalidate_all` calls.
   every paragraph's glyphs), where tiny-skia draws only what changed and
   presents only that (its patches 9 and 23): a blinking caret costs a whole
   frame's preparation on the CPU, though not the GPU's time to speak of.
+  A frame read back is copied and presented whole too; with damage, both
+  copies and the compositor's upload could take only the union of the
+  damage since softbuffer's buffer was last shown (its age).
 - Upstream Yapfast's other changes to its copy (the image shader's corners
   and edge, pictures up to 4K uploaded in the frame) belong to the image
   pipeline, below.

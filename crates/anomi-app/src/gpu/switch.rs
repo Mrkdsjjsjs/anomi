@@ -10,7 +10,7 @@ use iced::backend::{self, Backend, PowerPreference};
 use iced_wgpu::adapter::{Choice as Wanted, Info, Kind};
 
 use super::plan::{self, Why};
-use super::{Choice, Due, FAILED, FIRST_FRAME, drivers, live, state};
+use super::{Choice, Due, FAILED, FIRST_FRAME, drivers, live, mark, screen, state};
 use crate::app::App;
 use crate::message::Message;
 
@@ -45,14 +45,15 @@ pub(super) fn remake(backend: Backend) -> Task<Message> {
     })
 }
 
-/// Keeps `choice` and draws with it at once, failures forgotten. A driver
-/// the start didn't let load waits for the next start; without a window
-/// (in the tray) the next window takes it.
+/// Keeps `choice` and draws with it at once, failures and a start that
+/// died forgotten. A driver the start didn't let load waits for the next
+/// start; without a window (in the tray) the next window takes it.
 pub fn choose(app: &mut App, choice: Choice) -> Task<Message> {
     let saved = choice.saved();
     app.layout.edit(|layout| {
         layout.interface_renderer = saved;
         layout.renderer_failures = 0;
+        layout.renderer_trying = None;
     });
     if !live() {
         return Task::none();
@@ -64,11 +65,14 @@ pub fn choose(app: &mut App, choice: Choice) -> Task<Message> {
     }
     FAILED.store(false, Ordering::Release);
     FIRST_FRAME.store(false, Ordering::Relaxed);
+    // Asked of the compositor only for a GPU: a round trip on Wayland.
+    let display = plan.target.as_ref().and_then(|_| screen::adapter(&cards));
     let drawing = iced_wgpu::adapter::active();
     let mut state = state();
     state.cards = cards;
     state.asked = plan.choice;
-    state.ahead = None;
+    state.trying = false;
+    state.settled = false;
     let Some(target) = plan.target else {
         iced_wgpu::enabled::set_enabled(false);
         state.target = None;
@@ -89,11 +93,14 @@ pub fn choose(app: &mut App, choice: Choice) -> Task<Message> {
     drop(state);
     let same = drawing.is_some_and(|info| meets(&info, &target.wanted));
     iced_wgpu::adapter::choose(target.wanted);
+    iced_wgpu::adapter::set_display_adapter(display);
     iced_wgpu::enabled::set_enabled(true);
     if same || app.window.is_none() {
         return Task::none();
     }
     tracing::info!(adapter = %target.name, "the window is to draw on the graphics adapter");
+    // On disk before the new renderer is made, as a window opening is.
+    mark(&mut app.layout, &target.id);
     remake(Backend::Best)
 }
 

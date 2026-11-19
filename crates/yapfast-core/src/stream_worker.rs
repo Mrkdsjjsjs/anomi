@@ -374,8 +374,9 @@ pub enum Report {
     /// on without it.
     AudioError(String),
     /// Sharing: how the stream encodes isn't what Settings asked for, as
-    /// when the graphics card chosen couldn't encode it, and the stream goes
-    /// on. The dock shows it as a stream's error.
+    /// when the graphics card chosen couldn't encode it, or x264 can't keep
+    /// up on the cores chosen, and the stream goes on. The dock shows it as
+    /// a stream's error.
     Notice(String),
     /// Sharing: the video reaches the stream server. Watching: the first
     /// picture is on screen.
@@ -440,7 +441,24 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
+fn serve(input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
+    serve_on(input, report, confine);
+}
+
+/// Puts the whole worker on `cpus`, as Yapfast chose them, or on every CPU
+/// Yapfast started with for none: whatever its job, and wherever its stream
+/// encodes, x264 on the processor too.
+fn confine(cpus: Option<CpuMask>) {
+    crate::cpu::apply(cpus.as_ref());
+}
+
+/// Runs the job the first line of `input` names, with the [`Control`]s on
+/// the lines after; each [`Control::Cpus`] goes to `confine`.
+fn serve_on(
+    mut input: Box<dyn BufRead + Send>,
+    report: &mut dyn FnMut(Report),
+    confine: fn(Option<CpuMask>),
+) {
     let mut line = String::new();
     let job = match input.read_line(&mut line) {
         Ok(_) => {
@@ -460,7 +478,7 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             }
             match serde_json::from_str::<Control>(&line) {
                 // The whole process's, whatever its job.
-                Ok(Control::Cpus(cpus)) => cores::confine(cpus),
+                Ok(Control::Cpus(cpus)) => confine(cpus),
                 Ok(control) => {
                     let _ = controls.send(control);
                 }
@@ -587,6 +605,11 @@ struct Sink {
     /// What the dock should say about how the stream encodes, not reported
     /// yet.
     notice: Option<String>,
+    /// How x264 keeps up with the stream on the cores chosen, while it
+    /// encodes.
+    pace: Pace,
+    /// The dock was told x264 can't keep up: once a stream.
+    told_behind: bool,
     started: Instant,
     streaming: bool,
     /// When the stream's next preview is due: from when it starts.
@@ -755,6 +778,8 @@ impl Sink {
             missing: false,
             placed: Placed::Anywhere,
             notice: None,
+            pace: Pace::default(),
+            told_behind: false,
             started: Instant::now(),
             streaming: false,
             preview_due: None,
@@ -813,15 +838,20 @@ impl Sink {
         // Discord's choice of codec changes as viewers come and go.
         let current = video.encoder.as_ref().map(Encoder::codec);
         let codec = (video.sender.codec().or(current)).unwrap_or(stream_connection::SEND_CODEC);
-        // A new size, frame rate or effort (`Control::Quality`), or another
+        // A new size, frame rate or effort (`Control::Quality`), another
         // place to encode (`Control::EncodeOn`, which closed the encoder),
-        // needs another encoder, which starts with a keyframe.
+        // or cores that give x264 another count of threads
+        // (`Control::Cpus`), needs another encoder, which starts with a
+        // keyframe.
         let fits = video.encoder.as_ref().is_some_and(|encoder| {
             encoder.codec() == codec
                 && encoder.size() == (width, height)
                 && encoder.tuned(self.fps, self.effort)
+                && encoder.fits_threads(crate::cpu::threads())
         });
         if !fits {
+            // Its pace starts again with it.
+            self.pace = Pace::default();
             // The old encoder closes before the next opens: NVIDIA's crashed
             // the worker seconds after one closed while another ran.
             self.video.as_mut().expect("checked above").encoder = None;
@@ -869,7 +899,10 @@ impl Sink {
         let pts = self.started.elapsed().as_micros() as u64 * encode::CLOCK / 1_000_000;
         let keyframe = sender.take_keyframe_request();
         let codec = encoder.codec();
-        match encoder.encode_i420(picture, pts, keyframe) {
+        let encoding = Instant::now();
+        let encoded = encoder.encode_i420(picture, pts, keyframe);
+        let took = encoding.elapsed();
+        match encoded {
             Ok(Some(frame)) => sender.send(stream_connection::Frame {
                 data: frame.data.to_vec(),
                 codec,
@@ -898,7 +931,35 @@ impl Sink {
             );
             self.place(Placed::Processor, None);
         }
+        if on_processor {
+            self.encoded_in(took, Instant::now());
+        } else {
+            self.pace = Pace::default();
+        }
         Ok(())
+    }
+
+    /// Counts a frame x264 took `took` to encode, at `now`, and has the
+    /// dock say, once a stream, when it can't keep up on the cores chosen
+    /// ([`Pace`]); nothing while it keeps up.
+    fn encoded_in(&mut self, took: Duration, now: Instant) {
+        if self.told_behind {
+            return;
+        }
+        let Some(share) = self.pace.encoded(took, self.fps, now) else {
+            return;
+        };
+        self.told_behind = true;
+        tracing::info!(
+            share_percent = share,
+            fps = self.fps,
+            threads = crate::cpu::threads(),
+            "x264 can't keep up with the stream on the cores chosen"
+        );
+        self.say(
+            tr!("The processor can't keep up encoding this stream on the cores chosen: they're too few for this quality. Lower the stream's quality or frame rate, or in Settings, Advanced, choose more cores or a graphics card to encode streams.")
+                .to_owned(),
+        );
     }
 
     /// The codecs to offer Discord, most wanted first, and an encoder for
@@ -936,7 +997,6 @@ impl Sink {
             }
             failed.get_or_insert(candidate);
         }
-        // Placed first: x264 sizes its threads by the CPUs it may use.
         self.place(Placed::Processor, failed.as_ref());
         let encoder = self.open_on(
             stream_connection::SEND_CODEC,
@@ -1031,8 +1091,8 @@ impl Sink {
 
     /// Encodes on `placed` from now on, and says in the dock how that isn't
     /// what Settings asked for: the adapter chosen isn't there, or `failed`,
-    /// tried before, didn't open. On the processor, the worker may spread
-    /// over every core ([`cores::encoding_on_processor`]).
+    /// tried before, didn't open. The worker's cores stay those chosen
+    /// wherever it encodes.
     fn place(&mut self, placed: Placed, failed: Option<&Candidate>) {
         let missing = std::mem::take(&mut self.missing);
         let failed = failed.and_then(|candidate| candidate.name.as_deref());
@@ -1063,14 +1123,7 @@ impl Sink {
         if let Some(notice) = notice {
             self.say(notice);
         }
-        let processor = placed == Placed::Processor;
         self.placed = placed;
-        if cores::encoding_on_processor(processor) {
-            self.say(
-                tr!("The processor encodes the stream on all its cores, which a game may feel: a graphics card can encode it instead (Settings, Advanced).")
-                    .to_owned(),
-            );
-        }
     }
 
     /// Has the dock say `notice`, after what it hasn't said yet.
@@ -1957,9 +2010,9 @@ static CPUS: Mutex<Option<CpuMask>> = Mutex::new(None);
 
 /// Runs the workers on `mask`, as [`crate::cpu::choose`] gave it, or on
 /// every CPU Yapfast started with when none: those started from now on, and
-/// those running. A worker whose stream x264 encodes spreads over every CPU,
-/// at a lower priority, while `mask` makes up fewer than four physical
-/// cores, and the dock says so.
+/// those running, at once. A stream x264 encodes stays on them too, its
+/// threads as many as they give ([`crate::cpu::threads`]); where it can't
+/// keep up there, the dock says so.
 pub fn set_cpus(mask: Option<CpuMask>) {
     let changed = {
         let mut chosen = CPUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1973,6 +2026,18 @@ pub fn set_cpus(mask: Option<CpuMask>) {
 /// The CPUs [`set_cpus`] chose, for a worker starting.
 fn chosen_cpus() -> Option<CpuMask> {
     *CPUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The lines a worker starts with: its job, then the CPUs it runs on,
+/// `cpus` as [`set_cpus`] chose them, whatever the job and wherever it
+/// encodes. Every CPU, for none, is said too: a child takes its parent's
+/// cores on Linux, but may not on Windows.
+fn opening(job: &Job, cpus: Option<CpuMask>) -> Result<String> {
+    Ok(format!(
+        "{}\n{}\n",
+        serde_json::to_string(job)?,
+        serde_json::to_string(&Control::Cpus(cpus))?
+    ))
 }
 
 /// The inputs of the workers running, for what Settings changes while they
@@ -2173,15 +2238,11 @@ impl Worker {
             .context("could not start the stream worker")?;
         let mut stdin = child.stdin.take();
         let stdout = child.stdout.take();
-        let line = serde_json::to_string(job)?;
+        let lines = opening(job, chosen_cpus())?;
         if let Some(stdin) = stdin.as_mut() {
-            writeln!(stdin, "{line}").context("could not reach the stream worker")?;
-            // Its cores, which a child inherits on Linux but may not on
-            // Windows.
-            if let Some(cpus) = chosen_cpus() {
-                let line = serde_json::to_string(&Control::Cpus(Some(cpus)))?;
-                writeln!(stdin, "{line}").context("could not reach the stream worker")?;
-            }
+            stdin
+                .write_all(lines.as_bytes())
+                .context("could not reach the stream worker")?;
         }
         let stdin = stdin.map(|stdin| Arc::new(Mutex::new(stdin)));
         if let Some(stdin) = &stdin {
@@ -2404,84 +2465,55 @@ impl Drop for Worker {
     }
 }
 
-/// A worker's processors, in the worker: those Settings chose for Yapfast
-/// ([`Control::Cpus`]), or, while x264 encodes a stream and they make up
-/// fewer than [`X264_CORES`] physical cores, every one Yapfast started with,
-/// at a lower priority: x264 can't keep up beside a game on so few. With a
-/// graphics encoder the worker needs well under one core, and stays on those
-/// chosen. [`crate::cpu`] reads the layout and sets the masks.
-mod cores {
-    use std::sync::{Mutex, MutexGuard};
+/// How long [`Pace`] measures x264 at a time.
+const PACE_WINDOW: Duration = Duration::from_secs(2);
+/// The share of each frame's time, in percent, x264 may take and still keep
+/// up: the rest goes to capturing, converting and scaling the frame, on the
+/// same thread.
+const PACE_SHARE: u32 = 90;
+/// Windows in a row x264 falls behind in before the dock says so: a burst
+/// of motion alone doesn't.
+const PACE_WINDOWS: u32 = 2;
 
-    use crate::cpu::{self, CpuMask};
+/// Whether x264 keeps up with the stream on the cores chosen: the time it
+/// takes to encode the frames of each [`PACE_WINDOW`], against the time
+/// those frames have at the stream's frame rate. It falls behind where it
+/// takes [`PACE_SHARE`] of that or more: the stream then gets fewer frames
+/// than it asked for. Time between frames that come slower than the frame
+/// rate, as a camera's can, counts neither way.
+#[derive(Debug, Default)]
+struct Pace {
+    /// When the window started; none before its first frame.
+    since: Option<Instant>,
+    /// The frames encoded in it, and the time encoding them took.
+    frames: u32,
+    busy: Duration,
+    /// Windows in a row x264 fell behind in.
+    behind: u32,
+}
 
-    /// The physical cores x264 wants of its own: it slices each frame over
-    /// up to four threads.
-    const X264_CORES: usize = 4;
-
-    struct Cores {
-        /// The logical CPUs chosen; none for every one.
-        chosen: Option<CpuMask>,
-        /// The shared stream encodes on the processor.
-        processor: bool,
-        /// Spread over every CPU, at a lower priority.
-        spread: bool,
-    }
-
-    static CORES: Mutex<Cores> = Mutex::new(Cores {
-        chosen: None,
-        processor: false,
-        spread: false,
-    });
-
-    fn cores() -> MutexGuard<'static, Cores> {
-        CORES
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Runs the worker on `mask` from now on, or on every CPU when none.
-    pub(super) fn confine(mask: Option<CpuMask>) {
-        let mut cores = cores();
-        cores.chosen = mask;
-        settle(&mut cores, true);
-    }
-
-    /// Takes whether the shared stream now encodes on the processor; true
-    /// when that just spread the worker over every CPU, for the dock to
-    /// say. Nothing changes while no CPUs were chosen.
-    pub(super) fn encoding_on_processor(processor: bool) -> bool {
-        let mut cores = cores();
-        let before = cores.spread;
-        cores.processor = processor;
-        settle(&mut cores, false);
-        cores.spread && !before
-    }
-
-    /// Sets the mask `cores` asks for now, where that changed. The priority
-    /// lowered once stays lowered: raising it takes a privilege.
-    fn settle(cores: &mut Cores, chosen_changed: bool) {
-        let spread = cores.processor && cores.chosen.is_some_and(|mask| too_few(&mask));
-        if spread == cores.spread && !chosen_changed {
-            return;
+impl Pace {
+    /// Counts a frame x264 took `took` to encode, at `now`, for a stream of
+    /// `fps` frames a second. Once it has fallen behind for
+    /// [`PACE_WINDOWS`] windows in a row, the share of each frame's time it
+    /// took in the last, in percent.
+    fn encoded(&mut self, took: Duration, fps: u32, now: Instant) -> Option<u32> {
+        let since = *self.since.get_or_insert(now);
+        self.frames += 1;
+        self.busy += took;
+        if now.saturating_duration_since(since) < PACE_WINDOW {
+            return None;
         }
-        if spread && !cores.spread {
-            cpu::lower_priority();
-        }
-        cores.spread = spread;
-        cpu::apply(if spread { None } else { cores.chosen.as_ref() });
-    }
-
-    /// Whether `mask` holds too few physical cores for x264 beside a game;
-    /// where the layout can't be read, two logical CPUs to a core.
-    fn too_few(mask: &CpuMask) -> bool {
-        let topology = cpu::detect();
-        let cores = if topology.cpus.is_empty() {
-            mask.len().div_ceil(2)
+        // The time the window's frames have at the stream's frame rate.
+        let had = Duration::from_secs(u64::from(self.frames)) / fps.max(1);
+        let share = (self.busy.as_micros() * 100 / had.as_micros().max(1)) as u32;
+        self.behind = if share >= PACE_SHARE {
+            self.behind + 1
         } else {
-            topology.cores_in(mask)
+            0
         };
-        cores < X264_CORES
+        (self.since, self.frames, self.busy) = (Some(now), 0, Duration::ZERO);
+        (self.behind >= PACE_WINDOWS).then_some(share)
     }
 }
 
@@ -2809,24 +2841,118 @@ mod tests {
         );
     }
 
-    /// With no CPUs chosen, encoding on the processor or not leaves the
-    /// worker's CPUs as they are, and the dock has nothing to say.
+    /// A worker runs on the CPUs chosen in every mode, Auto's, those ticked
+    /// and all of them, whether its stream is to encode on the processor
+    /// or a graphics card: Yapfast starts it with them, and each change
+    /// while it shares reaches it as it was chosen.
     #[test]
-    fn spreads_only_from_cpus_chosen() {
-        assert!(!cores::encoding_on_processor(true));
-        assert!(!cores::encoding_on_processor(false));
-        // The CPUs travel as Linux lists them.
-        let mask = crate::cpu::CpuMask::parse("8-15,24-31");
-        let line = serde_json::to_string(&Control::Cpus(mask)).unwrap();
-        assert_eq!(line, r#"{"cpus":"8-15,24-31"}"#);
-        assert_eq!(
-            serde_json::from_str::<Control>(&line).unwrap(),
-            Control::Cpus(mask)
-        );
-        let all = serde_json::to_string(&Control::Cpus(None)).unwrap();
-        assert_eq!(
-            serde_json::from_str::<Control>(&all).unwrap(),
-            Control::Cpus(None)
+    fn runs_on_the_cpus_chosen_whatever_encodes() {
+        static CONFINED: Mutex<Vec<Option<CpuMask>>> = Mutex::new(Vec::new());
+        fn confined(cpus: Option<CpuMask>) {
+            CONFINED.lock().unwrap().push(cpus);
+        }
+        let auto = CpuMask::parse("8-15,24-31");
+        let ticked = CpuMask::parse("15,31");
+        let modes = [auto, ticked, None];
+        let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
+        let share = |encode_on| Job::Share {
+            audio: StreamAudio::Off,
+            source: Source::TestPattern,
+            frames: frames.path().unwrap(),
+            width: 320,
+            height: 180,
+            fps: 30,
+            effort: Effort::Light,
+            encode_on,
+            max_kbps: None,
+        };
+        for on in [EncodeOn::Software, EncodeOn::Auto] {
+            // What Yapfast starts the worker with: the CPUs as Linux lists
+            // them, or none for all.
+            for cpus in modes {
+                let job = share(on.clone());
+                let opened = opening(&job, cpus).unwrap();
+                let lines: Vec<&str> = opened.lines().collect();
+                assert_eq!(serde_json::from_str::<Job>(lines[0]).unwrap(), job);
+                assert_eq!(
+                    serde_json::from_str::<Control>(lines[1]).unwrap(),
+                    Control::Cpus(cpus)
+                );
+            }
+            let lines = opening(&share(on.clone()), auto).unwrap();
+            assert!(lines.ends_with("\n{\"cpus\":\"8-15,24-31\"}\n"), "{lines}");
+            // What the worker runs on: Auto's as it starts, then those
+            // ticked, then all.
+            let (input, mut feed) = std::io::pipe().unwrap();
+            feed.write_all(lines.as_bytes()).unwrap();
+            let (sender, reports) = std::sync::mpsc::channel();
+            let serving = std::thread::spawn(move || {
+                let mut report = |report: Report| sender.send(report).unwrap();
+                serve_on(Box::new(BufReader::new(input)), &mut report, confined);
+            });
+            assert_eq!(reports.recv().unwrap(), Report::Ready);
+            for cpus in [ticked, None] {
+                let line = serde_json::to_string(&Control::Cpus(cpus)).unwrap();
+                writeln!(feed, "{line}").unwrap();
+            }
+            writeln!(feed, "stop").unwrap();
+            serving.join().unwrap();
+            assert_eq!(std::mem::take(&mut *CONFINED.lock().unwrap()), modes);
+        }
+    }
+
+    /// x264 falls behind where it takes nine tenths or more of each frame's
+    /// time for two windows of 2 s in a row; not while it takes less, nor
+    /// for a burst of one window, nor because frames come slower.
+    #[test]
+    fn x264_falls_behind_only_when_it_takes_the_frames_time() {
+        let start = Instant::now();
+        let mut clock = 0;
+        // `count` frames at 30 fps, one every `every` ms, each taking
+        // `took` ms to encode; the share reported, if any.
+        let mut frames = |pace: &mut Pace, count: u32, every: u64, took: u64| {
+            let mut said = None;
+            for _ in 0..count {
+                let now = start + Duration::from_millis(clock);
+                said = said.or(pace.encoded(Duration::from_millis(took), 30, now));
+                clock += every;
+            }
+            said
+        };
+        let mut pace = Pace::default();
+        assert_eq!(frames(&mut pace, 300, 33, 15), None, "keeps up");
+        assert_eq!(frames(&mut pace, 100, 100, 20), None, "slower frames");
+        let mut pace = Pace::default();
+        assert_eq!(frames(&mut pace, 60, 40, 40), None, "a burst");
+        assert_eq!(frames(&mut pace, 150, 33, 15), None);
+        let mut pace = Pace::default();
+        assert_eq!(frames(&mut pace, 125, 40, 40), Some(120), "behind");
+    }
+
+    /// The dock hears once in a stream that x264 can't keep up on the cores
+    /// chosen, however long it lasts, and nothing while it keeps up.
+    #[test]
+    fn says_once_when_x264_cannot_keep_up() {
+        let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
+        let (_controls, received) = channel::channel();
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
+        let start = Instant::now();
+        let at = |frame: u64| start + Duration::from_millis(frame * 33);
+        let mut said = vec![];
+        // At 30 fps, 15 ms a frame keeps up, for 10 s.
+        for frame in 0..300 {
+            sink.encoded_in(Duration::from_millis(15), at(frame));
+            sink.check(&mut |report| said.push(report)).unwrap();
+        }
+        assert!(said.is_empty(), "{said:?}");
+        // 40 ms a frame doesn't, for 20 s.
+        for frame in 300..900 {
+            sink.encoded_in(Duration::from_millis(40), at(frame));
+            sink.check(&mut |report| said.push(report)).unwrap();
+        }
+        assert!(
+            matches!(&said[..], [Report::Notice(notice)] if notice.contains("cores chosen")),
+            "{said:?}"
         );
     }
 

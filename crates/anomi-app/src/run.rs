@@ -20,7 +20,7 @@ use crate::{gpu, language, pictures};
 pub fn run(
     runtime: BackgroundRuntime,
     root: PathBuf,
-    mut layout: Layout,
+    layout: Layout,
     start: Start,
     plan: gpu::Plan,
 ) -> Result<()> {
@@ -36,7 +36,7 @@ pub fn run(
     language::start(layout.language());
     // Before the window opens, the GPU the plan chose may start: only here,
     // never in `App::new`, so the app's tests draw on the processor.
-    let on_gpu = gpu::begin(&mut layout, plan, start.background);
+    let on_gpu = gpu::begin(plan);
     iced_wgpu::enabled::set_enabled(on_gpu);
     // Discord's cookies and the account as last seen, and beside them the
     // caches: pictures, messages, profiles and the favourite GIFs'

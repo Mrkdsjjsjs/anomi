@@ -1,10 +1,10 @@
-use iced_wgpu::adapter::{Choice as Wanted, Info, Kind};
+use iced_wgpu::adapter::{self, Choice as Wanted, Info, Kind, Path};
 use iced_wgpu::lost::Cause;
 use yapfast_core::adapters::{Adapter, Vendor};
 
 use super::fail::Failure;
-use super::plan::{Why, decide};
-use super::{Choice, Override, Row, adapter_id, drivers, list};
+use super::plan::{Why, decide, died};
+use super::{Choice, Override, Row, adapter_id, drivers, list, screen};
 
 /// This repository's owner's desktop as sysfs lists it: the RTX 3080 drives
 /// the monitor, the Radeon 610M in the processor drives none.
@@ -173,7 +173,7 @@ fn vulkan(name: &str, bus: &str, vendor: u32, device: u32, kind: Kind) -> Info {
         kind,
         driver: String::new(),
         driver_info: String::new(),
-        presents: None,
+        direct: None,
     }
 }
 
@@ -264,4 +264,120 @@ fn a_failure_says_what_failed_and_what_comes_next() {
         last: true,
     };
     assert!(last.text().contains("three failures in a row"));
+}
+
+/// The Radeon as Vulkan names it on this desktop.
+fn radeon() -> Info {
+    vulkan(
+        "AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)",
+        "0000:73:00.0",
+        0x1002,
+        0x13c0,
+        Kind::Integrated,
+    )
+}
+
+#[test]
+fn on_this_desktop_automatic_draws_on_the_radeon_through_shared_memory() {
+    let cards = desktop();
+    let display = screen::decide(None, &cards);
+    assert_eq!(
+        display.as_deref(),
+        Some("0000:01:00.0"),
+        "the monitor's card"
+    );
+    let told = screen::decide(Some("0000:01:00.0"), &cards);
+    assert_eq!(told, display, "as mutter's feedback names it");
+    let target = decide(&Choice::Auto, &cards, every, 0, false).target;
+    assert_eq!(
+        target.map(|target| target.id).as_deref(),
+        Some("pci:0000:73:00.0")
+    );
+    assert_eq!(adapter::path(&radeon(), display.as_deref()), Path::Shared);
+}
+
+#[test]
+fn the_card_the_monitor_is_on_draws_straight_into_the_window() {
+    let nvidia = vulkan(
+        "NVIDIA GeForce RTX 3080",
+        "0000:01:00.0",
+        0x10de,
+        0x2216,
+        Kind::Discrete,
+    );
+    let display = screen::decide(None, &desktop());
+    assert_eq!(adapter::path(&nvidia, display.as_deref()), Path::Direct);
+}
+
+#[test]
+fn a_laptop_with_one_adapter_draws_straight_into_the_window() {
+    let mut intel = card(
+        "pci:0000:00:02.0",
+        "Intel Iris Xe Graphics",
+        Vendor::Intel,
+        0x9a49,
+        "i915",
+        true,
+    );
+    intel.drives_display = true;
+    let info = vulkan(
+        "Intel(R) Xe Graphics",
+        "0000:00:02.0",
+        0x8086,
+        0x9a49,
+        Kind::Integrated,
+    );
+    let display = screen::decide(None, std::slice::from_ref(&intel));
+    assert_eq!(adapter::path(&info, display.as_deref()), Path::Direct);
+    intel.drives_display = false;
+    let shut = screen::decide(None, std::slice::from_ref(&intel));
+    assert_eq!(shut, display, "its lid shut, the only adapter still");
+}
+
+#[test]
+fn not_knowing_the_desktops_adapter_reads_every_adapter_back() {
+    let mut cards = desktop();
+    cards[1].drives_display = true;
+    assert_eq!(screen::decide(None, &cards), None, "monitors on both");
+    assert_eq!(adapter::path(&radeon(), None), Path::Shared);
+    let told = screen::decide(Some("0000:73:00.0"), &cards);
+    assert_eq!(adapter::path(&radeon(), told.as_deref()), Path::Direct);
+    assert_eq!(screen::decide(None, &[]), None);
+}
+
+#[test]
+fn the_compositors_device_reads_as_sysfs_writes_it() {
+    assert!(screen::is_pci_address("0000:01:00.0"));
+    assert!(screen::is_pci_address("0000:73:00.0"));
+    assert!(!screen::is_pci_address("card1"));
+    assert!(!screen::is_pci_address("0000:01:00"));
+    assert!(!screen::is_pci_address("0000-01-00.0"));
+    let device: u64 = (226 << 8) | 1;
+    assert_eq!(screen::device_number(&device.to_ne_bytes()), Some(device));
+    assert_eq!(screen::device_number(&[1, 2, 3]), None);
+}
+
+#[test]
+fn a_start_that_died_on_an_adapter_leaves_the_processor_until_chosen_again() {
+    let radeon = "pci:0000:73:00.0";
+    let mut plan = decide(&Choice::Auto, &desktop(), every, 0, false);
+    died(&mut plan, Some(radeon), false);
+    assert_eq!(plan.target, None);
+    assert!(plan.notice, "the window says why");
+    assert!(matches!(&plan.why, Some(Why::Died(name)) if name == "AMD Radeon 610M"));
+    assert!(
+        plan.why
+            .is_some_and(|why| why.text().contains("chosen again"))
+    );
+    assert_eq!(
+        plan.drivers,
+        ["*radeon*", "*amd*"],
+        "for a choice while it runs"
+    );
+    let mut forced = decide(&Choice::Auto, &desktop(), every, 0, true);
+    died(&mut forced, Some(radeon), true);
+    assert!(forced.target.is_some(), "the command line still tries it");
+    let mut other = decide(&Choice::Auto, &desktop(), every, 0, false);
+    died(&mut other, Some("pci:0000:01:00.0"), false);
+    assert!(other.target.is_some(), "another adapter died");
 }

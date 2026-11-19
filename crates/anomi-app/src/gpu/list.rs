@@ -5,8 +5,9 @@
 //! them as JSON, the system's adapters (`yapfast_core::adapters`) matched
 //! with Vulkan's by PCI address. Until it answers, Settings shows the
 //! system's list, each adapter usable where its Vulkan driver is installed,
-//! and builds the page again when it does. An adapter the window's own
-//! start found unable to present to it is never usable.
+//! and builds the page again when it does. Every adapter Vulkan offers can
+//! draw the window: on one the desktop doesn't composite on, its frames are
+//! read back and shown through shared memory.
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -42,7 +43,7 @@ pub fn print() -> anyhow::Result<()> {
 /// The adapters as known now; the first call in the program asks the
 /// child.
 pub(super) fn rows() -> Arc<[Row]> {
-    let rows = match LISTED.get() {
+    match LISTED.get() {
         Some(rows) => Arc::clone(rows),
         None => {
             if super::live() && !ASKED.swap(true, Ordering::AcqRel) {
@@ -50,8 +51,7 @@ pub(super) fn rows() -> Arc<[Row]> {
             }
             system()
         }
-    };
-    presented(rows)
+    }
 }
 
 /// Starts the child on a thread of its own, which tells `update` once it
@@ -190,26 +190,4 @@ pub(super) fn vendor_id(vendor: Vendor) -> Option<u32> {
         Vendor::Nvidia => Some(0x10de),
         Vendor::Other => None,
     }
-}
-
-/// `rows`, with an adapter the window's start found unable to present to
-/// it not usable.
-fn presented(rows: Arc<[Row]>) -> Arc<[Row]> {
-    let seen = iced_wgpu::adapter::seen();
-    let refused = |row: &Row| {
-        seen.iter().any(|info| {
-            info.presents == Some(false)
-                && (row.id.strip_prefix("pci:"))
-                    .is_some_and(|bus| bus.eq_ignore_ascii_case(&info.bus))
-        })
-    };
-    if !rows.iter().any(|row| row.usable && refused(row)) {
-        return rows;
-    }
-    rows.iter()
-        .map(|row| Row {
-            usable: row.usable && !refused(row),
-            ..row.clone()
-        })
-        .collect()
 }

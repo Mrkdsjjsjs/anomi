@@ -238,6 +238,7 @@ fn unset_own_keys_arent_written() {
         "stream_encoder",
         "interface_renderer",
         "renderer_failures",
+        "renderer_trying",
     ] {
         assert!(file.get(key).is_none(), "{key}");
     }

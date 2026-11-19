@@ -928,14 +928,14 @@ impl renderer::Headless for Renderer {
         // Anomi: Vulkan's adapter the app chose (adapter.rs); stock asked
         // for a "high performance" one, the card the games use.
         let instance = adapter::instance_without_window();
-        let mut candidates = adapter::candidates(&instance, wgpu::Backends::VULKAN, None).await;
+        let mut candidates = adapter::candidates(&instance, wgpu::Backends::VULKAN).await;
 
         let infos: Vec<_> = candidates
             .iter()
             .map(|(_adapter, info)| info.clone())
             .collect();
 
-        let chosen = match adapter::pick(&infos, &adapter::choice(), false) {
+        let chosen = match adapter::pick(&infos, &adapter::choice()) {
             Ok(index) => candidates.swap_remove(index).0,
             Err(reason) => {
                 log::info!("no headless wgpu renderer: {reason}");

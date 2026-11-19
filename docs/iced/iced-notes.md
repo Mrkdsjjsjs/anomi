@@ -64,13 +64,23 @@ shots (`vendor/iced_wgpu/PATCHES.md`):
   window without a restart (it fails and keeps the old one if the new one
   can't start).
 - `iced_wgpu::adapter::choose(Choice::Auto | Choice::Bus("0000:73:00.0"))`:
-  `Auto` takes an integrated adapter that can present to the window, never
-  a discrete one; a bus id takes that adapter. Otherwise wgpu refuses and
-  tiny-skia draws. Vulkan only. `adapter::seen()` is what the last start
-  enumerated, `active()` what draws now (none on the CPU and in the tray,
-  where iced drops the compositor and the device with it), `last_error()`
-  why it didn't start or stopped; `list()` enumerates without a window and
-  loads every Vulkan driver into the process, so run it in a child process.
+  `Auto` takes an integrated adapter, never a discrete one; a bus id takes
+  that adapter. Otherwise wgpu refuses and tiny-skia draws. Vulkan only.
+- `iced_wgpu::adapter::set_display_adapter(Some("0000:01:00.0"))`: the
+  adapter the desktop composites on, read as a compositor starts. Only it
+  gets a Vulkan surface of the window; any other adapter, or every one
+  while this is `None`, draws into a texture whose frame is read back and
+  shown through softbuffer's shared memory, as tiny-skia's frames are
+  (`adapter::path`; `vendor/iced_wgpu/PATCHES.md`, "Drawn on one adapter,
+  shown through another"). `Adapter::is_surface_supported` can't decide
+  it: a compositor that can't import another adapter's buffers says so
+  with a Wayland protocol error, which ends the process.
+- `adapter::seen()` is what the last start enumerated, `active()` what
+  draws now (none on the CPU and in the tray, where iced drops the
+  compositor and the device with it, its `direct` saying how the frames
+  reach the window), `last_error()` why it didn't start or stopped;
+  `list()` enumerates without a window and loads every Vulkan driver into
+  the process, so run it in a child process.
 - `iced_wgpu::lost::set_hook(..)` is called once when the window's device
   is lost or wgpu catches an error (never a panic), on any thread, from
   inside wgpu: pass the news on and switch to the CPU with
@@ -84,7 +94,8 @@ canvas geometry built by one renderer can't be drawn by the other
 (`unreachable!` in iced's fallback): `iced::backend::configure` invalidates
 iced's geometry caches, and a geometry kept anywhere else must be built
 again after a switch. wgpu draws the whole window at each frame iced asks
-for, with no damage, and costs 3-4 times the memory with NVIDIA's driver,
+for, with no damage (and copies the whole frame back where it's read
+back), and costs 3-4 times the memory with NVIDIA's driver,
 whose thread wakes 4 times a second while a device exists (below).
 
 ## The types every view uses

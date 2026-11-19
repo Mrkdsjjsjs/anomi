@@ -374,7 +374,7 @@ impl App {
 
     /// Writes what waits of the layout, and quits.
     pub fn quit(&mut self) -> Task<Message> {
-        self.layout.flush();
+        crate::gpu::quitting(&mut self.layout);
         iced::exit()
     }
 }

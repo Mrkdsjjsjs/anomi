@@ -113,21 +113,28 @@ page changes. Afterwards nothing runs: the system keeps the masks.
   samples to the sound server at normal priority, and run on every core.
 - **A browser** that opening a link starts runs on every core: `xdg-open`
   starts on the mask Yapfast started with.
-- **A stream worker** runs on the cores Settings chose, which it's told
-  rather than left to inherit, as Windows wouldn't pass them on. Encoding
-  on the processor with x264 on fewer than 4 physical cores, it spreads
-  over every core at a lower priority (nice 5, or below normal on
-  Windows), and the dock says so; see [Go Live](discord/go-live.md).
+
+A stream worker doesn't: it runs on the cores Settings chose, in every
+mode and wherever its stream encodes, x264 on the processor too. It's told
+them as it starts, all of them included, rather than left to inherit them,
+as Windows wouldn't pass them on, and again at once as Settings changes
+them while it runs. Where x264 can't keep up on them, the dock says so
+once in the stream; see [Go Live](discord/go-live.md#encoding-on-the-gpu).
 
 ## Thread pools
 
 Video decoders, for streams and files, and the x264 and libvpx encoders
 take one thread for each logical CPU Yapfast runs on, at most 4
-(`cpu::threads`): on Windows the standard library's count doesn't see CPU
-sets. openmls, which DAVE's encryption uses, runs rayon's global pool,
-which would start one idle thread for each logical CPU, 32 here;
-`cpu::init_pools` builds it at start with 2, named `yapfast-mls-0` and
-`-1`.
+(`cpu::threads`), so a stream's x264 slices its frames for the cores
+chosen, not the machine's: 2 threads on one core with its sibling, 4 on
+two cores or more. `cpu::apply` counts the CPUs as it sets them, the
+mask's, or for all of them the system's count then, as on Windows the
+standard library's count doesn't see CPU sets. A stream worker reads that
+count for each frame it encodes, and opens x264 again, with a keyframe,
+when a change of cores gives another. openmls, which DAVE's encryption
+uses, runs rayon's global pool, which would start one idle thread for each
+logical CPU, 32 here; `cpu::init_pools` builds it at start with 2, named
+`yapfast-mls-0` and `-1`.
 
 ## Seeing it
 
@@ -145,7 +152,7 @@ class `RR` (`FF` where the limits allow it) at priority 10 or 9, the rest
 `TS`. The log says `Yapfast runs on these logical CPUs` with the list, and
 for each audio thread how its priority was raised, such as `SCHED_RR 10
 through rtkit`. A stream worker (`pgrep -f -- --stream-worker`) shows its
-own masks the same way.
+own masks the same way: the cores chosen on every thread, x264's too.
 
 ## What it can't promise
 
@@ -156,3 +163,7 @@ own masks the same way.
   that core with it.
 - Efficiency cores on a laptop on battery run the noise suppressor and x264
   slower; that hasn't been measured.
+- A stream x264 encodes gets no more cores than those chosen: on one or
+  two, a large screen at 60 fps can be more than it encodes in time, and
+  the stream then sends fewer frames than it asked for until its quality,
+  its frame rate or the cores change, or a graphics card encodes it.

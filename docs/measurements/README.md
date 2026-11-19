@@ -253,6 +253,73 @@ amdgpu file in `/proc/PID/fdinfo`, and `nvidia-smi`.
 
 </details>
 
+The Radeon column is its frames presented straight into a Vulkan surface.
+Weston on NVIDIA's EGL imported them; mutter on the 3080, the owner's
+desktop, doesn't, and ends the connection (below). Since then that path is
+only the adapter the desktop composites on.
+
+### Drawn on the Radeon, shown through shared memory
+
+The owner's desktop composites on the RTX 3080, so Automatic draws on the
+Radeon 610M into a texture whose frame is read back and shown through
+shared memory (`vendor/iced_wgpu/PATCHES.md`, "Drawn on one adapter, shown
+through another"). Against the processor (tiny-skia) and the 3080 drawing
+straight into its Vulkan surface, in #general of the fake Discord, under
+GNOME Shell 51 on the 3080. Frame: the time `present` takes on the window's
+thread while the channel scrolls, mean of every frame, and in brackets the
+read-back's wait and copy. CPU: one core as 100%, `anomi` and in brackets
+gnome-shell, while the channel scrolls. Wakeups a second: the main thread's
+and all threads', 4 of which are the test control's and a blocking pool
+thread's in every column.
+
+| | Processor | Radeon 610M, shared memory | RTX 3080, direct |
+| --- | --- | --- | --- |
+| Frame, 1400×868 | 1.5 ms | 5.0 ms (4.4 ms) | 0.7 ms |
+| Frame, 3440×1408 | 2.7 ms | 11.3 ms (10.4 ms) | 1.0 ms |
+| CPU scrolling, 1400×868 | 16.0% (+5.5%) | 13.2% (+7.2%) | 11.3% (+3.1%) |
+| CPU scrolling, 3440×1408 | 25.2% (+9.3%) | 23.9% (+19.5%) | 16.3% (+4.2%) |
+| At rest in front: wakeups | 0.2 / 4.9 | 0.2 / 5.0 | 0.1 / 12.5–25.9 |
+| Behind another window: wakeups | 0.0 / 4.6 | 0.0 / 4.6 | 0.0 / 9.1 |
+| In the tray: wakeups | 0.0 / 4.3 | 0.0 / 4.3 | 0.0 / 4.3 |
+| At rest in front: anonymous memory, 1400×868 | 27 MiB | 30 MiB | 51–71 MiB |
+| At rest in front: anonymous memory, 3440×1408 | 35 MiB | 34 MiB | 74 MiB |
+| In the tray: anonymous memory | 23 MiB | 26 MiB | 29 MiB |
+
+- The read-back costs nothing between frames: at rest, behind a window and
+  in the tray the Radeon's numbers are the processor's.
+- Scrolling, it takes `anomi` a little less CPU than the processor, but
+  the window's thread waits on the Radeon 4 to 10 ms a frame, and
+  gnome-shell uploads the whole frame each time (tiny-skia sends only what
+  changed): maximised on the owner's monitor the two together take 43% of
+  a core against the processor's 35%.
+- The read-back frame on screen is the 3080's direct one: of 1.2 million
+  pixels, a handful differ, around the caret and an icon's edge; against
+  the processor's, only edges tiny-skia anti-aliases differently. Red
+  stays red and blue blue.
+- The old build, its Radeon presenting straight to the window, died in
+  71 to 119 ms under headless mutter 51.1 on the 3080 ("error 7: failed
+  to import supplied dmabufs: Could not bind the given EGLImage to a
+  CoglTexture2D"); the new one draws on.
+
+<details>
+<summary>How these were measured</summary>
+
+On 20 November 2026, a `fast` build of `anomi` with each frame's
+`present` timed (left out of the tree), on `gnome-shell --headless
+--wayland --virtual-monitor` (mutter 51.1, "Boot VGA GPU renderD129
+selected as primary": the 3080), with private session and system buses,
+input through mutter's RemoteDesktop and screenshots through
+`org.gnome.Shell.Screenshot`, against `testing/fake_discord.ts --extra 400
+--images 6 --members 30 --member-looks --dms 6 --servers 3`. Each renderer
+a fresh start (`--renderer software`, none, `--adapter 0000:01:00.0`),
+the window maximised; 10 s settling, 20 s at rest, then 10 s of a
+touchpad's scrolling, 60 events a second, up and down in turns of 2 s, by
+`scripts/measure-process`, and gnome-shell's CPU from `/proc/PID/stat`.
+Behind: `weston-terminal` maximised over it. Tray: the window control's
+`destroy`.
+
+</details>
+
 ## Targets
 
 | Scenario | Ceiling |

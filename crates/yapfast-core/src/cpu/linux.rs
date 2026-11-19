@@ -17,9 +17,6 @@ const STARTED_ON: &str = "YAPFAST_STARTED_ON_CPUS";
 /// another as a pass goes.
 const PASSES: usize = 3;
 
-/// The nice value of [`lower_priority`].
-const LOWER: libc::c_int = 5;
-
 pub(super) fn cpus() -> Vec<Cpu> {
     read(Path::new("/sys"))
 }
@@ -272,18 +269,4 @@ pub(super) fn free_child(command: &mut std::process::Command, start: &CpuMask) {
     // SAFETY: `reset` makes one system call and allocates nothing, as the
     // child may between `fork` and `exec`.
     unsafe { command.pre_exec(reset) };
-}
-
-/// Nice 5 for every thread: Linux keeps a nice value for each.
-pub(super) fn lower_priority() {
-    each_thread(|thread| {
-        let Ok(id) = libc::id_t::try_from(thread) else {
-            return;
-        };
-        // SAFETY: plain values; a process may lower its own threads.
-        if unsafe { libc::setpriority(libc::PRIO_PROCESS, id, LOWER) } != 0 {
-            let error = std::io::Error::last_os_error();
-            tracing::debug!(thread, %error, "a thread kept its priority");
-        }
-    });
 }

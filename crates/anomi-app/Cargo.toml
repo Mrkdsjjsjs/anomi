@@ -69,6 +69,11 @@ tracing-subscriber.workspace = true
 # the tree through winit.
 [target.'cfg(target_os = "linux")'.dependencies]
 xkeysym = "0.2.1"
+# The device the Wayland compositor composites on (linux-dmabuf's feedback),
+# which decides how a graphics adapter's frames reach the window
+# (`gpu::screen`). Already in the tree through winit and anomi-desktop.
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client"] }
 
 [dev-dependencies]
 # A picture staged in a test, saved as PNG; the core's own version.

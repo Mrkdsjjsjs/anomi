@@ -18,9 +18,8 @@ use ::windows::Win32::{
             SYSTEM_CPU_SET_INFORMATION, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
         },
         Threading::{
-            BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetCurrentThread, GetCurrentThreadId,
-            GetProcessAffinityMask, SetPriorityClass, SetProcessAffinityMask,
-            SetProcessDefaultCpuSets, SetThreadSelectedCpuSets,
+            GetCurrentProcess, GetCurrentThread, GetCurrentThreadId, GetProcessAffinityMask,
+            SetProcessAffinityMask, SetProcessDefaultCpuSets, SetThreadSelectedCpuSets,
         },
     },
 };
@@ -301,12 +300,3 @@ pub(super) fn current_mask() -> Option<CpuMask> {
 pub(super) fn set_current(_: &CpuMask) {}
 
 pub(super) fn free_child(_: &mut std::process::Command, _: &CpuMask) {}
-
-pub(super) fn lower_priority() {
-    // SAFETY: the current process's pseudo handle.
-    if let Err(error) =
-        unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) }
-    {
-        tracing::debug!(%error, "Windows kept Yapfast's priority");
-    }
-}

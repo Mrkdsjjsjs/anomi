@@ -480,7 +480,8 @@ firmware turned off, the stream encodes as Auto would; when a card's encoder
 doesn't open, as at a size it can't take, the next card is tried. Either way
 the dock says so once, as a stream's error (`Report::Notice`): "The graphics
 card chosen for streams isn't there, so … encodes this one." or "… couldn't
-encode the stream, so … encodes it." The processor chosen says nothing. When
+encode the stream, so … encodes it." The processor chosen says none of
+this, only, as below, when it can't keep up. When
 a graphics card's H264 encoder fails during a stream, x264 takes over from
 that frame with a keyframe, and the dock says that too; AV1 and H265 have no
 other place, and are withdrawn. The worker logs which encoder each stream got
@@ -489,17 +490,27 @@ for, why each GPU encoder failed ("no GPU encoder opened"). The call's Stream
 tab shows the encoder and the codec Discord chose ([Voice](voice.md)).
 
 The worker runs on the processor's cores Settings chose for Yapfast
-([cpu.md](../cpu.md)): `stream_worker::set_cpus` keeps them, a worker
-starting is told with a line after its job, and those running with each
-change (`Control::Cpus`, which any job takes, in the thread reading the
-lines). With a graphics card encoding, the worker needs well under one core
-and stays there. While x264 encodes and those cores make up fewer than four
-physical ones, too few for it beside a game, the worker spreads over every
-CPU Yapfast started with, at a lower priority (nice 5 on Linux, below normal
-on Windows), and the dock says so. Once a card encodes again it goes back to
-the cores chosen, at the priority it has: raising it back takes a privilege.
-x264 slices each frame over as many threads as the worker has CPUs, up to
-four (`cpu::threads`).
+([cpu.md](../cpu.md)), in every mode and wherever the stream encodes:
+`stream_worker::set_cpus` keeps them, a worker starting is told with a line
+after its job, all of them included (`stream_worker::opening`), and those
+running at once with each change (`Control::Cpus`, which any job takes, in
+the thread reading the lines). With a graphics card encoding, the worker
+needs well under one core. x264 stays on those cores too: it slices each
+frame over a thread for each of their logical CPUs, up to four
+(`cpu::threads`), and a change that gives another count opens it again with
+a keyframe, so more cores help at once.
+
+The worker times each frame x264 encodes (`stream_worker::Pace`): over 2 s
+at a time, against the time those frames have at the stream's frame rate.
+Where x264 takes 90% of it or more, two windows in a row, it can't keep up
+on those cores, and the stream sends fewer frames than it asked for; the
+worker logs "x264 can't keep up with the stream on the cores chosen", with
+the share it took, the frame rate and its threads, and the dock says once
+in the stream: "The processor can't keep up encoding this stream on the
+cores chosen: they're too few for this quality. Lower the stream's quality
+or frame rate, or in Settings, Advanced, choose more cores or a graphics
+card to encode streams." While x264 keeps up, and while a graphics card
+encodes, it says nothing.
 
 FFmpeg is built from `vendor/ffmpeg-src` into the one binary, with only its
 hardware encoders and every symbol prefixed so it can't meet the FFmpeg

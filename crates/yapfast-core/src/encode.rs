@@ -195,6 +195,9 @@ pub struct Encoder {
     width: u32,
     height: u32,
     fps: u32,
+    /// The threads x264 or libvpx slices each frame over, as many as
+    /// [`crate::cpu::threads`] gave as it opened; 0 for a graphics encoder.
+    threads: u32,
     /// The frame as I420, for [`Self::encode`]: a full-size luma plane, then
     /// two quarter-size chroma planes. Empty until it's first needed: the
     /// screen and the camera arrive as I420.
@@ -212,8 +215,9 @@ pub struct Frame<'a> {
     pub keyframe: bool,
 }
 
-/// An opened encoder's handle and functions, and its name.
-type Opened = (*mut Raw, Encode, SetBitrate, Free, String);
+/// An opened encoder's handle and functions, its name, and the threads it
+/// slices each frame over: 0 for a graphics encoder.
+type Opened = (*mut Raw, Encode, SetBitrate, Free, String, u32);
 
 impl Encoder {
     /// An encoder for `width` by `height` frames, which must be even. With
@@ -254,7 +258,7 @@ impl Encoder {
             Device::Processor => open_software(codec, width, height, fps, kbps, effort)?,
             gpu => open_hardware(codec, gpu, width, height, fps, kbps)?,
         };
-        let (raw, encode, set_bitrate, free, engine) = opened;
+        let (raw, encode, set_bitrate, free, engine, threads) = opened;
         let pixels = (width * height) as usize;
         Ok(Self {
             raw,
@@ -269,6 +273,7 @@ impl Encoder {
             width,
             height,
             fps,
+            threads,
             planes: Vec::new(),
             // Even a keyframe of noise fits.
             out: vec![0; pixels * 2 + 4096],
@@ -301,6 +306,7 @@ impl Encoder {
             self.set_bitrate,
             self.free,
             self.engine,
+            self.threads,
         ) = opened;
     }
 
@@ -317,6 +323,14 @@ impl Encoder {
     /// only x264 works harder for `Effort::High`.
     pub fn tuned(&self, fps: u32, effort: Effort) -> bool {
         self.fps == fps && (self.effort == effort || self.engine != "x264")
+    }
+
+    /// Whether its threads fit `threads`, as [`crate::cpu::threads`] counts
+    /// them for the CPUs the process runs on now: x264 and libvpx slice
+    /// each frame over as many as they opened with, so other cores need
+    /// another encoder; a graphics encoder fits any.
+    pub fn fits_threads(&self, threads: usize) -> bool {
+        self.threads == 0 || self.threads as usize == threads
     }
 
     /// The bitrate aimed for, in kbit/s.
@@ -481,8 +495,9 @@ fn open_software(
     kbps: u32,
     effort: Effort,
 ) -> Result<Opened> {
-    // From the cores the process may run on: Windows' available_parallelism
-    // doesn't see them.
+    // From the CPUs the process runs on, the cores Settings chose: never
+    // the machine's, and on Windows, whose available_parallelism doesn't
+    // see CPU sets, the mask applied.
     let threads = u32::try_from(crate::cpu::threads())
         .unwrap_or(4)
         .clamp(1, 4);
@@ -494,6 +509,7 @@ fn open_software(
             yapfast_vp8_set_bitrate,
             yapfast_vp8_free,
             "libvpx".into(),
+            threads,
         ),
         Codec::H264 => (
             unsafe { yapfast_h264_new(width, height, fps, kbps, threads, effort as c_uint) },
@@ -501,6 +517,7 @@ fn open_software(
             yapfast_h264_set_bitrate,
             yapfast_h264_free,
             "x264".into(),
+            threads,
         ),
         Codec::H265 | Codec::Av1 => bail!(
             "{} encodes only on a GPU, and this one has no encoder for it",
@@ -577,6 +594,7 @@ fn open_hardware(
         yapfast_hwenc_set_bitrate,
         yapfast_hwenc_free,
         report,
+        0,
     ))
 }
 
@@ -677,6 +695,28 @@ mod tests {
         eprintln!("{error:#}");
         assert!(Encoder::on(Codec::Vp8, 64, 36, 30, 500, Effort::Light, &Device::AnyGpu).is_err());
         assert!(!Device::Processor.is_gpu() && nowhere.is_gpu());
+    }
+
+    /// x264 slices each frame over a thread for each logical CPU the
+    /// process runs on, up to 4 (`cpu::threads`), which in a stream worker
+    /// are the cores Settings chose; once they give another count it needs
+    /// another encoder.
+    #[test]
+    fn x264_takes_its_threads_from_the_cpus_it_runs_on() {
+        let x264 = Encoder::on(
+            Codec::H264,
+            64,
+            36,
+            30,
+            500,
+            Effort::Light,
+            &Device::Processor,
+        )
+        .unwrap();
+        let threads = crate::cpu::threads();
+        assert_eq!(x264.threads as usize, threads);
+        assert!(x264.fits_threads(threads));
+        assert!(!x264.fits_threads(threads % 4 + 1), "other cores");
     }
 
     #[test]

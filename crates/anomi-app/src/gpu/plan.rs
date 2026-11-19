@@ -53,6 +53,9 @@ pub(super) enum Why {
     Gone,
     /// It failed three times in a row: tried again once chosen again.
     Stopped,
+    /// The app closed while a window opened on it, before it had drawn
+    /// there a few seconds: tried again once chosen again.
+    Died(String),
     /// Chosen while running, its driver wasn't let load at the start.
     NextStart(String),
     /// It failed: how, and whether it was the third time in a row.
@@ -78,6 +81,11 @@ impl Why {
             Self::NextStart(name) => tr!(
                 "{} draws from the next start, when its driver is loaded.",
                 name
+            ),
+            Self::Died(name) => format!(
+                "{} {}",
+                tr!("The app closed as {} started to draw the window.", name),
+                tr!("It's tried again only once it's chosen again in Settings.")
             ),
             Self::Failed {
                 failure,
@@ -153,6 +161,22 @@ pub(super) fn decide(
         name: card.name.clone(),
     });
     plan
+}
+
+/// A start that died on the adapter `trying` names (its id, written before
+/// a window opened on it and cleared once it had drawn there a while,
+/// [`super::opening`]) leaves the processor drawing, and the window saying
+/// why, until a GPU is chosen again; the command line (`forced`) still
+/// tries it. One death is enough: a crash at every start can't be told from
+/// a crash once, and a Wayland compositor's protocol error kills the
+/// process before it can count anything.
+pub(super) fn died(plan: &mut Plan, trying: Option<&str>, forced: bool) {
+    let Some(target) = (plan.target).take_if(|target| !forced && trying == Some(&*target.id))
+    else {
+        return;
+    };
+    plan.why = Some(Why::Died(target.name));
+    plan.notice = true;
 }
 
 /// The globs of these adapters' Vulkan drivers, each once.

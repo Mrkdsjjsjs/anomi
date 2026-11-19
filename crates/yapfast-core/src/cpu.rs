@@ -571,7 +571,10 @@ fn kept() -> MutexGuard<'static, Kept> {
     KEPT.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Logical CPUs in the mask applied; 0 for none.
+/// Logical CPUs the process runs on as [`apply`] last left it: the mask's,
+/// or for none, as the system counted them then; 0 before it ran. Counted
+/// once there, so [`threads`] reads a number, as a stream worker does for
+/// each frame x264 encodes.
 static CHOSEN: AtomicUsize = AtomicUsize::new(0);
 
 /// Puts every thread of this process on `mask`, now, or back on every CPU
@@ -585,7 +588,8 @@ pub fn apply(mask: Option<&CpuMask>) {
     let mut kept = kept();
     kept.threads.retain(|&thread| platform::alive(thread));
     platform::apply(target.as_ref(), start, &kept.threads, &kept.names);
-    CHOSEN.store(target.map_or(0, |mask| mask.len()), Ordering::Relaxed);
+    let cpus = target.map_or_else(available, |mask| mask.len());
+    CHOSEN.store(cpus, Ordering::Relaxed);
     match &target {
         Some(mask) => tracing::info!(cpus = %mask, "Yapfast runs on these logical CPUs"),
         None => tracing::info!(cpus = %start, "Yapfast runs on every logical CPU it started with"),
@@ -597,13 +601,25 @@ pub fn apply(mask: Option<&CpuMask>) {
 const MOST_THREADS: usize = 4;
 
 /// Threads for a video decoder or encoder: one for each logical CPU the
-/// process runs on, at most 4. On Windows the standard library's count
-/// doesn't see CPU sets, so this counts the mask applied.
+/// process runs on, at most 4 ([`threads_on`]). On Windows the standard
+/// library's count doesn't see CPU sets, so this counts the mask applied.
 pub fn threads() -> usize {
-    let cpus = match CHOSEN.load(Ordering::Relaxed) {
-        0 => std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+    threads_on(match CHOSEN.load(Ordering::Relaxed) {
+        0 => available(),
         cpus => cpus,
-    };
+    })
+}
+
+/// The logical CPUs the calling thread may use, as the standard library
+/// counts them.
+fn available() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+}
+
+/// Threads for a video decoder or encoder on `cpus` logical CPUs: one for
+/// each, at least 1 and at most 4. A stream's x264 takes these for the
+/// cores chosen, never the machine's.
+pub fn threads_on(cpus: usize) -> usize {
     cpus.clamp(1, MOST_THREADS)
 }
 
@@ -677,14 +693,6 @@ pub fn free_child(command: &mut std::process::Command) {
     }
 }
 
-/// Lowers every thread of this process a step below normal priority, as a
-/// stream's encoder on the processor spread over every core should be
-/// beside a game: nice 5 on Linux, below normal on Windows. An ordinary
-/// user can't raise it back.
-pub fn lower_priority() {
-    platform::lower_priority();
-}
-
 /// Systems where Yapfast reads no layout and sets no mask.
 #[cfg(not(any(target_os = "linux", windows)))]
 mod platform {
@@ -715,6 +723,4 @@ mod platform {
     pub(super) fn set_current(_: &CpuMask) {}
 
     pub(super) fn free_child(_: &mut std::process::Command, _: &CpuMask) {}
-
-    pub(super) fn lower_priority() {}
 }

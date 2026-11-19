@@ -5,26 +5,40 @@
 //! calls), gives way to the processor from the next frame. The window says
 //! why, `renderer_failures` counts it, and the next start tries again;
 //! after [`LIMIT`] in a row the processor draws until a GPU is chosen again,
-//! which forgets them, as does a first frame drawn on one.
+//! which forgets them, as does a window that drew on one for [`SETTLE`].
+//! A death before then, which no code of the app's survives to count, is
+//! known at the next start by the adapter written ahead (`super::opening`),
+//! and that one is enough.
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use iced::Task;
 use iced::backend::Backend;
-use iced_wgpu::adapter::Kind;
+use iced_wgpu::adapter::{Info, Kind};
 use iced_wgpu::lost::{Cause, Lost};
 use yapfast_lang::tr;
 
 use super::plan::Why;
 use super::switch::remake;
-use super::{Choice, FAILED, FIRST_FRAME, live, state};
+use super::{Choice, Due, FAILED, FIRST_FRAME, live, state};
 use crate::app::App;
+use crate::clocks::later;
 use crate::message::Message;
 use crate::project::Reach;
 
 /// Failures in a row after which the processor draws until a GPU is chosen
 /// again.
 pub(super) const LIMIT: u8 = 3;
+
+/// How long a window draws on the GPU from its first frame, or on the
+/// processor after giving the GPU up, before the try is settled: the
+/// adapter written ahead is cleared, and the failures forgotten if the GPU
+/// still draws. Not at the first frame: a compositor that can't import the
+/// frames ends a Wayland connection after it (the owner's, 150 ms after
+/// the window opened), and an app that cleared it then would try again at
+/// every start.
+pub(super) const SETTLE: Duration = Duration::from_secs(5);
 
 /// How the GPU failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,26 +92,67 @@ pub(super) fn opened(app: &mut App) -> Task<Message> {
     let Some(info) = iced_wgpu::adapter::active() else {
         return refused(app);
     };
-    tracing::info!(adapter = %info.name, bus = %info.bus, driver = %info.driver, "the window draws on the graphics adapter");
-    // Failures counted wait for a frame drawn on it to be forgotten.
-    let unsettled = state().ahead.is_some() || app.layout.renderer_failures != 0;
+    said(&info);
+    // A try written ahead, or failures counted, wait for a frame drawn on it.
+    let unsettled = state().trying || app.layout.renderer_failures != 0;
     FIRST_FRAME.store(unsettled, Ordering::Relaxed);
     Task::none()
 }
 
-/// A frame was drawn on the GPU since the window opened: unless it failed
-/// meanwhile, its failures in a row are over.
-pub(super) fn drew(app: &mut App) -> Task<Message> {
+/// Says in the log what draws the window and how its frames reach it.
+fn said(info: &Info) {
+    let how = if info.direct == Some(true) {
+        "presented to the window directly"
+    } else {
+        "shown through shared memory"
+    };
+    tracing::info!(bus = %info.bus, driver = %info.driver, "the window draws on {}, {how}", info.name);
+}
+
+/// A frame was drawn on the GPU since the window opened: unless it fails,
+/// or the app dies, within [`SETTLE`], the try is settled then.
+pub(super) fn drew() -> Task<Message> {
     let first = FIRST_FRAME.swap(false, Ordering::AcqRel);
     let failed = FAILED.load(Ordering::Acquire);
     if !first || failed || iced_wgpu::adapter::active().is_none() {
         return Task::none();
     }
-    state().ahead = None;
-    if app.layout.renderer_failures != 0 {
-        app.layout.edit(|saved| saved.renderer_failures = 0);
+    tracing::debug!(settle = ?SETTLE, "a first frame drawn on the graphics adapter");
+    settle()
+}
+
+/// Settles the try in progress after [`SETTLE`]: one timer, which fires
+/// once.
+fn settle() -> Task<Message> {
+    let epoch = state().epoch;
+    later(SETTLE, Message::Gpu(Due::Settled(epoch)))
+}
+
+/// [`SETTLE`] after a first frame on the GPU, or after giving it up: the
+/// app didn't die on the adapter tried, which is cleared; if the GPU still
+/// draws, its failures in a row are over too. A settling of an earlier try
+/// (`epoch`) is ignored.
+pub(super) fn settled(app: &mut App, epoch: u32) -> Task<Message> {
+    let drawing = !FAILED.load(Ordering::Acquire) && iced_wgpu::adapter::active().is_some();
+    let mut state = state();
+    if state.epoch != epoch {
+        return Task::none();
     }
-    tracing::debug!("a first frame drawn on the graphics adapter; its failures are forgotten");
+    state.trying = false;
+    state.settled |= drawing;
+    drop(state);
+    let failures = if drawing {
+        0
+    } else {
+        app.layout.renderer_failures
+    };
+    if app.layout.renderer_trying.is_some() || app.layout.renderer_failures != failures {
+        app.layout.edit(|saved| {
+            saved.renderer_trying = None;
+            saved.renderer_failures = failures;
+        });
+    }
+    tracing::debug!(drawing, "the graphics adapter's try is settled");
     Task::none()
 }
 
@@ -124,8 +179,12 @@ pub(super) fn switched(app: &mut App, error: Option<String>) -> Task<Message> {
     let Some(info) = iced_wgpu::adapter::active() else {
         return refused(app);
     };
-    tracing::info!(adapter = %info.name, bus = %info.bus, "the window draws on the graphics adapter");
-    state().why = None;
+    said(&info);
+    let mut state = state();
+    state.why = None;
+    // A switch writes its adapter ahead: a frame drawn on it settles it.
+    FIRST_FRAME.store(state.trying, Ordering::Relaxed);
+    drop(state);
     app.show(Reach::SETTINGS);
     Task::none()
 }
@@ -145,30 +204,23 @@ fn refused(app: &mut App) -> Task<Message> {
     iced_wgpu::enabled::set_enabled(false);
     state.target = None;
     state.why = Some(Why::NoIntegrated);
-    let ahead = state.ahead.take();
+    state.trying = false;
     drop(state);
-    if let Some(before) = ahead {
-        app.layout.edit(|saved| saved.renderer_failures = before);
+    // Nothing was drawn on: no adapter stays written ahead.
+    if app.layout.renderer_trying.is_some() {
+        app.layout.edit(|saved| saved.renderer_trying = None);
     }
     app.show(Reach::SETTINGS);
     Task::none()
 }
 
 /// The GPU failed: the processor draws from the next frame, the failure is
-/// counted (unless the start counted it ahead) and the window says why.
+/// counted and the window says why.
 fn failed(app: &mut App, failure: Failure) -> Task<Message> {
     iced_wgpu::enabled::set_enabled(false);
     FIRST_FRAME.store(false, Ordering::Relaxed);
-    let ahead = state().ahead.take();
-    let before = app.layout.renderer_failures;
-    let failures = if ahead.is_some() {
-        before
-    } else {
-        before.saturating_add(1)
-    };
-    if failures != before {
-        app.layout.edit(|saved| saved.renderer_failures = failures);
-    }
+    let failures = app.layout.renderer_failures.saturating_add(1);
+    app.layout.edit(|saved| saved.renderer_failures = failures);
     let last = failures >= LIMIT;
     let mut state = state();
     // Always set while a GPU may draw; "GPU" reads in either language.
@@ -183,9 +235,14 @@ fn failed(app: &mut App, failure: Failure) -> Task<Message> {
     tracing::warn!(?failure, failures, "the processor draws the window now");
     app.vm.sign_in.graphics_notice = Some(notice(&what, Some(next(last))));
     app.show(Reach::SETTINGS);
+    // The adapter written ahead stays until the processor has drawn a
+    // while: a death meanwhile still counts (`plan::died`).
+    let settle = settle();
     match failure {
         // At a start, iced's fallback already took the processor.
-        Failure::Lost(_) if app.window.is_some() => remake(Backend::Software),
-        Failure::Start | Failure::Lost(_) => Task::none(),
+        Failure::Lost(_) if app.window.is_some() => {
+            Task::batch([remake(Backend::Software), settle])
+        }
+        Failure::Start | Failure::Lost(_) => settle,
     }
 }

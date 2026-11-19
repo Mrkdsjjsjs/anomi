@@ -194,6 +194,12 @@ pub struct Saved {
     /// three.
     #[serde(skip_serializing_if = "is_zero")]
     pub renderer_failures: u8,
+    /// The graphics adapter a window opened on, by its key: written before
+    /// the window opens, cleared once it has drawn there a few seconds
+    /// (`crate::gpu::opening`). Found at a start, the run before died on
+    /// it, and the processor draws until a GPU is chosen again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renderer_trying: Option<String>,
     /// Screen sharing encodes on the GPU where it can; on unless turned off.
     /// Anomi chooses with `stream_encoder` and keeps this beside it for the
     /// Slint app: off for the processor, on for anything else.

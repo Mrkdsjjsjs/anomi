@@ -76,6 +76,9 @@ pub fn open(app: &mut App, token: Option<String>) -> Task<Message> {
         return Task::batch(tasks);
     }
     anomi_desktop::instance::give_next_window(token);
+    // On disk before the window and its renderer are made: the adapter it
+    // may draw on, so a death meanwhile is known at the next start.
+    crate::gpu::opening(&mut app.layout);
     let settings = super::placement::settings(app);
     let (id, opened) = window::open(settings);
     app.window = Some(id);

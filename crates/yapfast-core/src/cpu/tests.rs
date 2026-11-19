@@ -289,6 +289,22 @@ fn masks_read_and_write_as_linux_lists_cpus() {
     assert_eq!(both.to_string(), "4-7,16-19");
 }
 
+/// A stream's x264, and the decoders, take a thread for each logical CPU
+/// of the mask chosen, at most 4, never one for each of the machine's.
+#[test]
+fn threads_follow_the_cpus_chosen() {
+    let topology = ryzen_9950x3d();
+    let threads = |mode: CpuMode| choose(&topology, &mode).map(|mask| threads_on(mask.len()));
+    // A core and its sibling, then three cores.
+    assert_eq!(threads(CpuMode::Cores(vec![15])), Some(2));
+    assert_eq!(threads(CpuMode::Cores(vec![13, 14, 15])), Some(4));
+    assert_eq!(threads(CpuMode::Auto), Some(4), "at most 4");
+    // All: every CPU the process may use, as the system counts them.
+    assert_eq!(threads(CpuMode::All), None);
+    assert_eq!(threads_on(32), 4);
+    assert_eq!(threads_on(0), 1, "never none");
+}
+
 #[test]
 fn numbering_follows_the_first_logical_cpus() {
     // As Linux names them: each core and domain by its first CPU.

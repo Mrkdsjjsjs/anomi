@@ -54,6 +54,12 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 cryoglyph = { git = "https://github.com/iced-rs/cryoglyph.git", rev = "cf38ed5ea0cfe95270b31ced2910560a7fcc5003" }
 log = "0.4"
 rustc-hash = "2.0"
+# Anomi: the window's shared memory, for frames drawn on an adapter the
+# desktop doesn't composite on and read back (src/window/shared.rs). The
+# version vendor/iced_tiny_skia takes, so the two share one build; its
+# window systems are tiny-skia's features, which iced's `x11` and `wayland`
+# turn on in the app's build (and the dev-dependency below in this crate's).
+softbuffer = { version = "0.4", default-features = false }
 thiserror = "2"
 # iced's `std` and `wgsl`, and Vulkan, the one backend (see the features).
 wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "vulkan"] }

@@ -9,6 +9,8 @@ use crate::graphics::compositor;
 use crate::graphics::{self, Antialiasing, Shell, Viewport};
 use crate::{Engine, Renderer};
 
+use super::shared;
+
 /// A window graphics backend for iced powered by `wgpu`.
 pub struct Compositor {
     instance: wgpu::Instance,
@@ -20,6 +22,19 @@ pub struct Compositor {
     // Anomi: the number `adapter::active` knows this compositor by while it
     // draws (adapter.rs).
     generation: u64,
+    // Anomi: how its frames reach the windows (`PATCHES.md`, "Drawn on one
+    // adapter, shown through another").
+    shows: Shows,
+}
+
+/// Anomi: how a compositor's frames reach its windows (`adapter::path`).
+enum Shows {
+    /// Into a Vulkan surface of each window: the adapter is the one the
+    /// desktop composites on.
+    Direct,
+    /// Drawn offscreen, read back and shown through each window's shared
+    /// memory (shared.rs): no Vulkan surface is ever made.
+    Shared(shared::Context),
 }
 
 /// A window's surface.
@@ -30,6 +45,9 @@ pub struct Compositor {
 #[derive(Debug)]
 pub struct Surface {
     raw: Option<wgpu::Surface<'static>>,
+    /// On an adapter the desktop doesn't composite on, the window's shared
+    /// memory in its place (shared.rs); `raw` is then empty.
+    shared: Option<shared::Window>,
     /// Its last configuration succeeded: a surface never configured must not
     /// be asked for a frame, as wgpu panics on the error then.
     configured: bool,
@@ -52,10 +70,18 @@ impl Surface {
     fn new(raw: Option<wgpu::Surface<'static>>) -> Self {
         Self {
             raw,
+            shared: None,
             configured: false,
             fresh: true,
             suboptimal: false,
             missed: 0,
+        }
+    }
+
+    fn shared(window: shared::Window) -> Self {
+        Self {
+            shared: Some(window),
+            ..Self::new(None)
         }
     }
 
@@ -86,6 +112,10 @@ pub enum Error {
     /// it (its pipelines, its shaders).
     #[error("the renderer could not be set up on the device: {0}")]
     SetupFailed(String),
+    /// Anomi: the window system's shared memory couldn't be set up for an
+    /// adapter whose frames are read back (shared.rs).
+    #[error("the window's shared memory could not be set up: {0}")]
+    Shared(String),
 }
 
 impl From<Error> for backend::Error {
@@ -103,7 +133,7 @@ impl Compositor {
     /// Returns `None` if no compatible graphics adapter could be found.
     pub async fn request(
         settings: Settings,
-        display: impl compositor::Display,
+        display: impl compositor::Display + Clone,
         compatible_window: impl compositor::Window,
         shell: Shell,
     ) -> Result<Self, Error> {
@@ -122,10 +152,14 @@ impl Compositor {
 
     async fn start(
         settings: Settings,
-        display: impl compositor::Display,
+        display: impl compositor::Display + Clone,
         compatible_window: impl compositor::Window,
         shell: Shell,
     ) -> Result<Self, Error> {
+        // Anomi: the window system's connection again, for the shared memory
+        // of an adapter whose frames are read back (shared.rs).
+        let shared_display: Box<dyn compositor::Display> = Box::new(display.clone());
+
         let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor {
             backends: settings.backends,
             flags: if cfg!(feature = "strict-assertions") {
@@ -139,76 +173,63 @@ impl Compositor {
 
         log::info!("{settings:#?}");
 
-        // Anomi: an error at once; stock went on without a surface and
-        // failed later with `IncompatibleSurface`.
-        let compatible_surface =
-            instance.create_surface(wgpu::SurfaceTarget::Window(Box::new(compatible_window)))?;
-
-        // Anomi: the adapter the app chose among Vulkan's, if it can present
-        // to the window (adapter.rs); stock took wgpu's pick by power
-        // preference, the discrete card whenever it was the only one.
-        let mut candidates =
-            adapter::candidates(&instance, settings.backends, Some(&compatible_surface)).await;
+        // Anomi: the adapter the app chose among Vulkan's (adapter.rs),
+        // enumerated without asking any of them about the window; stock took
+        // wgpu's pick by power preference, the discrete card whenever it was
+        // the only one, and made a surface first to ask each about it.
+        let mut candidates = adapter::candidates(&instance, settings.backends).await;
+        let display_adapter = adapter::display_adapter();
 
         let seen: Vec<adapter::Info> = candidates
             .iter()
-            .map(|(_adapter, info)| info.clone())
+            .map(|(_adapter, info)| adapter::Info {
+                direct: Some(
+                    adapter::path(info, display_adapter.as_deref()) == adapter::Path::Direct,
+                ),
+                ..info.clone()
+            })
             .collect();
 
         log::info!("Available adapters: {seen:#?}");
 
-        let picked = adapter::pick(&seen, &adapter::choice(), true);
+        let picked = adapter::pick(&seen, &adapter::choice());
 
         adapter::record_seen(seen);
 
-        let (chosen, info) = candidates.swap_remove(picked.map_err(Error::NoAdapterFound)?);
+        let (chosen, mut info) = candidates.swap_remove(picked.map_err(Error::NoAdapterFound)?);
 
         log::info!("Selected: {:#?}", chosen.get_info());
 
-        let (format, alpha_mode) = {
-            let capabilities = compatible_surface.get_capabilities(&chosen);
-
-            let formats = capabilities.formats.iter().copied();
-
-            log::info!("Available formats: {formats:#?}");
-
-            const BLACKLIST: &[wgpu::TextureFormat] = &[
-                wgpu::TextureFormat::Rgb10a2Unorm,
-                wgpu::TextureFormat::Rgb10a2Uint,
-                wgpu::TextureFormat::Rgba16Float,
-            ];
-
-            let mut formats = formats.filter(|format| {
-                format.required_features() == wgpu::Features::empty() && !BLACKLIST.contains(format)
-            });
-
-            let format = if color::GAMMA_CORRECTION {
-                formats.find(wgpu::TextureFormat::is_srgb)
-            } else {
-                formats.find(|format| !wgpu::TextureFormat::is_srgb(format))
-            };
-
-            let format = format.or_else(|| {
-                log::warn!("No format found!");
-
-                capabilities.formats.first().copied()
-            });
-
-            let alpha_modes = capabilities.alpha_modes;
-
-            log::info!("Available alpha modes: {alpha_modes:#?}");
-
-            let preferred_alpha = if alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-            {
-                wgpu::CompositeAlphaMode::PreMultiplied
-            } else {
-                wgpu::CompositeAlphaMode::Auto
-            };
-
-            format
-                .zip(Some(preferred_alpha))
-                .ok_or(Error::IncompatibleSurface)?
+        // Anomi: a Vulkan surface of the window only on the adapter the
+        // desktop composites on, which imports its buffers as its own; any
+        // other adapter's frames are read back and shown through shared
+        // memory, and it never gets a surface (`PATCHES.md`, "Drawn on one
+        // adapter, shown through another").
+        let direct = match adapter::path(&info, display_adapter.as_deref()) {
+            adapter::Path::Direct => surface_format(&instance, &chosen, compatible_window)?,
+            adapter::Path::Shared => None,
         };
+
+        let (format, alpha_mode, shows) = match direct {
+            Some((format, alpha_mode)) => (format, alpha_mode, Shows::Direct),
+            None => (
+                shared::FORMAT,
+                wgpu::CompositeAlphaMode::Opaque,
+                Shows::Shared(shared::Context::new(shared_display).map_err(Error::Shared)?),
+            ),
+        };
+
+        info.direct = Some(matches!(shows, Shows::Direct));
+
+        log::info!(
+            "draws on {}, {}",
+            info.name,
+            if matches!(shows, Shows::Direct) {
+                "presented to the window directly"
+            } else {
+                "shown through shared memory"
+            }
+        );
 
         log::info!("Selected format: {format:?} with alpha mode: {alpha_mode:?}");
 
@@ -287,6 +308,7 @@ impl Compositor {
                         engine,
                         settings,
                         generation,
+                        shows,
                     });
                 }
                 Err(error) => {
@@ -310,6 +332,69 @@ impl Drop for Compositor {
     }
 }
 
+/// Anomi: the window's Vulkan surface on `adapter`, the one the desktop
+/// composites on: the format and alpha mode to configure it with, or `None`
+/// when Vulkan can't present to the window there, whose frames are then
+/// read back too. Only this adapter is ever asked.
+fn surface_format(
+    instance: &wgpu::Instance,
+    adapter: &wgpu::Adapter,
+    window: impl compositor::Window,
+) -> Result<Option<(wgpu::TextureFormat, wgpu::CompositeAlphaMode)>, Error> {
+    // An error at once; stock went on without a surface and failed later
+    // with `IncompatibleSurface`.
+    let surface = instance.create_surface(wgpu::SurfaceTarget::Window(Box::new(window)))?;
+
+    if !adapter.is_surface_supported(&surface) {
+        log::info!("Vulkan can't present to the window on the desktop's own adapter");
+
+        return Ok(None);
+    }
+
+    let capabilities = surface.get_capabilities(adapter);
+
+    let formats = capabilities.formats.iter().copied();
+
+    log::info!("Available formats: {formats:#?}");
+
+    const BLACKLIST: &[wgpu::TextureFormat] = &[
+        wgpu::TextureFormat::Rgb10a2Unorm,
+        wgpu::TextureFormat::Rgb10a2Uint,
+        wgpu::TextureFormat::Rgba16Float,
+    ];
+
+    let mut formats = formats.filter(|format| {
+        format.required_features() == wgpu::Features::empty() && !BLACKLIST.contains(format)
+    });
+
+    let format = if color::GAMMA_CORRECTION {
+        formats.find(wgpu::TextureFormat::is_srgb)
+    } else {
+        formats.find(|format| !wgpu::TextureFormat::is_srgb(format))
+    };
+
+    let format = format.or_else(|| {
+        log::warn!("No format found!");
+
+        capabilities.formats.first().copied()
+    });
+
+    let alpha_modes = capabilities.alpha_modes;
+
+    log::info!("Available alpha modes: {alpha_modes:#?}");
+
+    let preferred_alpha = if alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+        wgpu::CompositeAlphaMode::PreMultiplied
+    } else {
+        wgpu::CompositeAlphaMode::Auto
+    };
+
+    format
+        .zip(Some(preferred_alpha))
+        .map(Some)
+        .ok_or(Error::IncompatibleSurface)
+}
+
 /// Anomi: runs `f`, catching what wgpu raises on `device` meanwhile instead
 /// of handing it to the device's error handler; the first error caught, if
 /// any.
@@ -331,7 +416,7 @@ fn caught<T>(device: &wgpu::Device, f: impl FnOnce() -> T) -> (T, Option<wgpu::E
 /// Creates a [`Compositor`] with the given [`Settings`] and window.
 pub async fn new(
     settings: Settings,
-    display: impl compositor::Display,
+    display: impl compositor::Display + Clone,
     compatible_window: impl compositor::Window,
     shell: Shell,
 ) -> Result<Compositor, Error> {
@@ -389,6 +474,12 @@ fn give(
     // forever.
     if renderer.engine.is_lost() {
         return Err(compositor::SurfaceError::Occluded);
+    }
+
+    // Anomi: an adapter the desktop doesn't composite on: the frame is read
+    // back into the window's shared memory (shared.rs).
+    if let Some(shared) = &mut surface.shared {
+        return shared.present(renderer, viewport, background_color, on_pre_present);
     }
 
     // Anomi: a surface that couldn't be made or configured is made again by
@@ -472,7 +563,7 @@ impl graphics::Compositor for Compositor {
 
     async fn new(
         settings: backend::Settings,
-        display: impl compositor::Display,
+        display: impl compositor::Display + Clone,
         compatible_window: impl compositor::Window,
         shell: Shell,
     ) -> Result<Self, backend::Error> {
@@ -508,6 +599,21 @@ impl graphics::Compositor for Compositor {
     }
 
     fn create_surface(&mut self, window: impl compositor::Window) -> Self::Surface {
+        // Anomi: on an adapter the desktop doesn't composite on, the
+        // window's shared memory, and no Vulkan surface (shared.rs).
+        if let Shows::Shared(context) = &self.shows {
+            return match shared::Window::new(context, Box::new(window)) {
+                Ok(window) => Surface::shared(window),
+                Err(error) => {
+                    self.engine.watch.surface(format!(
+                        "the window's shared memory could not be set up: {error}"
+                    ));
+
+                    Surface::new(None)
+                }
+            };
+        }
+
         // Anomi: a surface that can't be made is reported to the app
         // (lost.rs) and kept empty; stock panicked.
         match self
@@ -526,6 +632,17 @@ impl graphics::Compositor for Compositor {
     }
 
     fn configure_surface(&mut self, surface: &mut Self::Surface, width: u32, height: u32) {
+        // Anomi: shared memory is sized to the window (shared.rs).
+        if let Some(shared) = &mut surface.shared {
+            if let Err(error) = shared.configure(width, height) {
+                self.engine.watch.surface(format!(
+                    "the window's shared memory could not be sized: {error}"
+                ));
+            }
+
+            return;
+        }
+
         let Some(raw) = &surface.raw else {
             return;
         };

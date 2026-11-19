@@ -10655,6 +10655,12 @@ msgstr "Теперь окно рисует процессор."
 msgid "{} draws from the next start, when its driver is loaded."
 msgstr "{} будет рисовать после перезапуска, когда загрузится драйвер."
 
+msgid "The app closed as {} started to draw the window."
+msgstr "Приложение закрылось, как только окно начало рисоваться на {}."
+
+msgid "It's tried again only once it's chosen again in Settings."
+msgstr "Видеокарту попробуют снова, только если выбрать её заново в настройках."
+
 msgid "{} graphics"
 msgstr "Графика {}"
 
@@ -10715,8 +10721,8 @@ msgstr "Не удалось кодировать трансляцию на {}, �
 msgid "{} couldn't encode the stream, so the processor encodes it."
 msgstr "Не удалось кодировать трансляцию на {}, поэтому её кодирует процессор."
 
-msgid "The processor encodes the stream on all its cores, which a game may feel: a graphics card can encode it instead (Settings, Advanced)."
-msgstr "Процессор кодирует трансляцию на всех своих ядрах, и игра может это почувствовать: вместо него трансляцию может кодировать видеокарта (Настройки, Дополнительно)."
+msgid "The processor can't keep up encoding this stream on the cores chosen: they're too few for this quality. Lower the stream's quality or frame rate, or in Settings, Advanced, choose more cores or a graphics card to encode streams."
+msgstr "Процессор не успевает кодировать трансляцию на выбранных ядрах: для такого качества их слишком мало. Снизьте качество или частоту кадров трансляции либо в настройках, в разделе «Дополнительно», выберите больше ядер или кодирование на видеокарте."
 
 msgid "Could not read the processor's cores."
 msgstr "Не удалось узнать ядра процессора."

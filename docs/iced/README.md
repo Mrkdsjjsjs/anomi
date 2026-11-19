@@ -96,9 +96,10 @@ with the game; where none can, on the processor; on a discrete card only
 when it's chosen by hand. Settings' Advanced offers Automatic (the
 default), the processor and each adapter; `layout.json` keeps the choice
 as `interface_renderer` (`"auto"`, `"processor"` or an adapter's key from
-`yapfast_core::adapters`, `"pci:0000:73:00.0"`) and the GPU's failures in
-a row as `renderer_failures`; the Slint app's `gpu_rendering` stays as it
-came and decides nothing here. `--renderer auto|gpu|software` and
+`yapfast_core::adapters`, `"pci:0000:73:00.0"`), the GPU's failures in a
+row as `renderer_failures` and the adapter a window is opening on as
+`renderer_trying`; the Slint app's `gpu_rendering` stays as it came and
+decides nothing here. `--renderer auto|gpu|software` and
 `--adapter 0000:73:00.0` choose for one run.
 
 - **At the start**, before any thread, `cli::main` reads the choice, the
@@ -115,6 +116,27 @@ came and decides nothing here. `--renderer auto|gpu|software` and
   so the app's tests draw on the processor. iced's backend is `Best` (wgpu
   if enabled, else tiny-skia), presenting at the display's pace (FIFO),
   paths antialiased (MSAA x4).
+- **How the frames reach the window** depends on the adapter the desktop
+  composites on, which `gpu::screen` finds before the window opens and
+  tells wgpu (`iced_wgpu::adapter::set_display_adapter`): on Wayland the
+  compositor's own word, the main device of linux-dmabuf's default
+  feedback, over a connection of its own (one round trip); without it
+  (X11, an older compositor) the computer's only adapter, else the only
+  one a monitor is plugged into; with none or several, not known. Only
+  that adapter draws into a Vulkan surface of the window. Any other, or
+  every one when it isn't known, draws into a texture of its own whose
+  frame is read back and shown through shared memory, as the processor's
+  frames are (`vendor/iced_wgpu/PATCHES.md`, "Drawn on one adapter, shown
+  through another"): a compositor that can't import another adapter's
+  buffers ends a Wayland connection with a protocol error, which nothing
+  survives, and Vulkan can't tell beforehand. On the owner's desktop
+  (mutter and the monitor on the RTX 3080) Automatic draws on the Radeon
+  610M that way, a copy a frame: 5 ms of the window's thread a frame at
+  1400 by 868 and 11 ms maximised at 3440 by 1408, measured
+  (`docs/measurements/README.md`, "Drawn on the Radeon, shown through
+  shared memory"). The log says which: "the window draws
+  on …, shown through shared memory" or "…, presented to the window
+  directly".
 - **The adapters Settings lists** come from `anomi --list-adapters`, a
   child process started once a run, the first time the page asks:
   enumerating Vulkan's adapters loads every installed driver, which would
@@ -137,16 +159,26 @@ came and decides nothing here. `--renderer auto|gpu|software` and
   channel the app's subscription waits on. The banner over the sign-in
   card and the conversation says why, and `renderer_failures` counts it.
   The next start tries again; after three in a row the processor draws
-  until a GPU is chosen again. A start that tries the GPU writes its
-  failure ahead, so a crash while it starts counts too, and the first frame
-  drawn on it sets the count back to 0. Automatic finding no integrated
-  graphics in Vulkan is the rule, not a failure.
+  until a GPU is chosen again. A death the app can't count, a crash, an
+  abort or a Wayland protocol error, is caught by `renderer_trying`: each
+  window about to open on a GPU (and each switch to one) writes its
+  adapter there first and waits until it's on disk, and it's cleared 5
+  seconds after the first frame drawn there (or after the GPU was given
+  up), or by a quit the person asks for. A start that finds it set draws
+  on the processor, and Settings and the window say why, until a GPU is
+  chosen again: one death is enough. The failures in a row go back to 0
+  then too, not at the first frame: a compositor's refusal comes after
+  it, and the app's drop, which runs as a dead Wayland connection ends the
+  event loop, would write a reset made then. Automatic finding no
+  integrated graphics in Vulkan is the rule, not a failure.
 - **Idle.** wgpu draws only when iced asks, as tiny-skia does, but the
   whole window each time. A surface with no image for a second counts as
   occluded and isn't redrawn in a loop (`vendor/iced_wgpu/PATCHES.md`).
   `gpu` asks for no frame: its subscription waits on that channel and on
-  windows opening, and follows frames only from a window opening on the
-  GPU with failures counted until its first frame. In the tray iced drops
+  windows opening, follows frames only from a window opening on the GPU
+  with a try or failures to settle until its first frame, and then waits
+  once, 5 seconds. A frame read back costs nothing between frames: no
+  thread, no timer. In the tray iced drops
   the compositor and with it the device, the swapchain, the atlases and
   the Vulkan instance, and the loader unloads the driver: no library or
   thread of RADV's or NVIDIA's stays (measured: docs/measurements/README.md,

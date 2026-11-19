@@ -13,9 +13,13 @@
 //! - Settings lists the adapters a child process found ([`adapters`]) and
 //!   [`choose`] switches at once, through `iced::backend::configure`
 //!   ([`switch`]).
+//! - Its frames go straight into the window only on the adapter the desktop
+//!   composites on ([`screen`]); any other's are read back and shown
+//!   through shared memory (`iced_wgpu::adapter::Path`).
 //! - A GPU that doesn't start or fails under the window gives way to the
 //!   processor with a notice, and three failures in a row keep the
-//!   processor until a GPU is chosen again ([`fail`]).
+//!   processor until a GPU is chosen again ([`fail`]); so does one start
+//!   that died before its window had drawn a few seconds ([`opening`]).
 //!
 //! Only `run` makes any of this live: the tests never start a GPU, and in
 //! them [`choose`] keeps the choice alone.
@@ -25,6 +29,7 @@ mod drivers;
 mod fail;
 mod list;
 mod plan;
+mod screen;
 mod switch;
 #[cfg(test)]
 mod tests;
@@ -55,7 +60,8 @@ use plan::Why;
 pub enum Due {
     /// The window opened: its renderer was made.
     Opened,
-    /// A frame was drawn since, while failures counted wait to be forgotten.
+    /// A frame was drawn since, while a try written ahead or failures
+    /// counted wait to be settled.
     Drew,
     /// The start draws on the processor where a choice made by hand can't
     /// be met.
@@ -66,6 +72,9 @@ pub enum Due {
     Listed,
     /// iced made the renderer asked for, or couldn't make any: why.
     Switched(Option<String>),
+    /// A few seconds passed since the window drew on the GPU, or gave it
+    /// up, in the try of this number: it didn't die there.
+    Settled(u32),
 }
 
 /// This process runs the window (`run` began it), not a test.
@@ -85,8 +94,14 @@ struct State {
     target: Option<(String, String)>,
     /// Why the processor draws, while it does.
     why: Option<Why>,
-    /// `renderer_failures` before this start counted its try ahead.
-    ahead: Option<u8>,
+    /// `renderer_trying` names the adapter a window opened on in this run,
+    /// not settled yet.
+    trying: bool,
+    /// Which try that is, so a settling meant for an earlier one is ignored.
+    epoch: u32,
+    /// A window drew on the GPU a while in this run: windows opened again
+    /// on it write nothing ahead.
+    settled: bool,
     /// The system's adapters as last read, for their names.
     cards: Vec<Adapter>,
 }
@@ -97,7 +112,9 @@ impl State {
             asked: Choice::Auto,
             target: None,
             why: None,
-            ahead: None,
+            trying: false,
+            epoch: 0,
+            settled: false,
             cards: Vec::new(),
         }
     }
@@ -119,8 +136,9 @@ fn tell(due: Due) {
 }
 
 /// What draws as the program starts, from Settings' choice, the command
-/// line's and the failures so far; lets only that adapter's Vulkan driver
-/// load. `cli::main` calls it before starting any thread.
+/// line's, the failures so far and a start that died; lets only that
+/// adapter's Vulkan driver load. `cli::main` calls it before starting any
+/// thread.
 pub fn prepare(saved: &Saved, asked: Option<&Override>) -> Plan {
     let kept = Choice::parse(saved.interface_renderer.as_deref());
     let choice = match asked {
@@ -129,23 +147,23 @@ pub fn prepare(saved: &Saved, asked: Option<&Override>) -> Plan {
     };
     let cards = yapfast_core::adapters::list();
     let failures = saved.renderer_failures;
-    let plan = plan::decide(
+    let mut plan = plan::decide(
         &choice,
         &cards,
         drivers::installed,
         failures,
         asked.is_some(),
     );
+    plan::died(&mut plan, saved.renderer_trying.as_deref(), asked.is_some());
     drivers::select(&plan.drivers);
     state().cards = cards;
     plan
 }
 
 /// Makes the plan live before the window opens: the adapter asked of wgpu,
-/// the hook its failures reach `update` through, and a GPU start's failure
-/// counted ahead, so a crash while it starts counts too (a first frame on it
-/// takes that back). Whether wgpu may start, which `run` enables.
-pub fn begin(layout: &mut Layout, plan: Plan, background: bool) -> bool {
+/// the adapter the desktop composites on, and the hook its failures reach
+/// `update` through. Whether wgpu may start, which `run` enables.
+pub fn begin(plan: Plan) -> bool {
     LIVE.store(true, Ordering::Release);
     let (told, heard) = unbounded_channel();
     *TELL.lock().unwrap_or_else(PoisonError::into_inner) = Some(told);
@@ -158,6 +176,8 @@ pub fn begin(layout: &mut Layout, plan: Plan, background: bool) -> bool {
     match &plan.target {
         Some(target) => {
             iced_wgpu::adapter::choose(target.wanted.clone());
+            let cards = state().cards.clone();
+            iced_wgpu::adapter::set_display_adapter(screen::adapter(&cards));
             tracing::info!(adapter = %target.name, "the window is to draw on the graphics adapter");
         }
         None => tracing::info!(why = ?plan.why, "the window draws on the processor"),
@@ -169,14 +189,46 @@ pub fn begin(layout: &mut Layout, plan: Plan, background: bool) -> bool {
     state.asked = plan.choice;
     state.target = plan.target.map(|target| (target.id, target.name));
     state.why = plan.why;
-    if gpu && !background {
-        let before = layout.renderer_failures;
-        state.ahead = Some(before);
-        drop(state);
-        layout.edit(|saved| saved.renderer_failures = before.saturating_add(1));
-        layout.flush();
-    }
     gpu
+}
+
+/// A window is about to open: while a GPU may draw and hasn't drawn a
+/// while in this run, the adapter is written ahead as `renderer_trying`,
+/// on disk before the window and its renderer are made. If the app dies
+/// before it's cleared ([`Due::Settled`]), by a crash, an abort or a
+/// Wayland protocol error, which no code of its runs after, the next start
+/// finds it and draws on the processor (`plan::died`).
+pub fn opening(layout: &mut Layout) {
+    if !live() || !iced_wgpu::enabled::is_enabled() {
+        return;
+    }
+    let state = state();
+    let Some((id, _name)) = state.target.clone().filter(|_| !state.settled) else {
+        return;
+    };
+    drop(state);
+    mark(layout, &id);
+}
+
+/// The person quits: a try not settled yet is no death, and isn't left
+/// written ahead; then whatever waits of the layout is written.
+pub fn quitting(layout: &mut Layout) {
+    let trying = std::mem::take(&mut state().trying);
+    if trying && layout.renderer_trying.is_some() {
+        layout.edit(|saved| saved.renderer_trying = None);
+    }
+    layout.flush();
+}
+
+/// Writes `id` ahead as the adapter tried, and waits until it's on disk.
+fn mark(layout: &mut Layout, id: &str) {
+    if layout.renderer_trying.as_deref() != Some(id) {
+        layout.edit(|saved| saved.renderer_trying = Some(id.to_owned()));
+    }
+    layout.flush();
+    let mut state = state();
+    state.trying = true;
+    state.epoch = state.epoch.wrapping_add(1);
 }
 
 /// The adapters Settings offers: listed once, in a child process, as
@@ -247,7 +299,7 @@ fn heard() -> impl Stream<Item = Message> {
 pub fn due(app: &mut App, due: Due) -> Task<Message> {
     match due {
         Due::Opened => fail::opened(app),
-        Due::Drew => fail::drew(app),
+        Due::Drew => fail::drew(),
         Due::Unmet => {
             let why = state().why.clone();
             if let Some(why) = why {
@@ -262,5 +314,6 @@ pub fn due(app: &mut App, due: Due) -> Task<Message> {
             Task::none()
         }
         Due::Switched(error) => fail::switched(app, error),
+        Due::Settled(epoch) => fail::settled(app, epoch),
     }
 }

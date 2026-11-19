@@ -575,7 +575,8 @@ impl Media {
                                 .wrapping_add(skipped as u32 * FRAME as u32);
                             ticks.reset();
                         }
-                        self.send(connection, sending).await?;
+                        let sent = self.send(connection, sending).await?;
+                        listener.sent(sent.then_some(self.pcm.as_slice()));
                         // After a stall the ticks missed come at once, and
                         // the select may run them before the packets that
                         // came meanwhile are read: the speakers would then
@@ -789,12 +790,13 @@ impl Media {
     /// whole frame of the microphone waiting, as when its thread is held
     /// up, sends nothing: others' clients conceal the missing packet, which
     /// sounds smoother than a frame cut short with silence, and what waited
-    /// goes in the next one.
+    /// goes in the next one. Says whether it sent the microphone's frame,
+    /// which is then in `pcm`.
     async fn send(
         &mut self,
         connection: &mut Connection,
         sending: &Mutex<Option<Sending>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let taken = {
             let sending = lock(sending);
             match sending.as_ref() {
@@ -816,9 +818,10 @@ impl Media {
                 );
             }
             self.timestamp = self.timestamp.wrapping_add(FRAME as u32);
-            return Ok(());
+            return Ok(false);
         }
         let playing = taken == Some(true);
+        let mut sent = false;
         let marker = playing && !self.speaking;
         if marker {
             send_json(
@@ -842,6 +845,7 @@ impl Media {
             let opus = &self.packet[..length];
             if let Some(payload) = connection.dave.encrypt_opus(opus) {
                 self.transmit(connection, &payload, marker).await?;
+                sent = true;
             }
             self.silent = SILENT_FRAMES;
         } else if self.silent > 0 {
@@ -860,7 +864,7 @@ impl Media {
             }
         }
         self.timestamp = self.timestamp.wrapping_add(FRAME as u32);
-        Ok(())
+        Ok(sent)
     }
 
     async fn transmit(

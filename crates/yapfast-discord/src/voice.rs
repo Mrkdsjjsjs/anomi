@@ -42,6 +42,12 @@ pub trait Listener: Send + Sync + 'static {
     /// Every 20 ms: each speaking user's decoded audio, as interleaved stereo
     /// at 48 kHz, by Discord user id.
     fn tick(&self, voices: &[(u64, &[i16])]);
+    /// Every 20 ms, just before [`Self::tick`]: the microphone's 20 ms this
+    /// account just sent, as interleaved stereo at 48 kHz with both channels
+    /// alike, at full scale 1.0; or `None` on a tick that sent none, as while
+    /// it's paused or behind. Someone on speakers sends this back, a few
+    /// hundred milliseconds later.
+    fn sent(&self, _frame: Option<&[f32]>) {}
     /// The voice connection is gone, for this reason: Discord ended the
     /// session, as it does when it moves the call, or it couldn't be
     /// resumed. The call waits [`MOVE_GRACE`] for [`Call::move_to`] before it

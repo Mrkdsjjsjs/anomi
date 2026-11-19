@@ -65,6 +65,15 @@ pub fn apps() -> Share {
     }
 }
 
+/// The bitrate limits listed under their row, 6 Mbit/s chosen.
+pub fn bitrates() -> Share {
+    Share {
+        max_kbps: Some(6_000),
+        bitrates_open: true,
+        ..dialog()
+    }
+}
+
 /// While live, after "Change Windows": what to share instead, nothing
 /// picked yet; the stream goes out at 720p and 60 fps, the higher quality
 /// on.

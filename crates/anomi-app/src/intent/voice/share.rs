@@ -11,8 +11,8 @@
 //!
 //! While live the same buttons, and the gears on "Your screen" and on this
 //! account's stream's tile, open the stream's own menu at once, as
-//! Discord's client does: a choice of frame rate, resolution, encoding or
-//! sound changes the stream at once (`Command::Quality`, which the Slint
+//! Discord's client does: a choice of frame rate, resolution, encoding,
+//! bitrate limit or sound changes the stream at once (`Command::Quality`, which the Slint
 //! menu didn't offer) and the menu stays open; "Change Windows" lists the
 //! sources in its place, or, where only the system's dialog picks, opens
 //! it straight away as Slint's `show-share-menu` did; "Stop Streaming"
@@ -161,6 +161,7 @@ fn picks(voice: &voice::State) -> Share {
         resolution: menu_resolution(voice.quality.resolution),
         fps: voice.quality.fps,
         high_quality: voice.quality.high_quality,
+        max_kbps: voice.quality.max_kbps,
         sound: match voice.stream_audio {
             StreamAudio::Off => Sound::None,
             _ => Sound::All,
@@ -220,7 +221,7 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
     let share = &mut app.vm.voice.share;
     let retuned = matches!(
         intent,
-        Intent::Resolution(_) | Intent::Fps(_) | Intent::HighQuality(_)
+        Intent::Resolution(_) | Intent::Fps(_) | Intent::HighQuality(_) | Intent::Bitrate(_)
     );
     match intent {
         Intent::Hover(_) | Intent::Key(_) => {
@@ -243,6 +244,11 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
         Intent::Resolution(resolution) => share.resolution = resolution,
         Intent::Fps(fps) => share.fps = fps,
         Intent::HighQuality(on) => share.high_quality = on,
+        Intent::Bitrate(kbps) => {
+            share.max_kbps = kbps;
+            share.bitrates_open = false;
+        }
+        Intent::Bitrates(open) => share.bitrates_open = open,
         Intent::Apps(open) => share.apps_open = open,
         Intent::Sound(sound) => {
             share.sound = sound;
@@ -263,7 +269,8 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
             high_quality,
         } => {
             pick(app, source, true);
-            let quality = quality(resolution, fps, high_quality);
+            let limit = app.vm.voice.share.max_kbps;
+            let quality = quality(resolution, fps, high_quality, limit);
             let task = super::popups::close(app, Layer::Share);
             return Task::batch([task, command(app, Command::GoLive(quality))]);
         }
@@ -277,14 +284,25 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
     rebuild(app);
     let share = &app.vm.voice.share;
     if retuned && share.switching {
-        let quality = quality(share.resolution, share.fps, share.high_quality);
+        let quality = quality(
+            share.resolution,
+            share.fps,
+            share.high_quality,
+            share.max_kbps,
+        );
         return command(app, Command::Quality(quality));
     }
     Task::none()
 }
 
-/// The core's quality for the menu's choices.
-fn quality(resolution: Resolution, fps: u32, high_quality: bool) -> StreamQuality {
+/// The core's quality for the menu's choices: the bitrate limit a ceiling
+/// within Discord's, `None` for Discord's alone.
+fn quality(
+    resolution: Resolution,
+    fps: u32,
+    high_quality: bool,
+    max_kbps: Option<u32>,
+) -> StreamQuality {
     StreamQuality {
         resolution: match resolution {
             Resolution::P720 => voice::Resolution::P720,
@@ -293,6 +311,7 @@ fn quality(resolution: Resolution, fps: u32, high_quality: bool) -> StreamQualit
         },
         fps: fps.clamp(1, 60),
         high_quality,
+        max_kbps,
     }
 }
 

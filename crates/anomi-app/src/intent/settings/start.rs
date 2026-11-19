@@ -3,7 +3,8 @@
 //! (`src/ui.rs:1625`, `:1728`) and its start (`:173`-`:193`): the person's
 //! own themes and the one chosen, their font files, what the call's audio
 //! and the clocks take of the layout, and the desktop's entry, links and
-//! start at sign-in.
+//! start at sign-in. The processor's cores are set earlier still, before
+//! the program's threads (`crate::run::place_on_cores`).
 
 use serde_json::{Value, json};
 
@@ -67,6 +68,7 @@ fn apply(saved: &Saved) {
     noise::set(saved.noise_suppression);
     noise::set_strength(saved.noise_strength);
     noise::set_dereverb(saved.reduce_room_echo);
+    noise::set_echo_cancellation(saved.echo_cancellation.unwrap_or(true));
     yapfast_core::set_windows_effects(saved.windows_microphone_effects);
     let sensitivity = (saved.input_sensitivity)
         .unwrap_or(noise::DEFAULT_SENSITIVITY as i32)
@@ -87,9 +89,20 @@ fn apply(saved: &Saved) {
     for person in &saved.soundboard_muted_people {
         volume::mute_soundboard(person, true);
     }
+    // Whose voice the call cleans, as their menus in a call chose.
+    for person in &saved.denoised_people {
+        let mut cleaning = volume::cleaning(person);
+        cleaning.noise = true;
+        volume::set_cleaning(person, cleaning);
+    }
+    for person in &saved.echo_removed_people {
+        let mut cleaning = volume::cleaning(person);
+        cleaning.own_echo = true;
+        volume::set_cleaning(person, cleaning);
+    }
     #[cfg(feature = "discord")]
     {
-        yapfast_core::stream_worker::set_hardware_encoding(saved.gpu_encoding.unwrap_or(true));
+        yapfast_core::stream_worker::set_encode_on(saved.encoder().key());
         yapfast_core::discord::set_custom_games(&saved.game_executables);
     }
     let moving = crate::layout::carry::cosmetics(saved).moving;

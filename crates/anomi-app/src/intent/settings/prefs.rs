@@ -4,17 +4,19 @@
 //! `updates.rs`) and handed on at once where the Slint app hands it on: to
 //! the core, the clocks, the call's audio or the desktop. A switch the rest
 //! of the window shows (the clock, compact messages, the text's size) shows
-//! there at once.
+//! there at once. Advanced's Optimization moves the program onto the cores
+//! chosen and tells the stream workers where to encode, at once.
 
 use iced::Task;
 use yapfast_core::application::Action;
 use yapfast_core::chat::RelationshipChange;
 use yapfast_core::sounds::{Sound, SoundSet};
 
+use anomi_vm::settings::advanced::CpuMode;
 use anomi_vm::settings::{about, advanced, discord, games, messages, notifications, sounds};
 
 use crate::app::App;
-use crate::layout::{Animate, Saved};
+use crate::layout::{Animate, CpuChoice, Encoder, Saved};
 use crate::message::Message;
 use crate::project::Reach;
 
@@ -312,18 +314,64 @@ pub(super) fn advanced(app: &mut App, intent: advanced::Intent) -> Task<Message>
         }
         I::CloseToTray(on) => app.layout.edit(|saved| saved.close_to_tray = Some(on)),
         I::MultipleWindows(on) => app.layout.edit(|saved| saved.multiple_windows = on),
-        I::GpuRendering(on) => app.layout.edit(|saved| saved.gpu_rendering = on),
-        I::GpuEncoding(on) => {
-            app.layout.edit(|saved| saved.gpu_encoding = Some(on));
-            #[cfg(feature = "discord")]
-            yapfast_core::stream_worker::set_hardware_encoding(on);
-        }
         // The menus offer copying ids with it.
         I::DeveloperMode(on) => return keep_everywhere(app, |saved| saved.developer_mode = on),
+        I::CpuMode(at) => {
+            let choice = cpu_choice(&app.layout, CpuMode::at(at));
+            cores_chosen(app, choice);
+        }
+        I::Core(core) => {
+            if let CpuChoice::Cores(mut cores) = app.layout.cores() {
+                match cores.iter().position(|&one| one == core) {
+                    // One core at least: none would leave nowhere to run.
+                    Some(_) if cores.len() == 1 => {}
+                    Some(at) => {
+                        cores.remove(at);
+                    }
+                    None => {
+                        cores.push(core);
+                        cores.sort_unstable();
+                    }
+                }
+                cores_chosen(app, CpuChoice::Cores(cores));
+            }
+        }
+        I::Encoder(key) if !key.is_empty() => {
+            app.layout
+                .edit(|saved| saved.set_encoder(&Encoder::of(&key)));
+            #[cfg(feature = "discord")]
+            yapfast_core::stream_worker::set_encode_on(app.layout.encoder().key());
+        }
         intent => tracing::debug!(?intent, "nothing to change"),
     }
     app.show(Reach::SETTINGS);
     Task::none()
+}
+
+/// What choosing a way to spread over the cores keeps: choosing by hand
+/// starts from the cores chosen before, or from those Auto would mostly
+/// take.
+fn cpu_choice(saved: &Saved, mode: CpuMode) -> CpuChoice {
+    match (mode, saved.cores()) {
+        (CpuMode::Auto, _) => CpuChoice::Auto,
+        (CpuMode::All, _) => CpuChoice::All,
+        (CpuMode::Chosen, CpuChoice::Cores(cores)) if !cores.is_empty() => CpuChoice::Cores(cores),
+        // Where the processor's cores can't be read there are none to tick.
+        (CpuMode::Chosen, _) => match crate::project::settings::pages::first_cores() {
+            cores if cores.is_empty() => CpuChoice::Auto,
+            cores => CpuChoice::Cores(cores),
+        },
+    }
+}
+
+/// Keeps the cores chosen and moves the program onto them at once, with
+/// the streams it runs.
+fn cores_chosen(app: &mut App, choice: CpuChoice) {
+    if app.layout.cores() == choice && app.layout.cpu_mode.is_some() {
+        return;
+    }
+    app.layout.edit(|saved| saved.cpu_mode = Some(choice));
+    crate::run::place_on_cores(&app.layout);
 }
 
 pub(super) fn about(app: &mut App, intent: about::Intent) -> Task<Message> {

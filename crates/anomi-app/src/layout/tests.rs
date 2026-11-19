@@ -195,6 +195,97 @@ fn the_core_takes_the_switches_and_the_layout_keeps_what_it_changes() {
 }
 
 #[test]
+fn anomis_own_keys_read_and_stay() {
+    let folder = folder("own-keys");
+    std::fs::write(
+        folder.join(FILE),
+        r#"{"theme": "nord", "denoised_people": ["discord:u3"],
+            "echo_removed_people": ["discord:u4", "discord:u3"],
+            "echo_cancellation": false, "cpu_mode": {"cores": [8, 9, 10]},
+            "stream_encoder": "pci:0000:73:00.0", "gpu_encoding": true}"#,
+    )
+    .unwrap();
+    let mut layout = Layout::read(&folder);
+    assert!(layout.odd.is_empty());
+    assert!(layout.denoised_people.contains("discord:u3"));
+    assert_eq!(layout.echo_removed_people.len(), 2);
+    assert_eq!(layout.echo_cancellation, Some(false));
+    assert_eq!(layout.cores(), CpuChoice::Cores(vec![8, 9, 10]));
+    assert_eq!(layout.encoder(), Encoder::Card("pci:0000:73:00.0".into()));
+    layout.edit(|saved| saved.cpu_mode = Some(CpuChoice::All));
+    layout.flush();
+    let file = written(&folder);
+    assert_eq!(file["cpu_mode"], json!("all"));
+    assert_eq!(file["denoised_people"], json!(["discord:u3"]));
+    assert_eq!(file["echo_cancellation"], json!(false));
+    assert_eq!(file["stream_encoder"], json!("pci:0000:73:00.0"));
+    layout.edit(|saved| saved.cpu_mode = Some(CpuChoice::Cores(vec![12])));
+    layout.flush();
+    assert_eq!(written(&folder)["cpu_mode"], json!({"cores": [12]}));
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn unset_own_keys_arent_written() {
+    let mut layout = Layout::from_values(PathBuf::new(), Map::new());
+    layout.edit(|saved| saved.zoom = Some(1.1));
+    let file: Value = serde_json::from_slice(&layout.bytes().unwrap()).unwrap();
+    for key in [
+        "denoised_people",
+        "echo_removed_people",
+        "echo_cancellation",
+        "cpu_mode",
+        "stream_encoder",
+    ] {
+        assert!(file.get(key).is_none(), "{key}");
+    }
+    assert_eq!(layout.cores(), CpuChoice::Auto);
+    assert_eq!(layout.encoder(), Encoder::Auto);
+}
+
+#[test]
+fn a_cores_choice_of_another_shape_is_kept_and_auto_meanwhile() {
+    let layout = Layout::from_values(
+        PathBuf::new(),
+        serde_json::from_str(r#"{"cpu_mode": "game-only", "members_hidden": true}"#).unwrap(),
+    );
+    assert_eq!(layout.cores(), CpuChoice::Auto);
+    assert!(layout.members_hidden, "nothing else lost");
+    let file: Value = serde_json::from_slice(&layout.bytes().unwrap()).unwrap();
+    assert_eq!(
+        file["cpu_mode"],
+        json!("game-only"),
+        "kept while unset here"
+    );
+}
+
+#[test]
+fn the_encoder_follows_the_old_switch_until_chosen() {
+    let read = |text: &str| {
+        let values = serde_json::from_str(text).unwrap();
+        Layout::from_values(PathBuf::new(), values)
+    };
+    assert_eq!(
+        read(r#"{"gpu_encoding": false}"#).encoder(),
+        Encoder::Software
+    );
+    assert_eq!(read(r#"{"gpu_encoding": true}"#).encoder(), Encoder::Auto);
+    assert_eq!(read(r#"{}"#).encoder(), Encoder::Auto);
+    let chosen = r#"{"gpu_encoding": false, "stream_encoder": "auto"}"#;
+    assert_eq!(read(chosen).encoder(), Encoder::Auto, "the choice wins");
+    let mut layout = read(r#"{"gpu_encoding": true}"#);
+    layout.edit(|saved| saved.set_encoder(&Encoder::Software));
+    assert_eq!(
+        (layout.stream_encoder.as_deref(), layout.gpu_encoding),
+        (Some(ENCODE_SOFTWARE), Some(false)),
+        "the Slint app reads the old switch"
+    );
+    layout.edit(|saved| saved.set_encoder(&Encoder::Card("pci:0000:01:00.0".into())));
+    assert_eq!(layout.gpu_encoding, Some(true));
+    assert_eq!(Encoder::of(layout.encoder().key()), layout.encoder());
+}
+
+#[test]
 fn a_file_that_isnt_a_layout_is_set_aside_not_overwritten() {
     let folder = std::env::temp_dir().join(format!("anomi-layout-aside-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);

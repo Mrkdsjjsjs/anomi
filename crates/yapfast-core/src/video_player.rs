@@ -552,6 +552,8 @@ fn take(shared: &Shared, progress: &Progress, control: Control) {
         | Control::Switch(_)
         | Control::Audio(_)
         | Control::Quality { .. }
+        | Control::EncodeOn(_)
+        | Control::Cpus(_)
         | Control::Hear(_) => {}
     }
     shared.changed.notify_all();

@@ -103,8 +103,13 @@ pub fn card() -> ParticipantMenu {
 
 /// The window with the card open at the pointer and the rows right under.
 fn open(card: ParticipantMenu, rows: Vec<Row>) -> Vm {
+    open_over(card, rows, ROWS)
+}
+
+/// [`open`], the rows `size` tall.
+fn open_over(card: ParticipantMenu, rows: Vec<Row>, size: Size) -> Vm {
     let mut vm = stage::window(stage::lounge());
-    let (top, below) = card.place(POINTER, ROWS, WINDOW);
+    let (top, below) = card.place(POINTER, size, WINDOW);
     vm.menu = Menu {
         narrowest: Some(crate::voice::participant_menu::WIDTH),
         headed: true,
@@ -117,6 +122,30 @@ fn open(card: ParticipantMenu, rows: Vec<Row>) -> Vm {
 /// `voice/participant_menu.png`: Carol's menu.
 pub fn carol() -> Vm {
     open(card(), rows(false))
+}
+
+/// Carol's menu in a Discord call with the rows that clean her voice, under
+/// the mutes: her noise taken out, this account's echo not.
+pub fn cleaning() -> Vm {
+    let mut rows = rows(false);
+    let after = rows
+        .iter()
+        .position(|row| row.text == tr!("Mute Soundboard"))
+        .map_or(rows.len(), |at| at + 1);
+    let below = rows.split_off(after);
+    rows.push(
+        row(tr!("Suppress their noise"), "suppress-their-noise")
+            .icon(Icon::NoiseBars)
+            .checkbox(true),
+    );
+    rows.push(
+        row(tr!("Remove my echo"), "remove-my-echo")
+            .icon(Icon::Volume)
+            .checkbox(false),
+    );
+    rows.extend(below);
+    // Two rows of 32 px more than Carol's menu.
+    open_over(card(), rows, Size::new(WIDTH, ROWS.height + 64.0))
 }
 
 /// Someone sharing their screen: a second slider, for their stream.

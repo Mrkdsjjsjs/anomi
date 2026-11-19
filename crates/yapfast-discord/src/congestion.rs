@@ -10,8 +10,10 @@
 //! lost, then holds. It doesn't rise far past what the encoder sends, so a
 //! calm picture can't take it to a rate the uplink never carried, and near
 //! the rate it last backed off from it rises slowly. The cap is Discord's
-//! for the stream's height, or the server's estimate (REMB) when that's
-//! lower.
+//! for the stream's height, or the bitrate limit the person chose when
+//! that's lower (`stream_connection::cap`), or the server's estimate (REMB)
+//! when that's lower still. The cap only ever bounds the target: it is
+//! never a floor the target is held at.
 
 use std::{
     collections::VecDeque,
@@ -116,7 +118,7 @@ struct Received {
 
 pub struct Controller {
     target: u64,
-    /// Discord's cap for the stream's height.
+    /// Discord's cap for the stream's height, or the person's limit below it.
     cap: u64,
     /// The server's estimate (REMB), once it sent one.
     estimate: Option<u64>,
@@ -237,7 +239,8 @@ impl Controller {
         })
     }
 
-    /// Takes a new cap, for a new frame size.
+    /// Takes a new cap, for a new frame size or bitrate limit: a lower one
+    /// lowers the target at once, a higher one lets it rise as it does.
     pub fn set_cap(&mut self, cap: u64) -> Option<Reason> {
         self.cap = cap;
         self.clamp()
@@ -578,6 +581,25 @@ mod tests {
         );
         assert_eq!(uplink.controller.set_cap(3_500_000), Some(Reason::Cap));
         assert_eq!(uplink.target(), 3_500_000);
+    }
+
+    /// A bitrate limit chosen while live lowers the target at once; raised
+    /// again, the target climbs back as the uplink allows, never jumping.
+    #[test]
+    fn follows_a_limit_changed_while_live() {
+        let mut uplink = Uplink::new(CAP);
+        uplink.busy(30, Some(ms(40)), 0);
+        assert_eq!(uplink.target(), CAP);
+        assert_eq!(uplink.controller.set_cap(5_000_000), Some(Reason::Cap));
+        assert_eq!(uplink.target(), 5_000_000);
+        uplink.busy(5, Some(ms(40)), 0);
+        assert_eq!(uplink.target(), 5_000_000, "never past the limit");
+        assert_eq!(uplink.controller.set_cap(CAP), None, "no jump");
+        assert_eq!(uplink.target(), 5_000_000);
+        assert_eq!(uplink.busy(1, Some(ms(40)), 0), [Some(Reason::Ramp)]);
+        assert_eq!(uplink.target(), 5_000_000 * 108 / 100);
+        // A limit starts the stream below it.
+        assert_eq!(Controller::new(2_000_000).target(), 2_000_000);
     }
 
     #[test]

@@ -59,6 +59,7 @@ static LIMIT: AtomicU32 = AtomicU32::new(Strength::Medium.limit().to_bits());
 static SENSITIVITY: AtomicU32 = AtomicU32::new(DEFAULT_SENSITIVITY.to_bits());
 static DEREVERB: AtomicBool = AtomicBool::new(false);
 static DECLICK: AtomicBool = AtomicBool::new(true);
+static ECHO_CANCELLATION: AtomicBool = AtomicBool::new(true);
 
 /// Chooses the suppressor for every call; a call going on switches at its
 /// next block.
@@ -125,8 +126,22 @@ pub(crate) fn declick() -> bool {
     DECLICK.load(Ordering::Relaxed)
 }
 
+/// Cancels the echo of what the speakers play in every call's microphone,
+/// as WebRTC's AEC3 does: on unless this says otherwise, since with speakers
+/// everyone else would hear themselves. Off, only the high-pass filter
+/// runs, and the speakers stop handing their mix over as its reference; a
+/// call going on switches at its next block.
+pub fn set_echo_cancellation(on: bool) {
+    ECHO_CANCELLATION.store(on, Ordering::Relaxed);
+}
+
+/// Whether the microphone cancels the speakers' echo.
+pub fn echo_cancellation() -> bool {
+    ECHO_CANCELLATION.load(Ordering::Relaxed)
+}
+
 #[cfg(feature = "discord")]
-pub(crate) use denoise::{BLOCK, Denoiser, Sent};
+pub(crate) use denoise::{BLOCK, Denoiser, Rnnoise, Sent};
 
 #[cfg(feature = "discord")]
 mod denoise {
@@ -246,11 +261,7 @@ mod denoise {
                 return;
             }
             self.limit = decibels;
-            self.mix = if decibels >= super::FULL {
-                0.0
-            } else {
-                10f32.powf(-decibels.max(1.0) / 20.0)
-            };
+            self.mix = mix_back(decibels);
             if let Network::DeepFilterNet(network) = &mut self.network {
                 // libDF skips the network below 0.01 dB and calls every
                 // block speech.
@@ -324,20 +335,96 @@ mod denoise {
                     snr >= SPEECH_SNR
                 }
                 Network::RNNoise(network) => {
-                    self.noisy.copy_from_slice(block);
-                    let probability = network.process_frame(block, &self.noisy);
-                    if self.mix > 0.0 {
-                        for (sample, noisy) in block.iter_mut().zip(&self.previous) {
-                            *sample += (noisy - *sample) * self.mix;
-                        }
-                    }
-                    std::mem::swap(&mut self.previous, &mut self.noisy);
+                    let probability = rnnoise(
+                        network,
+                        block,
+                        &mut self.noisy,
+                        &mut self.previous,
+                        self.mix,
+                    );
                     probability >= SPEECH_PROBABILITY
                 }
                 Network::Off(network) => {
                     network.process_frame(&mut self.clean, block) >= SPEECH_PROBABILITY
                 }
             }
+        }
+    }
+
+    /// The share of the input a suppressor's output gets back, to turn noise
+    /// down at most `decibels`; none at [`super::FULL`] or more.
+    fn mix_back(decibels: f32) -> f32 {
+        if decibels >= super::FULL {
+            0.0
+        } else {
+            10f32.powf(-decibels.max(1.0) / 20.0)
+        }
+    }
+
+    /// Runs RNNoise on 10 ms in 16-bit range, in place, and returns its
+    /// speech probability. Its output is a block behind, so `mix` of the
+    /// block before, kept in `previous`, goes back in; `noisy` takes this
+    /// block's input, and the two swap.
+    fn rnnoise(
+        network: &mut nnnoiseless::DenoiseState<'static>,
+        block: &mut [f32],
+        noisy: &mut Vec<f32>,
+        previous: &mut Vec<f32>,
+        mix: f32,
+    ) -> f32 {
+        noisy.copy_from_slice(block);
+        let probability = network.process_frame(block, noisy.as_slice());
+        if mix > 0.0 {
+            for (sample, noisy) in block.iter_mut().zip(previous.iter()) {
+                *sample += (noisy - *sample) * mix;
+            }
+        }
+        std::mem::swap(previous, noisy);
+        probability
+    }
+
+    /// RNNoise alone, for someone else's voice as a call's thread mixes it.
+    /// [`Denoiser`] may hold DeepFilterNet, whose model isn't Send; this is.
+    /// About 40 µs a block, and 30 KB or so with its network's state.
+    pub(crate) struct Rnnoise {
+        network: Box<nnnoiseless::DenoiseState<'static>>,
+        mix: f32,
+        noisy: Vec<f32>,
+        previous: Vec<f32>,
+    }
+
+    impl Rnnoise {
+        /// Turns noise down at most `decibels`, as [`Denoiser::limit`] does.
+        pub(crate) fn new(decibels: f32) -> Self {
+            Self {
+                network: nnnoiseless::DenoiseState::new(),
+                mix: mix_back(decibels),
+                noisy: vec![0.0; BLOCK],
+                previous: vec![0.0; BLOCK],
+            }
+        }
+
+        /// Takes the noise out of 10 ms of mono, in 16-bit range, in place,
+        /// 10 ms late, as [`Denoiser::block`] does with RNNoise.
+        pub(crate) fn block(&mut self, block: &mut [f32]) {
+            rnnoise(
+                &mut self.network,
+                block,
+                &mut self.noisy,
+                &mut self.previous,
+                self.mix,
+            );
+        }
+
+        /// Lets go of what it holds of the last block, as someone starts
+        /// again after a pause: the end of what they said before would
+        /// otherwise play first. A block of silence runs through, keeping
+        /// what the network learned of their noise.
+        pub(crate) fn clear(&mut self) {
+            self.noisy.fill(0.0);
+            self.previous.fill(0.0);
+            let mut held = [0.0; BLOCK];
+            self.network.process_frame(&mut held, &self.noisy);
         }
     }
 
@@ -404,6 +491,55 @@ mod tests {
             );
         }
         assert_eq!(turned_down(Suppressor::Off, Strength::Full), 0.0);
+    }
+
+    /// RNNoise alone, as someone else's voice is cleaned, does to a block
+    /// what the microphone's does; cleared after a pause, it doesn't play
+    /// what it held of the block before.
+    #[test]
+    fn rnnoise_alone_cleans_as_the_microphones_and_clears_what_it_held() {
+        let limit = Strength::Medium.limit();
+        let mut denoiser = Denoiser::new(Suppressor::RNNoise, limit);
+        let mut alone = Rnnoise::new(limit);
+        let mut seed = 3u32;
+        for index in 0..50 {
+            let block: Vec<f32> = (0..BLOCK)
+                .map(|at| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let noise = (seed >> 16) as f32 / 65536.0 * 600.0 - 300.0;
+                    let time = (index * BLOCK + at) as f32 / 48_000.0;
+                    noise + 4000.0 * (time * 220.0 * std::f32::consts::TAU).sin()
+                })
+                .collect();
+            let (mut microphone, mut theirs) = (block.clone(), block);
+            denoiser.block(&mut microphone, Sent::Gated, false);
+            alone.block(&mut theirs);
+            assert_eq!(microphone, theirs, "block {index}");
+        }
+        // Both heard the same tone; one is cleared before silence comes.
+        let mut cleared = Rnnoise::new(limit);
+        let mut held = Rnnoise::new(limit);
+        for index in 0..20 {
+            let tone: Vec<f32> = (0..BLOCK)
+                .map(|at| {
+                    let time = (index * BLOCK + at) as f32 / 48_000.0;
+                    8000.0 * (time * 440.0 * std::f32::consts::TAU).sin()
+                })
+                .collect();
+            cleared.block(&mut tone.clone());
+            held.block(&mut tone.clone());
+        }
+        cleared.clear();
+        let energy = |rnnoise: &mut Rnnoise| {
+            let mut silence = vec![0.0; BLOCK];
+            rnnoise.block(&mut silence);
+            silence.iter().map(|sample| sample * sample).sum::<f32>()
+        };
+        let (after_clearing, after_holding) = (energy(&mut cleared), energy(&mut held));
+        assert!(
+            after_clearing * 100.0 < after_holding,
+            "{after_clearing} against {after_holding}"
+        );
     }
 
     /// Run lightly, as when the microphone falls behind, DeepFilterNet

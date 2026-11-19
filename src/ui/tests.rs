@@ -13100,3 +13100,66 @@ fn a_control_line_caught_half_written_waits_for_its_end() {
     );
     std::fs::remove_file(path).unwrap();
 }
+
+/// Keys this app doesn't know, Anomi's own and a version's neither app is
+/// yet, survive this app reading `layout.json` and writing it back, twice
+/// over, as they survive Anomi's (`crates/anomi-app/src/layout/tests.rs`,
+/// `a_slint_layout_opens_unchanged_and_keeps_every_key`).
+#[test]
+fn keys_this_app_doesnt_know_survive_its_reads_and_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let unknown = serde_json::json!({
+        "denoised_people": ["1016732398987264101"],
+        "echo_removed_people": ["5"],
+        "echo_cancellation": false,
+        "cpu_mode": {"cores": [8, 9, 10, 11, 12, 13, 14, 15]},
+        "stream_encoder": "pci:0000:73:00.0",
+        "a_setting_neither_app_knows": {"kept": [1, 2.5, "three", null, true]},
+    });
+    let mut file = unknown.as_object().unwrap().clone();
+    file.insert("volumes".into(), serde_json::json!({"7": 1.5}));
+    file.insert("muted_people".into(), serde_json::json!(["7"]));
+    file.insert("gpu_encoding".into(), serde_json::json!(false));
+    let path = directory.path().join(LAYOUT);
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+    let mut layout = Layout::read(directory.path());
+    assert_eq!(layout.volumes.get("7"), Some(&1.5));
+    assert!(layout.muted_people.contains("7"));
+    assert_eq!(layout.gpu_encoding, Some(false));
+    layout.sidebar_width = Some(300.0);
+    layout.write(directory.path());
+    Layout::read(directory.path()).write(directory.path());
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (key, value) in unknown.as_object().unwrap() {
+        assert_eq!(written.get(key), Some(value), "{key} is kept as it came");
+    }
+    assert_eq!(written["sidebar_width"], 300.0);
+    assert_eq!(written["volumes"], serde_json::json!({"7": 1.5}));
+    assert_eq!(written["muted_people"], serde_json::json!(["7"]));
+    assert_eq!(written["gpu_encoding"], false);
+}
+
+/// A setting this app knows, in a shape it can't read, costs only itself:
+/// the rest of the file still reads, so the next write doesn't lose it.
+#[test]
+fn a_layout_setting_that_doesnt_read_costs_only_itself() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join(LAYOUT),
+        r#"{"gpu_encoding": "auto", "volumes": {"7": 1.5}, "muted_people": ["7"],
+            "theme": "nord", "a_setting_neither_app_knows": 1}"#,
+    )
+    .unwrap();
+    let layout = Layout::read(directory.path());
+    assert_eq!(layout.gpu_encoding, None);
+    assert_eq!(layout.volumes.get("7"), Some(&1.5));
+    assert!(layout.muted_people.contains("7"));
+    assert_eq!(layout.theme.as_deref(), Some("nord"));
+    assert_eq!(
+        layout.other.get("a_setting_neither_app_knows"),
+        Some(&serde_json::json!(1))
+    );
+}

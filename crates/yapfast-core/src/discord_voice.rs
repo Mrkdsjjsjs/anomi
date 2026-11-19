@@ -785,6 +785,8 @@ pub(crate) async fn call(
                         Some(Report::AudioError(error)) => {
                             state.error = Some(tr!("Couldn't share the stream's sound: {}", error));
                         }
+                        // How it encodes isn't what Settings asked for; it goes on.
+                        Some(Report::Notice(notice)) => state.error = Some(notice),
                         Some(Report::Ready) => {
                             if let Some(sharing) = &state.sharing {
                                 sharing.frames.unlink();
@@ -930,6 +932,7 @@ pub(crate) async fn call(
                         WatchEvent::Report(Some(Report::Ended { error })) => stop = Some(error),
                         WatchEvent::Report(Some(
                             Report::AudioError(_)
+                            | Report::Notice(_)
                             | Report::Sharing { .. }
                             | Report::Sending(_)
                             | Report::Preview { .. }

@@ -8,9 +8,9 @@
 //! The menu lists what can be shared, in the order the Slint picks count
 //! them: the screens, then the windows, then (where the system's dialog picks
 //! one) the dialog, then the cameras. The picks themselves (which source, the
-//! resolution, the frame rate, the quality, the sound) live here, so a click
-//! changes them in the app and the menu is projected again; "Go Live" and
-//! "Switch" carry them to the core. While live the share button opens the
+//! resolution, the frame rate, the quality, the bitrate limit, the sound)
+//! live here, so a click changes them in the app and the menu is projected
+//! again; "Go Live" and "Switch" carry them to the core. While live the share button opens the
 //! stream's own menu instead ([`Live`]), whose "Change Windows" lists the
 //! sources to switch to.
 
@@ -48,6 +48,11 @@ impl Resolution {
 /// The frame rates offered.
 pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
 
+/// The bitrate limits offered after Auto, in kbit/s, up to the 9 Mbit/s
+/// Discord takes above 720p. A limit, not a target: the stream still goes
+/// lower as the network asks.
+pub const BITRATES: [u32; 6] = [2_000, 3_500, 5_000, 6_000, 8_000, 9_000];
+
 /// The sound shared: a choice changes it at once, live or not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sound {
@@ -81,12 +86,17 @@ pub struct Share {
     pub fps: u32,
     /// The encoder's slower preset: a sharper picture for more CPU.
     pub high_quality: bool,
+    /// The most the stream sends, in kbit/s; `None` for Auto, as Discord
+    /// allows at the size streamed.
+    pub max_kbps: Option<u32>,
     pub sound: Sound,
     /// On Windows, the windows whose application's sound alone can be
     /// shared; elsewhere none, and no such choice.
     pub sound_apps: Vec<String>,
     /// The list of applications under "One application" is open.
     pub apps_open: bool,
+    /// The list of bitrate limits under "Bitrate limit" is open.
+    pub bitrates_open: bool,
     /// The choices as menu rows, made by `anomi_voice::share::built` (the
     /// text is translated there): a row's view borrows its row, so the rows
     /// live here, beside what they were made from. The projection and a shot
@@ -111,6 +121,9 @@ pub struct Rows {
     pub resolutions: Vec<Row<Intent>>,
     pub rates: Vec<Row<Intent>>,
     pub quality: Option<Row<Intent>>,
+    /// "Bitrate limit", which opens the limits under it, and the limits.
+    pub bitrate: Option<Row<Intent>>,
+    pub bitrates: Vec<Row<Intent>>,
 }
 
 impl Default for Share {
@@ -125,9 +138,11 @@ impl Default for Share {
             resolution: Resolution::default(),
             fps: 30,
             high_quality: false,
+            max_kbps: None,
             sound: Sound::default(),
             sound_apps: Vec::new(),
             apps_open: false,
+            bitrates_open: false,
             rows: Rows::default(),
             live: None,
         }
@@ -199,8 +214,13 @@ pub enum Intent {
     Sound(Sound),
     /// Open or close the list of applications.
     Apps(bool),
+    /// A bitrate limit, in kbit/s, or Auto; while live it changes the
+    /// stream at once.
+    Bitrate(Option<u32>),
+    /// Open or close the list of bitrate limits.
+    Bitrates(bool),
     /// Start the stream: the source, the quality and the encoder's preset
-    /// (`go_live`); the menu closes.
+    /// (`go_live`), with the bitrate limit picked; the menu closes.
     GoLive {
         source: usize,
         resolution: Resolution,

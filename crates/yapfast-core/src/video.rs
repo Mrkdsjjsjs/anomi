@@ -171,8 +171,8 @@ impl<'a> Video<'a> {
     /// Opens the file's first video, when it has one Yapfast can decode, and
     /// with `sound`, its sound.
     pub fn open(source: impl Source + 'a, sound: bool) -> Option<Self> {
-        let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4));
-        Self::open_with(source, sound, threads)
+        // One for each logical CPU Yapfast runs on, at most 4.
+        Self::open_with(source, sound, crate::cpu::threads())
     }
 
     /// Opens only the sound of a file, which needn't have pictures, such as

@@ -3,11 +3,12 @@
 //! itself, through [`crate::audio_io`]. The microphone goes through WebRTC's
 //! echo cancellation, DeepFilterNet's noise suppression (or RNNoise's), WebRTC's
 //! gain control, Yapfast's leveling and the microphone's volume, and a gate
-//! that speech opens.
+//! that speech opens. Others' voices can be cleaned before they're mixed, as
+//! their menus ask ([`crate::volume::Cleaning`]).
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
@@ -18,12 +19,14 @@ use yapfast_lang::tr;
 
 use anyhow::{Context, Result, anyhow};
 use livekit::webrtc::native::apm::AudioProcessingModule;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc::UnboundedSender, watch};
 use yapfast_discord::voice::{CHANNELS, FRAME, Listener, Microphone, SAMPLE_RATE, Surplus, Track};
 
 use crate::{
     audio_io::{LastingInput, LastingOutput},
-    noise::{Denoiser, Sent},
+    echo_gate::EchoGate,
+    noise::{Denoiser, Rnnoise, Sent},
+    volume::Cleaning,
 };
 
 /// Whether Discord voice has audio on this platform yet.
@@ -42,6 +45,9 @@ pub struct Hearing {
     heard: Mutex<HashMap<u64, Instant>>,
     sounds: Mutex<Vec<Playing>>,
     connection: UnboundedSender<Connection>,
+    /// How each person plays, and their cleaning; only the call's thread
+    /// takes it.
+    people: Mutex<People>,
 }
 
 /// What the call's thread says of its voice connection, in the order it
@@ -74,6 +80,7 @@ impl Hearing {
             heard: Mutex::default(),
             sounds: Mutex::default(),
             connection,
+            people: Mutex::new(People::new()),
         }
     }
 
@@ -118,30 +125,40 @@ impl Hearing {
 impl Listener for Hearing {
     fn tick(&self, voices: &[(u64, &[i16])]) {
         let now = Instant::now();
+        let deafened = self.deafened.load(Ordering::Relaxed);
+        let output = lock(&self.output);
+        let mut people = lock(&self.people);
+        people.next_tick();
+        // Nothing is cleaned that wouldn't play.
+        if !deafened && output.is_some() {
+            people.clean(voices);
+        }
+        let people = &*people;
         {
-            let mut heard = self.heard.lock().unwrap();
+            let mut heard = lock(&self.heard);
             for (user, samples) in voices {
+                // Someone cleaned speaks as cleaned: their noise, or our own
+                // echo, doesn't light their ring.
+                let samples = people.cleaned(*user).unwrap_or(*samples);
                 if decibels(samples) > SPEAKING_FLOOR {
                     heard.insert(*user, now);
                 }
             }
         }
-        if self.deafened.load(Ordering::Relaxed) {
-            return;
-        }
-        let output = self.output.lock().unwrap();
-        let Some(output) = output.as_ref() else {
+        let Some(output) = output.as_ref().filter(|_| !deafened) else {
             return;
         };
-        let volume =
-            |user: u64| crate::volume::heard(crate::volume::Kind::Voice, &user.to_string());
         let mut frame = spare_frame();
-        let mut sounds = self.sounds.lock().unwrap();
+        let mut sounds = lock(&self.sounds);
         mix(
-            voices,
-            volume,
+            voices.iter().map(|(user, samples)| {
+                (
+                    people.cleaned(*user).unwrap_or(*samples),
+                    people.gain(*user),
+                )
+            }),
             &mut sounds,
-            crate::volume::speakers(),
+            people.speakers,
             &mut frame,
         );
         drop(sounds);
@@ -170,6 +187,249 @@ impl Listener for Hearing {
     fn on_call_thread(&self) {
         crate::audio_io::raise_thread_priority("call");
     }
+
+    /// What the call sent this tick, just before it plays everyone's: the
+    /// echo gates of those whose echo of us is taken out compare it with
+    /// what comes back from them.
+    fn sent(&self, frame: Option<&[f32]>) {
+        lock(&self.people).sent(frame);
+    }
+}
+
+/// Takes `mutex`, whatever a thread that panicked holding it left.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Ticks of the call in a second.
+const TICKS_PER_SECOND: u64 = 50;
+/// People cleaned at once at most: eight talking together cost about 3% of
+/// a core on the call's thread. Anyone more plays as they come.
+const CLEANED_AT_ONCE: usize = 8;
+/// How far RNNoise turns someone's noise down, in dB, as Medium does the
+/// microphone's: what it mixes back of their voice keeps the ends of words.
+const THEIR_NOISE_LIMIT: f32 = 30.0;
+/// Someone cleaned who's been silent this long has their denoiser freed,
+/// as the call forgets a speaker after 10 s.
+const DENOISER_AWAY: u64 = 10 * TICKS_PER_SECOND;
+/// Their echo gate keeps what it learned of their echo longer: they send
+/// only while their microphone hears something, our echo included, and
+/// learning it again takes seconds of our speech.
+const GATE_AWAY: u64 = 60 * TICKS_PER_SECOND;
+
+/// The call's own copy of how each person plays, kept by Discord user id so
+/// a tick looks them up without locks or strings, and the state of those
+/// whose voice is cleaned. [`crate::volume::changes`] says when to copy it
+/// again: one atomic load a tick.
+struct People {
+    changes: watch::Receiver<u64>,
+    /// The speakers' gain, as everyone plays at it.
+    speakers: f32,
+    /// Those who don't play as they come, by Discord user id; anyone else
+    /// plays at 1.0, uncleaned.
+    known: HashMap<u64, Known>,
+    /// Whether anyone known is cleaned.
+    cleaning: bool,
+    /// Those cleaned since they last spoke, at most [`CLEANED_AT_ONCE`].
+    cleaned: HashMap<u64, Cleaned>,
+    /// The ticks so far, which tell who spoke on the last.
+    tick: u64,
+    /// Someone more than [`CLEANED_AT_ONCE`] was left as they came; it's
+    /// logged once.
+    crowded: bool,
+}
+
+/// How someone plays: their own gain, before the speakers', and cleaning.
+#[derive(Clone, Copy)]
+struct Known {
+    gain: f32,
+    cleaning: Cleaning,
+}
+
+impl People {
+    fn new() -> Self {
+        let mut people = Self {
+            changes: crate::volume::changes(),
+            speakers: 1.0,
+            known: HashMap::new(),
+            cleaning: false,
+            cleaned: HashMap::new(),
+            tick: 0,
+            crowded: false,
+        };
+        people.copy();
+        people
+    }
+
+    /// Counts a tick, copies the choices if one changed, and once a second
+    /// frees what those away long enough held.
+    fn next_tick(&mut self) {
+        self.tick += 1;
+        if self.changes.has_changed().unwrap_or(false) {
+            // Marked first, a change made while copying comes next tick.
+            self.changes.mark_unchanged();
+            self.copy();
+        }
+        if self.tick.is_multiple_of(TICKS_PER_SECOND) && !self.cleaned.is_empty() {
+            let tick = self.tick;
+            self.cleaned.retain(|_, cleaned| {
+                let away = tick - cleaned.heard;
+                if away > DENOISER_AWAY {
+                    cleaned.denoiser = None;
+                }
+                away <= DENOISER_AWAY || (cleaned.gate.is_some() && away <= GATE_AWAY)
+            });
+        }
+    }
+
+    /// Copies everyone's volume and cleaning as chosen, and lets go of the
+    /// cleaning turned off.
+    fn copy(&mut self) {
+        self.speakers = crate::volume::speakers();
+        self.known.clear();
+        let known = &mut self.known;
+        crate::volume::each_voice(|person, gain, cleaning| {
+            // A Discord user id is a number; no one else is in its calls.
+            if let Ok(user) = person.parse::<u64>() {
+                known.insert(user, Known { gain, cleaning });
+            }
+        });
+        self.cleaning = self.known.values().any(|known| known.cleaning.any());
+        let known = &self.known;
+        self.cleaned.retain(|user, cleaned| {
+            let cleaning = known.get(user).map(|known| known.cleaning);
+            cleaned.keep(cleaning.unwrap_or_default())
+        });
+    }
+
+    /// The gain `user` plays at, with the speakers'.
+    fn gain(&self, user: u64) -> f32 {
+        let own = self.known.get(&user).map_or(1.0, |known| known.gain);
+        own * self.speakers
+    }
+
+    /// Cleans the voices of those it's on for, each into a frame of its
+    /// own, unless they play silent here.
+    fn clean(&mut self, voices: &[(u64, &[i16])]) {
+        if !self.cleaning {
+            return;
+        }
+        for (user, samples) in voices {
+            let Some(known) = self.known.get(user).copied() else {
+                continue;
+            };
+            if !known.cleaning.any() || known.gain * self.speakers == 0.0 {
+                continue;
+            }
+            let full = self.cleaned.len() >= CLEANED_AT_ONCE;
+            let cleaned = match self.cleaned.entry(*user) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(_) if full => {
+                    if !self.crowded {
+                        self.crowded = true;
+                        tracing::info!(
+                            most = CLEANED_AT_ONCE,
+                            "more people to clean than at once; the rest play as they come"
+                        );
+                    }
+                    continue;
+                }
+                Entry::Vacant(entry) => entry.insert(Cleaned::default()),
+            };
+            cleaned.clean(known.cleaning, samples, self.tick);
+        }
+    }
+
+    /// `user`'s frame as cleaned this tick, if it was.
+    fn cleaned(&self, user: u64) -> Option<&[i16]> {
+        if !self.cleaning {
+            return None;
+        }
+        let cleaned = self.cleaned.get(&user)?;
+        (cleaned.heard == self.tick).then_some(cleaned.frame.as_slice())
+    }
+
+    /// Hands what the call sent to every echo gate, whether its person
+    /// speaks or not: each keeps its own timeline of what we said.
+    fn sent(&mut self, frame: Option<&[f32]>) {
+        for cleaned in self.cleaned.values_mut() {
+            if let Some(gate) = &mut cleaned.gate {
+                gate.sent(frame);
+            }
+        }
+    }
+}
+
+/// Someone's voice as it's cleaned, from the first tick they spoke with it
+/// on. Their denoiser comes when they speak and goes after
+/// [`DENOISER_AWAY`]; about 45 KB in all.
+#[derive(Default)]
+struct Cleaned {
+    denoiser: Option<Rnnoise>,
+    gate: Option<EchoGate>,
+    /// Their 20 ms in one channel as it's cleaned.
+    mono: Vec<f32>,
+    /// What the mix plays of them, interleaved stereo as it came.
+    frame: Vec<i16>,
+    /// The tick they last spoke on.
+    heard: u64,
+}
+
+impl Cleaned {
+    /// Keeps only what `cleaning` still asks for; whether anything is.
+    fn keep(&mut self, cleaning: Cleaning) -> bool {
+        if !cleaning.noise {
+            self.denoiser = None;
+        }
+        if !cleaning.own_echo {
+            self.gate = None;
+        }
+        cleaning.any()
+    }
+
+    /// Cleans their `samples` of tick `tick` into [`Self::frame`]: their
+    /// two channels in one, RNNoise on each 10 ms, and the echo gate.
+    fn clean(&mut self, cleaning: Cleaning, samples: &[i16], tick: u64) {
+        let back = self.heard + 1 != tick;
+        self.heard = tick;
+        self.mono.resize(FRAME, 0.0);
+        self.frame.resize(FRAME_SAMPLES, 0);
+        let channels = usize::from(CHANNELS);
+        let mut taken = 0;
+        for (mono, sample) in self.mono.iter_mut().zip(samples.chunks_exact(channels)) {
+            *mono = sample.iter().map(|value| f32::from(*value)).sum::<f32>() / channels as f32;
+            taken += 1;
+        }
+        self.mono[taken..].fill(0.0);
+        if cleaning.noise {
+            let fresh = self.denoiser.is_none();
+            let denoiser = self
+                .denoiser
+                .get_or_insert_with(|| Rnnoise::new(THEIR_NOISE_LIMIT));
+            // What it held of their last words would otherwise come first.
+            if back && !fresh {
+                denoiser.clear();
+            }
+            for block in self.mono.chunks_exact_mut(BLOCK) {
+                denoiser.block(block);
+            }
+        }
+        if cleaning.own_echo {
+            // The gate hears them in full scale, as what the call sent.
+            for value in &mut self.mono {
+                *value /= 32768.0;
+            }
+            self.gate
+                .get_or_insert_with(EchoGate::new)
+                .heard(&mut self.mono);
+            for value in &mut self.mono {
+                *value *= 32768.0;
+            }
+        }
+        for (sample, mono) in self.frame.chunks_exact_mut(channels).zip(&self.mono) {
+            sample.fill(mono.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
+        }
+    }
 }
 
 /// Samples in one 20 ms frame of the call, interleaved stereo.
@@ -194,19 +454,17 @@ fn recycle(frame: Vec<i16>) {
     }
 }
 
-/// Sums everyone's 20 ms of interleaved stereo into `out`, each at the volume
-/// chosen for them, and the next 20 ms of each sound at its own volume times
+/// Sums everyone's 20 ms of interleaved stereo into `out`, each at the gain
+/// it comes with, and the next 20 ms of each sound at its own volume times
 /// the `speakers'`, clipping at full scale. Sounds that ended go.
-fn mix(
-    voices: &[(u64, &[i16])],
-    volume: impl Fn(u64) -> f32,
+fn mix<'a>(
+    voices: impl IntoIterator<Item = (&'a [i16], f32)>,
     sounds: &mut Vec<Playing>,
     speakers: f32,
     out: &mut [i16],
 ) {
     let mut sum = [0f32; FRAME_SAMPLES];
-    for (user, samples) in voices {
-        let gain = volume(*user);
+    for (samples, gain) in voices {
         if gain == 0.0 {
             continue;
         }
@@ -505,8 +763,12 @@ impl MicrophoneThread {
                 // Held up past the microphone's buffer by a game or a
                 // stream's encoder, it loses audio, and the call sends
                 // gaps: others hear a robotic voice.
+                // The suppressor's model loads first, at normal priority:
+                // DeepFilterNet's takes longer than a real-time thread may
+                // run without waiting (`audio_io`'s RLIMIT_RTTIME).
+                let mut denoiser =
+                    Some(Denoiser::new(crate::noise::chosen(), crate::noise::limit()));
                 crate::audio_io::raise_capture_priority();
-                let mut denoiser = None;
                 for request in waiting {
                     denoiser = request.run(denoiser);
                 }
@@ -768,7 +1030,8 @@ impl Pace {
 }
 
 /// Opens the speakers and returns them with the queue that feeds them.
-/// Every played frame also goes to `reverse` for echo cancellation.
+/// Every played frame also goes to `reverse` for echo cancellation, while
+/// it's on.
 pub fn speakers(
     speaker: Option<&str>,
     reverse: SyncSender<Vec<i16>>,
@@ -831,6 +1094,12 @@ pub fn speakers(
                     continue;
                 }
                 stream.write(&frame);
+                // Without echo cancellation nothing takes the mix as its
+                // reference.
+                if !crate::noise::echo_cancellation() {
+                    recycle(frame);
+                    continue;
+                }
                 if let Err(TrySendError::Full(frame) | TrySendError::Disconnected(frame)) =
                     reverse.try_send(frame)
                 {
@@ -847,12 +1116,15 @@ pub fn speakers(
     Ok((Speakers { stop }, frames))
 }
 
-/// The microphone's processing, block by block: WebRTC cancels echo and
-/// filters out rumble, the chosen suppressor takes out noise and hears
+/// The microphone's processing, block by block: WebRTC cancels echo, unless
+/// turned off, and filters out rumble, the chosen suppressor takes out noise and hears
 /// speech, WebRTC controls the gain of what's left, and Yapfast levels it and
 /// sets its volume. The gate decides what's sent.
 struct Processing {
     echo: AudioProcessingModule,
+    /// Whether `echo` cancels echo, or only filters out rumble, as
+    /// [`crate::noise::echo_cancellation`] said when it was made.
+    cancelling: bool,
     /// Takes out the room's reverb while asked to.
     dereverb: Option<crate::dereverb::Dereverb>,
     denoiser: Denoiser,
@@ -872,11 +1144,11 @@ struct Processing {
 impl Processing {
     /// Takes up `denoiser` if it's the suppressor chosen.
     fn new(denoiser: Option<Denoiser>) -> Self {
-        let mut echo = AudioProcessingModule::new(true, false, true, false);
-        let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
+        let cancelling = crate::noise::echo_cancellation();
         let chosen = crate::noise::chosen();
         Self {
-            echo,
+            echo: echo_module(cancelling),
+            cancelling,
             dereverb: None,
             denoiser: denoiser
                 .filter(|denoiser| denoiser.suppressor() == chosen)
@@ -891,11 +1163,13 @@ impl Processing {
         }
     }
 
-    /// Notes what the speakers played, for echo cancellation.
+    /// Notes what the speakers played, for echo cancellation, while it's on.
     fn played(&mut self, frame: &mut [i16]) {
-        let _ = self
-            .echo
-            .process_reverse_stream(frame, SAMPLE_RATE as i32, i32::from(CHANNELS));
+        if self.cancelling {
+            let _ =
+                self.echo
+                    .process_reverse_stream(frame, SAMPLE_RATE as i32, i32::from(CHANNELS));
+        }
     }
 
     /// Processes 10 ms of mono microphone in place, and returns the blocks
@@ -903,6 +1177,12 @@ impl Processing {
     /// push-to-talk while the key is up. `lightly`, the suppressor does
     /// only what it must, to catch up ([`Pace`]).
     fn block(&mut self, block: &mut [i16], lightly: bool) -> &[[f32; BLOCK]] {
+        let cancelling = crate::noise::echo_cancellation();
+        if cancelling != self.cancelling {
+            tracing::info!(cancelling, "Discord microphone switches echo cancellation");
+            self.echo = echo_module(cancelling);
+            self.cancelling = cancelling;
+        }
         let _ = self.echo.process_stream(block, SAMPLE_RATE as i32, 1);
         let chosen = crate::noise::chosen();
         if self.denoiser.suppressor() != chosen {
@@ -970,6 +1250,16 @@ impl Processing {
         self.gate.sensitivity = crate::noise::sensitivity();
         self.gate.block(&self.samples, level, speech)
     }
+}
+
+/// WebRTC's module that comes first on the microphone: AEC3 and the
+/// high-pass filter while `cancelling`, else the filter alone.
+fn echo_module(cancelling: bool) -> AudioProcessingModule {
+    let mut echo = AudioProcessingModule::new(cancelling, false, true, false);
+    if cancelling {
+        let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
+    }
+    echo
 }
 
 /// Runs the microphone through a call's processing for [`GateMeter`]
@@ -1110,12 +1400,16 @@ impl CaptureRequest {
 /// mono 16-bit 48 kHz as long as the input, is what the speakers played,
 /// for echo cancellation, given a 20 ms stereo frame at a time as a call
 /// gives it; then `YAPFAST_AUDIO_ECHOED` gets the microphone with only echo
-/// cancelled. `YAPFAST_LEVELING=off` turns off evening out the voice.
-/// `YAPFAST_PUSH_TO_TALK`, a byte for each block, not 0 while the key is
-/// down, puts the microphone in push-to-talk.
+/// cancelled. `YAPFAST_ECHO_CANCELLATION=off` processes it as with echo
+/// cancellation turned off in Settings. `YAPFAST_LEVELING=off` turns off
+/// evening out the voice. `YAPFAST_PUSH_TO_TALK`, a byte for each block, not
+/// 0 while the key is down, puts the microphone in push-to-talk.
 #[test]
 #[ignore = "needs YAPFAST_AUDIO_IN and YAPFAST_AUDIO_OUT"]
 fn processes_a_recording() {
+    if std::env::var("YAPFAST_ECHO_CANCELLATION").is_ok_and(|value| value == "off") {
+        crate::noise::set_echo_cancellation(false);
+    }
     if let Ok(name) = std::env::var("YAPFAST_SUPPRESSOR") {
         crate::noise::set(serde_json::from_value(name.into()).unwrap());
     }
@@ -1277,25 +1571,34 @@ fn open_microphone(microphone: Option<&str>) -> Result<LastingInput<i16>> {
 mod tests {
     use super::*;
 
+    /// Mixes `voices`, each at the gain `volume` gives its user.
+    fn mixed(voices: &[(u64, &[i16])], volume: impl Fn(u64) -> f32) -> Vec<i16> {
+        let mut out = vec![1i16; FRAME * 2];
+        mix(
+            voices
+                .iter()
+                .map(|(user, samples)| (*samples, volume(*user))),
+            &mut Vec::new(),
+            1.0,
+            &mut out,
+        );
+        out
+    }
+
     #[test]
     fn mixing_adds_voices_and_clips() {
         let loud = vec![30_000i16; FRAME * 2];
         let quiet = vec![100i16; FRAME * 2];
         let as_they_come = |_| 1.0;
-        let mixed = |voices: &[(u64, &[i16])], volume: &dyn Fn(u64) -> f32| {
-            let mut out = vec![1i16; FRAME * 2];
-            mix(voices, volume, &mut Vec::new(), 1.0, &mut out);
-            out
-        };
         assert_eq!(
-            mixed(&[(1, &loud), (2, &loud), (3, &quiet)], &as_they_come)[0],
+            mixed(&[(1, &loud), (2, &loud), (3, &quiet)], as_they_come)[0],
             i16::MAX
         );
-        assert_eq!(mixed(&[(3, &quiet)], &as_they_come)[0], 100);
-        assert!(mixed(&[], &as_they_come).iter().all(|sample| *sample == 0));
+        assert_eq!(mixed(&[(3, &quiet)], as_they_come)[0], 100);
+        assert!(mixed(&[], as_they_come).iter().all(|sample| *sample == 0));
         // Each voice at its own volume.
         let chosen = |user| if user == 3 { 1.5 } else { 0.0 };
-        assert_eq!(mixed(&[(1, &loud), (3, &quiet)], &chosen)[0], 150);
+        assert_eq!(mixed(&[(1, &loud), (3, &quiet)], chosen)[0], 150);
     }
 
     #[test]
@@ -1309,9 +1612,14 @@ mod tests {
         }];
         let quiet = vec![100i16; FRAME_SAMPLES];
         let mut out = vec![0i16; FRAME_SAMPLES];
-        mix(&[(3, &quiet)], |_| 1.0, &mut sounds, 0.5, &mut out);
+        mix([(quiet.as_slice(), 1.0f32)], &mut sounds, 0.5, &mut out);
         assert!(out.iter().all(|sample| *sample == 1100));
-        mix(&[], |_| 1.0, &mut sounds, 0.5, &mut out);
+        mix(
+            std::iter::empty::<(&[i16], f32)>(),
+            &mut sounds,
+            0.5,
+            &mut out,
+        );
         assert_eq!(out[FRAME_SAMPLES / 2 - 1], 1000);
         assert_eq!(out[FRAME_SAMPLES / 2], 0);
         assert!(sounds.is_empty(), "the sound ended");
@@ -1884,6 +2192,131 @@ mod tests {
         let hiss = vec![10i16; FRAME * 2];
         hearing.tick(&[(1, &speech), (2, &hiss)]);
         assert_eq!(hearing.speaking(), vec![1]);
+    }
+
+    const NOISE_ONLY: Cleaning = Cleaning {
+        noise: true,
+        own_echo: false,
+    };
+
+    /// 20 ms of hiss with a tone in it, the same in both channels, as a
+    /// sender in mono sends it.
+    fn noisy_frame(tick: usize, seed: &mut u32) -> Vec<i16> {
+        (0..FRAME)
+            .flat_map(|at| {
+                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (*seed >> 16) as f32 / 65536.0 * 2000.0 - 1000.0;
+                let time = (tick * FRAME + at) as f32 / SAMPLE_RATE as f32;
+                let tone = 3000.0 * (time * 220.0 * std::f32::consts::TAU).sin();
+                let sample = (noise + tone) as i16;
+                [sample, sample]
+            })
+            .collect()
+    }
+
+    fn energy(samples: &[i16]) -> f32 {
+        samples
+            .iter()
+            .map(|sample| f32::from(*sample).powi(2))
+            .sum()
+    }
+
+    #[test]
+    fn a_call_plays_each_person_at_their_volume_without_asking_each_tick() {
+        crate::volume::set(crate::volume::Kind::Voice, "930001", 0.5);
+        crate::volume::mute("930003", true);
+        let mut people = People::new();
+        let speakers = people.speakers;
+        assert_eq!(people.gain(930001), 0.5 * speakers);
+        assert_eq!(people.gain(930002), speakers, "as they come");
+        assert_eq!(people.gain(930003), 0.0, "muted here");
+        // A change reaches the call on its next tick.
+        crate::volume::set(crate::volume::Kind::Voice, "930001", 1.5);
+        people.next_tick();
+        assert_eq!(people.gain(930001), 1.5 * people.speakers);
+        crate::volume::set(crate::volume::Kind::Voice, "930001", 1.0);
+        crate::volume::mute("930003", false);
+    }
+
+    #[test]
+    fn only_those_cleaned_are_and_their_noise_goes_down() {
+        let (cleaned, left) = (940_001u64, 940_002u64);
+        crate::volume::set_cleaning("940001", NOISE_ONLY);
+        let mut people = People::new();
+        let mut seed = 5;
+        let (mut before, mut after) = (0.0, 0.0);
+        for tick in 0..150 {
+            let frame = noisy_frame(tick, &mut seed);
+            people.next_tick();
+            people.clean(&[(cleaned, &frame), (left, &frame)]);
+            assert!(people.cleaned(left).is_none(), "left as they come");
+            let out = people.cleaned(cleaned).expect("cleaned this tick");
+            assert_eq!(out.len(), frame.len());
+            assert!(
+                out.chunks_exact(2).all(|pair| pair[0] == pair[1]),
+                "the same in both channels"
+            );
+            // RNNoise takes a while to learn the noise.
+            if tick >= 50 {
+                before += energy(&frame);
+                after += energy(out);
+            }
+        }
+        assert!(after < before, "{after} of {before}");
+        // Turned off, it lets go at once.
+        crate::volume::set_cleaning("940001", Cleaning::default());
+        people.next_tick();
+        assert!(people.cleaned.is_empty());
+        assert!(people.cleaned(cleaned).is_none());
+    }
+
+    #[test]
+    fn nothing_is_cleaned_while_deafened_and_the_denoiser_goes_once_they_do() {
+        let user = 950_001u64;
+        crate::volume::set_cleaning("950001", NOISE_ONLY);
+        let (connection, _) = tokio::sync::mpsc::unbounded_channel();
+        let hearing = Hearing::new(connection);
+        let (output, played) = mpsc::sync_channel(QUEUE);
+        hearing.set_output(Some(output));
+        let mut seed = 9;
+        let frame = noisy_frame(0, &mut seed);
+        hearing.tick(&[(user, &frame)]);
+        assert!(lock(&hearing.people).cleaned(user).is_some());
+        assert!(played.try_recv().is_ok(), "mixed");
+        hearing.set_deafened(true);
+        hearing.tick(&[(user, &frame)]);
+        assert!(lock(&hearing.people).cleaned(user).is_none(), "deafened");
+        assert!(played.try_recv().is_err(), "nothing mixed");
+        // Away past the denoiser's time, they're forgotten.
+        let mut people = lock(&hearing.people);
+        for _ in 0..DENOISER_AWAY + TICKS_PER_SECOND {
+            people.next_tick();
+        }
+        assert!(!people.cleaned.contains_key(&user));
+        drop(people);
+        crate::volume::set_cleaning("950001", Cleaning::default());
+    }
+
+    #[test]
+    fn at_most_eight_are_cleaned_at_once() {
+        let users: Vec<u64> = (960_001..=960_009).collect();
+        for user in &users {
+            crate::volume::set_cleaning(&user.to_string(), NOISE_ONLY);
+        }
+        let mut people = People::new();
+        let mut seed = 11;
+        let frame = noisy_frame(0, &mut seed);
+        let voices: Vec<(u64, &[i16])> = users.iter().map(|user| (*user, &frame[..])).collect();
+        people.next_tick();
+        people.clean(&voices);
+        let cleaned = users
+            .iter()
+            .filter(|user| people.cleaned(**user).is_some())
+            .count();
+        assert_eq!(cleaned, CLEANED_AT_ONCE);
+        for user in &users {
+            crate::volume::set_cleaning(&user.to_string(), Cleaning::default());
+        }
     }
 
     const MS: Duration = Duration::from_millis(1);

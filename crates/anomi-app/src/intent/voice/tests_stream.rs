@@ -33,6 +33,7 @@ fn streaming(name: &str, phase: SharePhase) -> (App, std::path::PathBuf) {
         resolution: Resolution::P720,
         fps: 15,
         high_quality: true,
+        max_kbps: None,
     };
     (app, folder)
 }
@@ -56,7 +57,7 @@ fn while_live_the_share_button_opens_the_streams_menu_at_once() {
     assert!(live.changeable);
     assert_eq!(
         marked(&live.quality.submenu),
-        ["15 fps", "720p", "Higher quality"]
+        ["15 fps", "720p", "Higher quality", "Auto"]
     );
     // A second click closes it.
     drop(super::share::open(&mut app, Spot::default()));
@@ -96,8 +97,30 @@ fn a_choice_changes_the_stream_at_once_and_the_menu_stays_open() {
     assert_eq!(live.open, Some(Part::Quality), "its submenu too");
     assert_eq!(
         marked(&live.quality.submenu),
-        ["60 fps", "Source", "Higher quality"]
+        ["60 fps", "Source", "Higher quality", "Auto"]
     );
+    drop(app);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+/// A bitrate limit changes the stream at once, kept with its quality, and
+/// Auto takes it away again.
+#[test]
+fn a_bitrate_limit_changes_the_stream_at_once() {
+    let (mut app, folder) = streaming("stream-bitrate", SharePhase::Live);
+    drop(super::share::open(&mut app, Spot::default()));
+    ask(&mut app, share::Intent::Hover(Some(Part::Quality)));
+    ask(&mut app, share::Intent::Bitrate(Some(6_000)));
+    assert_eq!(app.core.state.voice.quality.max_kbps, Some(6_000));
+    assert_eq!(app.core.state.voice.quality.fps, 15, "the rest as it was");
+    let live = app.vm.voice.share.live.as_ref().unwrap();
+    assert_eq!(
+        marked(&live.quality.submenu),
+        ["15 fps", "720p", "Higher quality", "6 Mbit/s"]
+    );
+    ask(&mut app, share::Intent::Bitrate(None));
+    assert_eq!(app.core.state.voice.quality.max_kbps, None);
+    assert!(app.vm.shell.is_open(Layer::Share), "the menu stays open");
     drop(app);
     let _ = std::fs::remove_dir_all(folder);
 }

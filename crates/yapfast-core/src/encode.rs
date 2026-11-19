@@ -1,11 +1,15 @@
 //! Encoding for Go Live and the camera, through native/vp8.c with the libvpx
 //! inside libwebrtc, native/h264.c with x264 (vendor/x264-src), and
-//! native/hwenc.c with FFmpeg's hardware encoders (vendor/ffmpeg-src) where
-//! the GPU has one. Frames arrive as RGBA or I420 and leave as VP8 frames,
+//! native/hwenc.c with FFmpeg's hardware encoders (vendor/ffmpeg-src) on the
+//! graphics adapter asked for ([`Device`]). Frames arrive as RGBA or I420
+//! and leave as VP8 frames,
 //! H264 or H265 access units in Annex B form, or AV1 temporal units of OBUs
 //! that give their sizes.
 
-use std::ffi::{c_int, c_long, c_longlong, c_uchar, c_uint, c_ulong};
+use std::{
+    ffi::{c_int, c_long, c_longlong, c_uchar, c_uint, c_ulong},
+    path::PathBuf,
+};
 
 use anyhow::{Result, bail};
 use livekit::webrtc::{
@@ -98,8 +102,13 @@ unsafe extern "C" {
 
 #[cfg(hwenc)]
 unsafe extern "C" {
-    fn yapfast_hwenc_new(
+    #[allow(clippy::too_many_arguments)]
+    fn yapfast_hwenc_open(
         codec: c_uint,
+        on: c_uint,
+        node: *const std::ffi::c_char,
+        kernel: *const std::ffi::c_char,
+        gpu: c_int,
         width: c_uint,
         height: c_uint,
         fps: c_uint,
@@ -141,6 +150,33 @@ pub enum Effort {
     High,
 }
 
+/// Where an encoder runs: on the processor, or on a graphics adapter's
+/// encoder, which `stream_worker` chooses by Settings' "Encode streams on".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Device {
+    /// libvpx for VP8, x264 for H264.
+    Processor,
+    /// The first graphics encoder that opens, of whichever adapter: NVENC,
+    /// then AMF, then VA-API on each render node.
+    AnyGpu,
+    /// NVIDIA's NVENC on the CUDA device numbered `index`, CUDA counting
+    /// NVIDIA's cards in PCI bus order, as `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+    /// has it: the stream worker starts with that.
+    Nvenc { index: u32 },
+    /// AMD's AMF, on the adapter it picks (Windows).
+    Amf,
+    /// VA-API on the render node `node`, with the libva drivers its kernel
+    /// driver `kernel` calls for (radeonsi for amdgpu); an empty `kernel`
+    /// reads it from sysfs.
+    Vaapi { node: PathBuf, kernel: String },
+}
+
+impl Device {
+    pub fn is_gpu(&self) -> bool {
+        *self != Self::Processor
+    }
+}
+
 pub struct Encoder {
     raw: *mut Raw,
     codec: Codec,
@@ -148,6 +184,9 @@ pub struct Encoder {
     /// Which encoder runs: "libvpx", "x264", or FFmpeg's name for a
     /// hardware one, such as "h264_nvenc".
     engine: String,
+    /// Where it runs: the processor once x264 took over from a graphics
+    /// encoder that failed.
+    device: Device,
     encode: Encode,
     set_bitrate: SetBitrate,
     free: Free,
@@ -178,7 +217,7 @@ type Opened = (*mut Raw, Encode, SetBitrate, Free, String);
 
 impl Encoder {
     /// An encoder for `width` by `height` frames, which must be even. With
-    /// `hardware`, H264 goes to the GPU's encoder where there is one, and to
+    /// `hardware`, H264 goes to the first GPU encoder that opens, and to
     /// x264 otherwise. H265 and AV1 have only the GPU's.
     pub fn new(
         codec: Codec,
@@ -189,12 +228,31 @@ impl Encoder {
         effort: Effort,
         hardware: bool,
     ) -> Result<Self> {
+        if hardware
+            && let Ok(encoder) = Self::on(codec, width, height, fps, kbps, effort, &Device::AnyGpu)
+        {
+            return Ok(encoder);
+        }
+        Self::on(codec, width, height, fps, kbps, effort, &Device::Processor)
+    }
+
+    /// An encoder for `width` by `height` frames, which must be even, on
+    /// `device` and nowhere else: the error says why its encoder didn't open.
+    pub fn on(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        kbps: u32,
+        effort: Effort,
+        device: &Device,
+    ) -> Result<Self> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             bail!("{codec:?} frames need an even size, not {width}x{height}");
         }
-        let opened = match hardware.then(|| open_hardware(codec, width, height, fps, kbps)) {
-            Some(Some(opened)) => opened,
-            _ => open_software(codec, width, height, fps, kbps, effort)?,
+        let opened = match device {
+            Device::Processor => open_software(codec, width, height, fps, kbps, effort)?,
+            gpu => open_hardware(codec, gpu, width, height, fps, kbps)?,
         };
         let (raw, encode, set_bitrate, free, engine) = opened;
         let pixels = (width * height) as usize;
@@ -203,6 +261,7 @@ impl Encoder {
             codec,
             effort,
             engine,
+            device: device.clone(),
             encode,
             set_bitrate,
             free,
@@ -222,12 +281,18 @@ impl Encoder {
         &self.engine
     }
 
-    fn hardware(&self) -> bool {
-        !matches!(self.engine.as_str(), "libvpx" | "x264")
+    /// Where it runs.
+    pub fn device(&self) -> &Device {
+        &self.device
     }
 
-    /// Puts `opened` in place of the encoder running now.
+    fn hardware(&self) -> bool {
+        self.device.is_gpu()
+    }
+
+    /// Puts `opened`, on the processor, in place of the encoder running now.
     fn replace(&mut self, opened: Opened) {
+        self.device = Device::Processor;
         // SAFETY: raw came from its codec's constructor and is freed once.
         unsafe { (self.free)(self.raw) };
         (
@@ -416,7 +481,11 @@ fn open_software(
     kbps: u32,
     effort: Effort,
 ) -> Result<Opened> {
-    let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4)) as u32;
+    // From the cores the process may run on: Windows' available_parallelism
+    // doesn't see them.
+    let threads = u32::try_from(crate::cpu::threads())
+        .unwrap_or(4)
+        .clamp(1, 4);
     // SAFETY: plain values; null means the library refused the configuration.
     let opened: Opened = match codec {
         Codec::Vp8 => (
@@ -444,21 +513,47 @@ fn open_software(
     Ok(opened)
 }
 
-/// The GPU's encoder for `codec`, if it has one that opens.
+/// The encoder for `codec` on the graphics adapter `device` names, or why
+/// none opened there.
 #[cfg(hwenc)]
-fn open_hardware(codec: Codec, width: u32, height: u32, fps: u32, kbps: u32) -> Option<Opened> {
+fn open_hardware(
+    codec: Codec,
+    device: &Device,
+    width: u32,
+    height: u32,
+    fps: u32,
+    kbps: u32,
+) -> Result<Opened> {
+    use std::ffi::CString;
     let number = match codec {
         Codec::H264 => 0,
         Codec::H265 => 1,
         Codec::Av1 => 2,
-        Codec::Vp8 => return None,
+        Codec::Vp8 => bail!("VP8 encodes only on the processor"),
     };
+    // As native/hwenc.c numbers them.
+    let (on, gpu, node, kernel) = match device {
+        Device::Processor => bail!("the processor has no graphics encoder"),
+        Device::AnyGpu => (0, -1, None, None),
+        Device::Nvenc { index } => (1, c_int::try_from(*index)?, None, None),
+        Device::Amf => (2, -1, None, None),
+        Device::Vaapi { node, kernel } => {
+            let node = CString::new(node.as_os_str().as_encoded_bytes())?;
+            (3, -1, Some(node), Some(CString::new(kernel.as_str())?))
+        }
+    };
+    let pointer =
+        |text: &Option<CString>| text.as_ref().map_or(std::ptr::null(), |text| text.as_ptr());
     let mut report = [0u8; 512];
-    // SAFETY: plain values and a buffer of the size given, which the shim
-    // ends with a zero.
+    // SAFETY: plain values, strings that end with a zero and outlive the
+    // call, and a buffer of the size given, which the shim ends with a zero.
     let raw = unsafe {
-        yapfast_hwenc_new(
+        yapfast_hwenc_open(
             number,
+            on,
+            pointer(&node),
+            pointer(&kernel),
+            gpu,
             width,
             height,
             fps,
@@ -472,11 +567,11 @@ fn open_hardware(codec: Codec, width: u32, height: u32, fps: u32, kbps: u32) -> 
         |text| text.to_string_lossy().into_owned(),
     );
     if raw.is_null() {
-        tracing::info!(?codec, tried = report, "no GPU encoder opened");
-        return None;
+        tracing::info!(?codec, ?device, tried = report, "no GPU encoder opened");
+        bail!("no {} encoder opened on {device:?}: {report}", codec.name());
     }
     tracing::debug!(engine = report, ?codec, "encoding on the GPU");
-    Some((
+    Ok((
         raw,
         yapfast_hwenc_encode,
         yapfast_hwenc_set_bitrate,
@@ -486,8 +581,8 @@ fn open_hardware(codec: Codec, width: u32, height: u32, fps: u32, kbps: u32) -> 
 }
 
 #[cfg(not(hwenc))]
-fn open_hardware(_: Codec, _: u32, _: u32, _: u32, _: u32) -> Option<Opened> {
-    None
+fn open_hardware(codec: Codec, _: &Device, _: u32, _: u32, _: u32, _: u32) -> Result<Opened> {
+    bail!("this build has no graphics encoder for {}", codec.name())
 }
 
 impl Drop for Encoder {
@@ -541,6 +636,47 @@ mod tests {
         let vp8 = Encoder::new(Codec::Vp8, 64, 36, 30, 500, Effort::Light, false).unwrap();
         assert!(vp8.tuned(30, Effort::High), "VP8 takes no effort");
         assert!(!vp8.tuned(15, Effort::Light));
+    }
+
+    /// On the processor, only the processor's encoders; on an adapter, only
+    /// that adapter's, failing rather than falling back to x264, so the
+    /// stream worker can try the next one and say so. Neither touches a GPU.
+    #[test]
+    fn opens_only_where_it_is_told() {
+        let x264 = Encoder::on(
+            Codec::H264,
+            64,
+            36,
+            30,
+            500,
+            Effort::Light,
+            &Device::Processor,
+        )
+        .unwrap();
+        assert_eq!((x264.engine(), x264.device()), ("x264", &Device::Processor));
+        assert!(
+            Encoder::on(
+                Codec::H265,
+                64,
+                36,
+                30,
+                500,
+                Effort::Light,
+                &Device::Processor
+            )
+            .is_err()
+        );
+        // NVIDIA's kernel driver has no VA-API encoder to try.
+        let nowhere = Device::Vaapi {
+            node: PathBuf::from("/dev/dri/by-path/pci-0000:ff:00.0-render"),
+            kernel: "nvidia".into(),
+        };
+        let error = Encoder::on(Codec::H264, 64, 36, 30, 500, Effort::Light, &nowhere)
+            .err()
+            .expect("nothing to open");
+        eprintln!("{error:#}");
+        assert!(Encoder::on(Codec::Vp8, 64, 36, 30, 500, Effort::Light, &Device::AnyGpu).is_err());
+        assert!(!Device::Processor.is_gpu() && nowhere.is_gpu());
     }
 
     #[test]

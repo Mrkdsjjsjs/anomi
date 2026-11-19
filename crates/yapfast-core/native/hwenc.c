@@ -1,19 +1,23 @@
 /* Hardware encoding for Go Live, through FFmpeg's encoders in
- * vendor/ffmpeg-src: NVIDIA's NVENC, then AMD's AMF on Windows and VA-API
- * (AMD and Intel) on Linux.
+ * vendor/ffmpeg-src: NVIDIA's NVENC, AMD's AMF on Windows and VA-API (AMD
+ * and Intel) on Linux.
  * The same interface as h264.c, so Rust drives both alike: I420 frames in,
- * Annex B access units out, each NAL unit after a start code. Opening tries
- * each encoder in turn and says which one opened, or why none did.
+ * Annex B access units out, each NAL unit after a start code. Opening takes
+ * the graphics adapter Rust chose (NVENC on a CUDA device by its index, AMF,
+ * or VA-API on one render node), or tries each encoder in turn, and says
+ * which one opened, or why none did.
  *
  * Settings, as measured on screen recordings and games
  * (docs/discord/go-live.md):
  * low-latency tuning, no B-frames, a frame out for each frame in, the
  * bitrate capped over half a second without padding a calm screen, H264's
  * Main profile, and parameter sets before each IDR. */
-#define _POSIX_C_SOURCE 200809L
+/* POSIX 2008 with XSI, for realpath. */
+#define _XOPEN_SOURCE 700
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef __linux__
 #include <unistd.h>
@@ -26,6 +30,12 @@
 
 /* The codecs, as Rust numbers them. */
 enum { CODEC_H264, CODEC_HEVC, CODEC_AV1 };
+
+/* Where to open the encoder, as Rust numbers it: the first that opens of
+ * every family, NVENC on one CUDA device, AMF on its default adapter, or
+ * VA-API on one render node. The last three index ENCODERS' columns, plus
+ * one. */
+enum { ON_ANY, ON_NVENC, ON_AMF, ON_VAAPI };
 
 struct yapfast_hwenc {
   AVCodecContext *codec;
@@ -95,9 +105,11 @@ static int open_vaapi(struct yapfast_hwenc *h, AVCodecContext *codec, struct va_
   return h->surface ? 0 : AVERROR(ENOMEM);
 }
 
+/* Opens `found` on `device` for VA-API, or for NVENC on CUDA device `gpu`
+ * where that's 0 or more, the first that opens otherwise. */
 static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va_device device,
-                        unsigned codec_id, unsigned width, unsigned height, unsigned fps,
-                        unsigned kbps) {
+                        int gpu, unsigned codec_id, unsigned width, unsigned height,
+                        unsigned fps, unsigned kbps) {
   int vaapi = device.path != NULL, amf = strstr(found->name, "_amf") != NULL;
   AVCodecContext *codec = h->codec = avcodec_alloc_context3(found);
   if (!codec) return AVERROR(ENOMEM);
@@ -156,6 +168,9 @@ static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va
     av_opt_set_int(options, "delay", 0, 0);
     av_opt_set_int(options, "forced-idr", 1, 0);
     if (codec_id == CODEC_H264) av_opt_set(options, "profile", "main", 0);
+    /* CUDA numbers the cards in PCI bus order: the worker starts with
+     * CUDA_DEVICE_ORDER=PCI_BUS_ID. */
+    if (gpu >= 0) av_opt_set_int(options, "gpu", gpu, 0);
   }
   ret = avcodec_open2(codec, found, NULL);
   if (ret < 0) return ret;
@@ -168,12 +183,12 @@ static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va
   return av_frame_get_buffer(h->frame, 0);
 }
 
-/* The encoders to try for each codec, best first; each system builds in
- * those it has. */
-static const char *const ENCODERS[][4] = {
-    [CODEC_H264] = {"h264_nvenc", "h264_amf", "h264_vaapi", NULL},
-    [CODEC_HEVC] = {"hevc_nvenc", "hevc_amf", "hevc_vaapi", NULL},
-    [CODEC_AV1] = {"av1_nvenc", "av1_amf", "av1_vaapi", NULL},
+/* The encoders of each codec, by family (ON_NVENC, ON_AMF, ON_VAAPI), best
+ * first; each system builds in those it has. */
+static const char *const ENCODERS[][3] = {
+    [CODEC_H264] = {"h264_nvenc", "h264_amf", "h264_vaapi"},
+    [CODEC_HEVC] = {"hevc_nvenc", "hevc_amf", "hevc_vaapi"},
+    [CODEC_AV1] = {"av1_nvenc", "av1_amf", "av1_vaapi"},
 };
 
 /* The libva drivers for each kernel driver whose GPUs encode, best first.
@@ -188,20 +203,36 @@ static const char *const VA_DRIVERS[][4] = {
     {"virtio_gpu", "virtio_gpu", NULL},
 };
 
-/* The kernel driver of /dev/dri/renderD<128 + n>, or an empty string. */
-static void kernel_driver(int n, char *name, size_t size) {
-  name[0] = 0;
+/* The name of the render node `node` resolves to, such as renderD128, into
+ * `name`: /dev/dri/by-path's names are links to it. */
+static void node_name(const char *node, char *name, size_t size) {
+  const char *base = node;
 #ifdef __linux__
-  char link[64], target[256];
-  snprintf(link, sizeof link, "/sys/class/drm/renderD%d/device/driver", 128 + n);
+  char *real = realpath(node, NULL);
+  if (real) base = real;
+#endif
+  const char *slash = strrchr(base, '/');
+  snprintf(name, size, "%s", slash ? slash + 1 : base);
+#ifdef __linux__
+  free(real);
+#endif
+}
+
+/* The kernel driver of the render node named `name`, such as renderD128,
+ * or an empty string. */
+static void kernel_driver(const char *name, char *kernel, size_t size) {
+  kernel[0] = 0;
+#ifdef __linux__
+  char link[96], target[256];
+  snprintf(link, sizeof link, "/sys/class/drm/%s/device/driver", name);
   ssize_t length = readlink(link, target, sizeof target - 1);
   if (length <= 0) return;
   target[length] = 0;
   const char *base = strrchr(target, '/');
   base = base ? base + 1 : target;
-  if (strlen(base) < size) memcpy(name, base, strlen(base) + 1);
+  if (strlen(base) < size) memcpy(kernel, base, strlen(base) + 1);
 #else
-  (void)n;
+  (void)name;
   (void)size;
 #endif
 }
@@ -212,65 +243,104 @@ struct opening {
   size_t report_size, used;
 };
 
-/* Opens `found` on `device`, or adds why it didn't open to the report. */
+/* Adds to the report why the encoder `label` names didn't open. */
+static void note(struct opening *o, const char *label, const char *why) {
+  if (o->used < o->report_size)
+    o->used += (size_t)snprintf(o->report + o->used, o->report_size - o->used, "%s%s: %s",
+                                o->used ? "; " : "", label, why);
+}
+
+/* Opens `found` on `device`, or on CUDA device `gpu` where that's 0 or
+ * more, or adds why it didn't open to the report. */
 static struct yapfast_hwenc *try_open(struct opening *o, const AVCodec *found,
-                                      struct va_device device) {
+                                      struct va_device device, int gpu) {
   const char *name = found->name;
   char label[96];
-  if (device.path)
-    snprintf(label, sizeof label, "%s (%s, %s)", name, device.path + strlen("/dev/dri/"),
-             device.driver);
-  else
+  if (device.path) {
+    char node[64];
+    node_name(device.path, node, sizeof node);
+    snprintf(label, sizeof label, "%s (%s, %s)", name, node, device.driver);
+  } else if (gpu >= 0) {
+    snprintf(label, sizeof label, "%s (GPU %d)", name, gpu);
+  } else {
     snprintf(label, sizeof label, "%s", name);
+  }
   struct yapfast_hwenc *h = av_mallocz(sizeof *h);
   if (!h) return NULL;
   first_error[0] = 0;
-  int ret = open_encoder(h, found, device, o->codec_id, o->width, o->height, o->fps, o->kbps);
+  int ret = open_encoder(h, found, device, gpu, o->codec_id, o->width, o->height, o->fps,
+                         o->kbps);
   if (ret >= 0) {
     snprintf(o->report, o->report_size, "%s", label);
     return h;
   }
   if (!first_error[0]) av_strerror(ret, first_error, sizeof first_error);
-  if (o->used < o->report_size)
-    o->used += (size_t)snprintf(o->report + o->used, o->report_size - o->used, "%s%s: %s",
-                                o->used ? "; " : "", label, first_error);
+  note(o, label, first_error);
   close_encoder(h);
   av_free(h);
   return NULL;
 }
 
-/* Opens the first encoder of `codec_id` that works, VA-API's on each GPU
- * that has a driver for it, and writes its name to `report`, or each one's
- * failure when none does. */
-struct yapfast_hwenc *yapfast_hwenc_new(unsigned codec_id, unsigned width, unsigned height,
-                                        unsigned fps, unsigned kbps, char *report,
-                                        size_t report_size) {
+/* Opens VA-API's `found` on the render node `node` with each libva driver
+ * its kernel driver calls for: `kernel`, or the one sysfs names when that's
+ * empty. A node with no such driver, or none at all, tries nothing. */
+static struct yapfast_hwenc *try_vaapi(struct opening *o, const AVCodec *found, const char *node,
+                                       const char *kernel) {
+  char name[64], named[32];
+  node_name(node, name, sizeof name);
+  if (!kernel[0]) {
+    kernel_driver(name, named, sizeof named);
+    kernel = named;
+  }
+  for (size_t i = 0; i < sizeof VA_DRIVERS / sizeof *VA_DRIVERS; i++) {
+    if (strcmp(kernel, VA_DRIVERS[i][0])) continue;
+    for (const char *const *driver = VA_DRIVERS[i] + 1; *driver; driver++) {
+      struct yapfast_hwenc *h = try_open(o, found, (struct va_device){node, *driver}, -1);
+      if (h) return h;
+    }
+  }
+  return NULL;
+}
+
+/* Opens an encoder of `codec_id` where `on` says (ON_ANY tries NVENC, AMF,
+ * then VA-API on each render node with a driver for it; ON_NVENC opens on
+ * CUDA device `gpu`, ON_VAAPI on the render node `node`, whose kernel
+ * driver is `kernel` or, when empty, the one sysfs names), and writes its
+ * name to `report`, or each one's failure when none opens. */
+struct yapfast_hwenc *yapfast_hwenc_open(unsigned codec_id, unsigned on, const char *node,
+                                         const char *kernel, int gpu, unsigned width,
+                                         unsigned height, unsigned fps, unsigned kbps,
+                                         char *report, size_t report_size) {
   if (report_size) report[0] = 0;
-  if (codec_id > CODEC_AV1) return NULL;
+  if (codec_id > CODEC_AV1 || on > ON_VAAPI) return NULL;
   av_log_set_level(AV_LOG_ERROR);
   av_log_set_callback(keep_error);
   struct opening o = {codec_id, width, height, fps, kbps, report, report_size, 0};
-  for (const char *const *name = ENCODERS[codec_id]; *name; name++) {
-    const AVCodec *found = avcodec_find_encoder_by_name(*name);
-    if (!found) continue;
-    struct yapfast_hwenc *h = NULL;
-    if (!strstr(*name, "_vaapi")) {
-      h = try_open(&o, found, (struct va_device){NULL, NULL});
-      if (h) return h;
+  for (unsigned family = ON_NVENC; family <= ON_VAAPI; family++) {
+    if (on != ON_ANY && on != family) continue;
+    const char *name = ENCODERS[codec_id][family - ON_NVENC];
+    const AVCodec *found = avcodec_find_encoder_by_name(name);
+    if (!found) {
+      if (on != ON_ANY) note(&o, name, "not in this build");
       continue;
     }
-    for (int n = 0; n < 8; n++) {
-      char kernel[32], path[32];
-      kernel_driver(n, kernel, sizeof kernel);
-      snprintf(path, sizeof path, "/dev/dri/renderD%d", 128 + n);
-      for (size_t i = 0; i < sizeof VA_DRIVERS / sizeof *VA_DRIVERS; i++) {
-        if (strcmp(kernel, VA_DRIVERS[i][0])) continue;
-        for (const char *const *driver = VA_DRIVERS[i] + 1; *driver; driver++) {
-          h = try_open(&o, found, (struct va_device){path, *driver});
-          if (h) return h;
-        }
+    struct yapfast_hwenc *h = NULL;
+    if (family == ON_NVENC) {
+      h = try_open(&o, found, (struct va_device){NULL, NULL}, on == ON_NVENC ? gpu : -1);
+    } else if (family == ON_AMF) {
+      h = try_open(&o, found, (struct va_device){NULL, NULL}, -1);
+    } else if (on == ON_VAAPI) {
+      size_t before = o.used;
+      h = try_vaapi(&o, found, node ? node : "", kernel ? kernel : "");
+      if (!h && o.used == before) note(&o, name, "no VA-API encoder for this graphics card");
+    } else {
+      for (int n = 0; n < 8 && !h; n++) {
+        char path[32];
+        snprintf(path, sizeof path, "/dev/dri/renderD%d", 128 + n);
+        h = try_vaapi(&o, found, path, "");
       }
     }
+    if (h) return h;
   }
   return NULL;
 }

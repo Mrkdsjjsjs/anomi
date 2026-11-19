@@ -10,7 +10,9 @@
 use yapfast_lang::tr;
 
 use anomi_vm::menu::Row;
-use anomi_vm::voice::share::{FRAME_RATES, Intent, Live, Part, Resolution, Rows, Share, Sound};
+use anomi_vm::voice::share::{
+    BITRATES, FRAME_RATES, Intent, Live, Part, Resolution, Rows, Share, Sound,
+};
 
 /// What the menu calls a resolution.
 pub fn resolution(resolution: Resolution) -> &'static str {
@@ -19,6 +21,42 @@ pub fn resolution(resolution: Resolution) -> &'static str {
         Resolution::P1080 => "1080p",
         Resolution::Source => tr!("Source"),
     }
+}
+
+/// What the menu calls a bitrate limit, in kbit/s; Auto for none. The
+/// steps are whole texts, as each language writes its decimals.
+pub fn bitrate(kbps: Option<u32>) -> String {
+    match kbps {
+        None => tr!("Auto").to_owned(),
+        Some(2_000) => tr!("2 Mbit/s").to_owned(),
+        Some(3_500) => tr!("3.5 Mbit/s").to_owned(),
+        Some(5_000) => tr!("5 Mbit/s").to_owned(),
+        Some(6_000) => tr!("6 Mbit/s").to_owned(),
+        Some(8_000) => tr!("8 Mbit/s").to_owned(),
+        Some(9_000) => tr!("9 Mbit/s").to_owned(),
+        Some(other) => tr!("{} kbit/s", other),
+    }
+}
+
+/// What Auto sends, under its name: Discord's limits.
+fn auto_limit() -> &'static str {
+    tr!("3.5 Mbit/s up to 720p, 9 above")
+}
+
+/// The limits, Auto first, as rows of `mark`'s kind.
+fn limits(share: &Share, mark: fn(Row<Intent>, bool) -> Row<Intent>) -> Vec<Row<Intent>> {
+    std::iter::once(None)
+        .chain(BITRATES.into_iter().map(Some))
+        .map(|kbps| {
+            let row = Row::new(bitrate(kbps), Intent::Bitrate(kbps));
+            let row = if kbps.is_none() {
+                row.subtitle(auto_limit())
+            } else {
+                row
+            };
+            mark(row, share.max_kbps == kbps)
+        })
+        .collect()
 }
 
 /// `share` with its rows made from its picks.
@@ -66,6 +104,11 @@ pub fn built(mut share: Share) -> Share {
             .subtitle(tr!("Sharper, at twice the CPU"))
             .checkbox(share.high_quality),
         ),
+        bitrate: Some(
+            Row::new(tr!("Bitrate limit"), Intent::Bitrates(!share.bitrates_open))
+                .subtitle(bitrate(share.max_kbps)),
+        ),
+        bitrates: limits(&share, Row::checked),
     };
     share.rows = rows;
     if let Some(mut live) = share.live.take() {
@@ -82,7 +125,8 @@ pub fn quality(resolution: Resolution, fps: u32) -> String {
 }
 
 /// The stream's menu's rows, from the picks: "Stream Quality" with the
-/// frame rates, the resolutions and the encoding beside it, "Sound" with
+/// frame rates, the resolutions, the encoding and the bitrate limit beside
+/// it, "Sound" with
 /// its choices, "Change Windows" and "Stop Streaming".
 fn stream(share: &Share, live: &mut Live) {
     let mut rates = vec![Row::heading(tr!("FRAME RATE"))];
@@ -107,6 +151,8 @@ fn stream(share: &Share, live: &mut Live) {
         .checkbox(share.high_quality)
         .plain(),
     );
+    rates.push(Row::heading(tr!("BITRATE LIMIT")).separated());
+    rates.extend(limits(share, |row, chosen| row.radio(chosen).plain()));
     let choice = |text: &str, sound: Sound| {
         Row::new(text, Intent::Sound(sound))
             .radio(share.sound == sound)

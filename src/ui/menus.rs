@@ -174,6 +174,8 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     let mut rows: Vec<MenuRow> = choices
         .into_iter()
         .filter(|choice| developer_mode || *choice != MenuChoice::CopyId)
+        // Anomi's own; this app has no rows for them.
+        .filter(|choice| !anomi_only(*choice))
         .map(|choice| {
             let (text, mut icon) = match choice {
                 MenuChoice::Timeout => (tr!("Time out {}", name()), &icons.timeout),
@@ -398,9 +400,21 @@ pub(super) fn menu(adapter: &Adapter, id: &str, person: bool) -> Menu {
     (rows, submenus)
 }
 
+/// The choices the core offers that only Anomi shows: taking the noise out
+/// of someone's voice and our own echo out of it, in a call. [`menu`] leaves
+/// them out, so nothing below shows or does them.
+fn anomi_only(choice: MenuChoice) -> bool {
+    matches!(
+        choice,
+        MenuChoice::SuppressTheirNoise | MenuChoice::RemoveMyEcho
+    )
+}
+
 /// What a menu row says for a choice, and its icon.
 fn label(icons: &Icons, choice: MenuChoice, in_call: bool) -> (&'static str, &slint::Image) {
     match choice {
+        // Never shown: see anomi_only.
+        MenuChoice::SuppressTheirNoise | MenuChoice::RemoveMyEcho => ("", &icons.mic_off),
         MenuChoice::MarkRead => (tr!("Mark as read"), &icons.read),
         MenuChoice::JoinVoice => (tr!("Join voice"), &icons.call),
         MenuChoice::OpenChat => (tr!("Open chat"), &icons.chat),
@@ -1133,6 +1147,8 @@ pub(super) fn choose(
             }
             None
         }
+        // Not in CHOICES, so never chosen here: see anomi_only.
+        MenuChoice::SuppressTheirNoise | MenuChoice::RemoveMyEcho => None,
         MenuChoice::SelfMute => ticked.map(|muted| Action::Voice(voice::Command::Mute(muted))),
         MenuChoice::SelfDeafen => {
             ticked.map(|deafened| Action::Voice(voice::Command::Deafen(deafened)))
@@ -1371,6 +1387,8 @@ fn choice_id(choice: MenuChoice) -> &'static str {
         MenuChoice::ServerSettings => "server-settings",
         MenuChoice::LocalMute => "local-mute",
         MenuChoice::SoundboardMute => "soundboard-mute",
+        MenuChoice::SuppressTheirNoise => "suppress-their-noise",
+        MenuChoice::RemoveMyEcho => "remove-my-echo",
         MenuChoice::SelfMute => "self-mute",
         MenuChoice::SelfDeafen => "self-deafen",
         MenuChoice::MoveTo => "move-to",

@@ -3287,10 +3287,14 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
                 2 => voice::Resolution::Source,
                 _ => voice::Resolution::P1080,
             };
+            // Anomi's stream menu chooses the ceiling; this app keeps the
+            // one remembered rather than clearing it.
+            let max_kbps = state.borrow().app.state.voice.quality.max_kbps;
             let quality = voice::StreamQuality {
                 resolution,
                 fps: fps.clamp(1, 60) as u32,
                 high_quality,
+                max_kbps,
             };
             state
                 .borrow_mut()

@@ -6,6 +6,12 @@
 //! (I19) and the window's placement (I14). Keys this
 //! interface doesn't know at all, such as a newer Slint app's, stay in
 //! [`Saved::other`] and go back into the file as they came.
+//!
+//! Anomi's own keys, which the Slint app doesn't have (the processor's
+//! cores, where streams encode, echo cancellation and the people whose
+//! voice is cleaned), are written only once set, so a file the Slint app
+//! wrote reads and writes back unchanged; it keeps them through its own
+//! catch-all.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -121,6 +127,10 @@ pub struct Saved {
     pub noise_strength: Strength,
     /// Discord calls take the room's reverb out of the microphone.
     pub reduce_room_echo: bool,
+    /// Discord calls cancel the echo of what the speakers play; on unless
+    /// turned off. Written only once set, as the Slint app doesn't know it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub echo_cancellation: Option<bool>,
     /// Windows runs its microphone effects on Discord calls' microphone.
     pub windows_microphone_effects: bool,
     /// The quietest speech Discord calls send, in dBFS; -60 unless changed.
@@ -144,6 +154,14 @@ pub struct Saved {
     pub muted_people: BTreeSet<String>,
     /// Those whose soundboard sounds this account doesn't hear.
     pub soundboard_muted_people: BTreeSet<String>,
+    /// Those whose voice this device takes the noise out of, and those
+    /// whose voice it takes this account's own echo out of, from their menu
+    /// in a call (`yapfast_core::volume::Cleaning`). Written only once
+    /// someone is in them.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub denoised_people: BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub echo_removed_people: BTreeSet<String>,
     /// Others see when this account is typing; on unless turned off.
     pub share_typing: Option<bool>,
     /// Desktop notifications, and whether they say what messages say; on
@@ -165,7 +183,18 @@ pub struct Saved {
     /// The Slint app draws with Skia GPU from its next start.
     pub gpu_rendering: bool,
     /// Screen sharing encodes on the GPU where it can; on unless turned off.
+    /// Anomi chooses with `stream_encoder` and keeps this beside it for the
+    /// Slint app: off for the processor, on for anything else.
     pub gpu_encoding: Option<bool>,
+    /// Where streams encode: [`ENCODE_AUTO`], [`ENCODE_SOFTWARE`] or a
+    /// graphics card's key from `yapfast_core::adapters`
+    /// (`"pci:0000:73:00.0"`); unset, as `gpu_encoding` says
+    /// ([`Saved::encoder`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_encoder: Option<String>,
+    /// The processor's cores the program runs on; Auto unless chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_mode: Option<CpuChoice>,
     /// The theme chosen, by its id: a built-in one's or `custom:N`.
     pub theme: Option<String>,
     /// The person's own themes, in the order Appearance shows them
@@ -215,6 +244,28 @@ impl Saved {
             .min(MOST_RELEASE_DELAY)
     }
 
+    /// Where streams encode: `stream_encoder`, or, before Anomi kept one,
+    /// the processor where `gpu_encoding` was turned off.
+    pub fn encoder(&self) -> Encoder {
+        match self.stream_encoder.as_deref() {
+            Some(key) if !key.is_empty() => Encoder::of(key),
+            _ if self.gpu_encoding == Some(false) => Encoder::Software,
+            _ => Encoder::Auto,
+        }
+    }
+
+    /// Keeps where streams encode, and `gpu_encoding` beside it, which is
+    /// what the Slint app reads.
+    pub fn set_encoder(&mut self, encoder: &Encoder) {
+        self.stream_encoder = Some(encoder.key().to_owned());
+        self.gpu_encoding = Some(*encoder != Encoder::Software);
+    }
+
+    /// The processor's cores the program runs on, as chosen.
+    pub fn cores(&self) -> CpuChoice {
+        self.cpu_mode.clone().unwrap_or_default()
+    }
+
     /// What the Slint app's `Layout::read` settles as it reads: a person who
     /// turned off the desktop's sound for notifications, before the app had
     /// its own sounds, keeps messages and mentions quiet.
@@ -225,6 +276,54 @@ impl Saved {
             self.each_sound.insert(Sound::Mention, 0);
         }
     }
+}
+
+/// `stream_encoder`'s keys for Auto and for the processor.
+pub const ENCODE_AUTO: &str = "auto";
+pub const ENCODE_SOFTWARE: &str = "software";
+
+/// Where streams encode (`yapfast_core::stream_worker::EncodeOn`): as Auto
+/// chooses, on a graphics card by its key, or on the processor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Encoder {
+    #[default]
+    Auto,
+    Card(String),
+    Software,
+}
+
+impl Encoder {
+    /// From its key in `layout.json`: anything but Auto's and the
+    /// processor's names a card, which Auto stands in for while it's gone.
+    pub fn of(key: &str) -> Self {
+        match key {
+            ENCODE_AUTO => Self::Auto,
+            ENCODE_SOFTWARE => Self::Software,
+            card => Self::Card(card.to_owned()),
+        }
+    }
+
+    /// Its key in `layout.json`.
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Auto => ENCODE_AUTO,
+            Self::Software => ENCODE_SOFTWARE,
+            Self::Card(key) => key.as_str(),
+        }
+    }
+}
+
+/// The processor's cores the program runs on (`yapfast_core::cpu::CpuMode`),
+/// as `layout.json` keeps it: `"auto"`, `"all"`, or the physical cores
+/// chosen, `{"cores": [8, 9, …]}`. The mode is kept, never a mask: Auto is
+/// worked out again on each start, on whatever processor it is then.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CpuChoice {
+    #[default]
+    Auto,
+    All,
+    Cores(Vec<u32>),
 }
 
 /// A sticker this device kept, as `layout.json` keeps it.

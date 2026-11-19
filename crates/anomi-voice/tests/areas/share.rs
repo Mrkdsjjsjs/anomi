@@ -225,7 +225,7 @@ fn its_quality_has_discords_groups_beside_it_and_marks_the_stream() {
         .filter(|row| row.radio && row.checked)
         .map(|row| row.text.as_str())
         .collect();
-    assert_eq!(marked, ["60 fps", "720p"]);
+    assert_eq!(marked, ["60 fps", "720p", "Auto"], "Auto's limit, last");
     let mut ui = live(&vm);
     ui.click("1080p").unwrap();
     assert_eq!(asked(ui), [Intent::Resolution(Resolution::P1080)]);
@@ -235,6 +235,39 @@ fn its_quality_has_discords_groups_beside_it_and_marks_the_stream() {
     let mut ui = live(&vm);
     ui.click("FRAME RATE").unwrap();
     assert!(asked(ui).is_empty(), "a group's title chooses nothing");
+}
+
+#[test]
+fn the_bitrate_limit_opens_its_list_and_picks_one() {
+    let vm = menu(samples::dialog());
+    let mut ui = simulate(&vm);
+    assert!(ui.find("Bitrate limit").is_ok());
+    assert!(ui.find("6 Mbit/s").is_err(), "the list waits for a click");
+    ui.click("Bitrate limit").unwrap();
+    assert_eq!(asked(ui), [Intent::Bitrates(true)]);
+    let open = menu(samples::bitrates());
+    let mut ui = simulate(&open);
+    for shown in ["Auto", "2 Mbit/s", "3.5 Mbit/s", "9 Mbit/s"] {
+        assert!(ui.find(shown).is_ok(), "{shown}");
+    }
+    ui.click("2 Mbit/s").unwrap();
+    assert_eq!(asked(ui), [Intent::Bitrate(Some(2_000))]);
+    let chosen: Vec<&str> = (open.rows.bitrates.iter())
+        .filter(|row| row.checked)
+        .map(|row| row.text.as_str())
+        .collect();
+    assert_eq!(chosen, ["6 Mbit/s"]);
+    let row = open.rows.bitrate.as_ref().unwrap();
+    assert_eq!(row.subtitle, "6 Mbit/s", "the limit under its name");
+}
+
+#[test]
+fn while_live_the_bitrate_limit_is_in_the_quality() {
+    let vm = menu(samples::live_quality());
+    let mut ui = live(&vm);
+    assert!(ui.find("BITRATE LIMIT").is_ok());
+    ui.click("8 Mbit/s").unwrap();
+    assert_eq!(asked(ui), [Intent::Bitrate(Some(8_000))]);
 }
 
 #[test]

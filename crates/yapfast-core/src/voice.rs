@@ -126,6 +126,12 @@ pub struct StreamQuality {
     /// the CPU.
     #[serde(default)]
     pub high_quality: bool,
+    /// The most the stream sends, in kbit/s, as the stream's menu chooses
+    /// it; unset, the most Discord's client sends at the resolution. A
+    /// ceiling, not a target: congestion control still lowers the rate. Kept
+    /// in `devices.json`, where a file from before it reads as unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_kbps: Option<u32>,
 }
 
 impl Default for StreamQuality {
@@ -134,6 +140,7 @@ impl Default for StreamQuality {
             resolution: Resolution::P1080,
             fps: 30,
             high_quality: false,
+            max_kbps: None,
         }
     }
 }
@@ -648,7 +655,8 @@ async fn join(
 pub const DEVICES: &str = "devices.json";
 
 /// The devices and stream quality chosen on this machine, kept beside its
-/// other local files.
+/// other local files and written as `layout.json` is
+/// ([`crate::layout_file::write_private`]): whole, and its owner's alone.
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct Chosen {
     microphone: Option<String>,
@@ -680,9 +688,11 @@ impl Chosen {
             quality: state.quality,
             silent_stream: state.stream_audio == StreamAudio::Off,
         };
+        // A file cut short by a crash mid-write would read as no choice at
+        // all, so it's written beside and moved over the old one.
         let result = serde_json::to_vec_pretty(&chosen)
             .map_err(std::io::Error::other)
-            .and_then(|bytes| std::fs::write(path, bytes));
+            .and_then(|bytes| crate::layout_file::write_private(path, &bytes));
         if let Err(error) = result {
             tracing::warn!(%error, "could not remember the chosen devices and stream quality");
         }
@@ -782,6 +792,7 @@ mod tests {
                 resolution: Resolution::Source,
                 fps: 60,
                 high_quality: true,
+                max_kbps: Some(6000),
             },
             stream_audio: StreamAudio::Off,
             ..Default::default()
@@ -792,7 +803,16 @@ mod tests {
         assert_eq!(chosen.speaker.as_deref(), Some("name:Null Output"));
         assert_eq!(chosen.camera.as_deref(), Some("usb-0000:00:14.0-1"));
         assert_eq!(chosen.quality, state.quality);
+        assert_eq!(chosen.quality.max_kbps, Some(6000));
         assert!(chosen.silent_stream);
+        // Written beside and moved over, its owner's alone.
+        assert!(!folder.path().join("devices.json.tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         // An application chosen by its window is sound, but not kept.
         let state = State {
             stream_audio: StreamAudio::Window(7),
@@ -809,6 +829,22 @@ mod tests {
         .unwrap();
         assert_eq!(Chosen::read(&path).quality, StreamQuality::default());
         assert!(!Chosen::read(&path).silent_stream);
+        // A quality saved before there was a ceiling to choose has none.
+        std::fs::write(
+            &path,
+            br#"{"microphone": null, "speaker": null, "quality": {"resolution": "p720", "fps": 60}}"#,
+        )
+        .unwrap();
+        let quality = Chosen::read(&path).quality;
+        assert_eq!((quality.resolution, quality.fps), (Resolution::P720, 60));
+        assert_eq!(quality.max_kbps, None);
+        // Unset, it isn't written, and the file reads as before it.
+        let state = State {
+            quality,
+            ..Default::default()
+        };
+        Chosen::write(Some(&path), &state);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("max_kbps"));
         std::fs::write(&path, b"not json").unwrap();
         assert!(Chosen::read(&path).speaker.is_none());
     }
@@ -827,6 +863,7 @@ mod tests {
             resolution: Resolution::P720,
             fps: 60,
             high_quality: true,
+            max_kbps: Some(3500),
         };
         assert!(controller.command(Command::Quality(quality)));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

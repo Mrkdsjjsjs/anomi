@@ -114,6 +114,10 @@ fn setting(app: &mut App, intent: Intent) {
             layout.edit(|saved| saved.reduce_room_echo = on);
             noise::set_dereverb(on);
         }
+        Intent::EchoCancellation(on) => {
+            layout.edit(|saved| saved.echo_cancellation = Some(on));
+            noise::set_echo_cancellation(on);
+        }
         Intent::WindowsEffects(on) => {
             layout.edit(|saved| saved.windows_microphone_effects = on);
             yapfast_core::set_windows_effects(on);

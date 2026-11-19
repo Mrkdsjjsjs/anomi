@@ -135,6 +135,11 @@ fn the_rest_of_the_calls_settings_ask_for_their_values() {
         [Intent::Dereverb(true)]
     );
     assert_eq!(
+        clicked(&open, "Echo cancellation in Discord calls"),
+        [Intent::EchoCancellation(false)],
+        "on unless turned off"
+    );
+    assert_eq!(
         clicked(
             &open,
             "Let Windows process your microphone in Discord calls"

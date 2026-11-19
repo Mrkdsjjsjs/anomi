@@ -58,7 +58,10 @@
 // counts the audio each call connection sends: GET /_control/call-audio
 // lists it by connection, and GET /_control/voice-audio by SSRC with op 5's
 // latest speaking value, and whether it ever said it was speaking. POST /_control/bob-speak makes Bob say two
-// seconds of a tone in every call Alice is in. POST /_control/voice-drop closes her call's voice
+// seconds of a tone in every call Alice is in. POST /_control/carol-echo?delay=MS
+// makes Carol send back all Alice sends in her calls MS later, 300 by default,
+// as a laptop's speakers and microphone would, for Yapfast's echo gate
+// (crates/yapfast-core/src/echo_gate.rs); ?off stops her. POST /_control/voice-drop closes her call's voice
 // connections with 4015, as a voice server restarting does, for them to
 // resume with op 7. POST /_control/voice-discovery?off makes the voice
 // server ignore UDP address discovery, so that joining fails as a blocked
@@ -4567,10 +4570,12 @@ function receiveAudio(stream: Received, packet: Buffer) {
   if (!plain || (plain[1]! & 0x7f) !== 120) stream.audioUndecryptable++;
 }
 
-/** Counts a call's Opus packet, and its silent frames. */
+/** Counts a call's Opus packet, and its silent frames; Carol sends it back
+ *  while she echoes Alice. */
 function receiveCallAudio(call: CallAudio, ssrc: number, packet: Buffer) {
   call.packets++;
-  const key = [...voiceSockets].find((ws) => ws.data.ssrc === ssrc)?.data.callKey;
+  const ws = [...voiceSockets].find((socket) => socket.data.ssrc === ssrc);
+  const key = ws?.data.callKey;
   const plain = key ? openRtp(packet, key) : undefined;
   if (!plain || (plain[1]! & 0x7f) !== 120) {
     call.undecryptable++;
@@ -4580,6 +4585,45 @@ function receiveCallAudio(call: CallAudio, ssrc: number, packet: Buffer) {
   if (opus.equals(OPUS_SILENCE)) call.silent++;
   else if (opus.length > 3) call.voiced++;
   reportCallAudio(call, ssrc, key!, plain.readUInt16BE(2));
+  if (carolEcho !== undefined && ws) carolEchoes(ws, plain, opus);
+}
+
+/** How late Carol sends back what Alice sends in her calls, in ms, while
+ *  she does: POST /_control/carol-echo sets it. */
+let carolEcho: number | undefined;
+/** Carol's audio SSRC, her camera's. */
+const CAROL_AUDIO_SSRC = BOB_AUDIO_SSRC + 10;
+/** Carol's echo in each call: her RTP sequence number, and the counter her
+ *  packets are sealed with, apart from Bob's. */
+const carolEchoed = new WeakMap<Socket, { sequence: number; counter: number }>();
+
+/** Carol sends Alice's packet back to her call on `ws` as her own,
+ *  `carolEcho` ms later: the same Opus, at Alice's timestamp, so a pause in
+ *  what Alice says is one in Carol's echo too. */
+function carolEchoes(ws: Socket, plain: Buffer, opus: Buffer) {
+  const marker = (plain[1]! & 0x80) !== 0;
+  const timestamp = plain.readUInt32BE(4);
+  const payload = Buffer.from(opus);
+  setTimeout(() => {
+    const key = ws.data.callKey;
+    const peer = ws.data.ssrc ? peers.get(ws.data.ssrc) : undefined;
+    if (carolEcho === undefined || !key || !peer || ws.readyState !== 1) return;
+    let echoed = carolEchoed.get(ws);
+    if (!echoed) {
+      echoed = { sequence: 40_000, counter: 1 << 20 };
+      carolEchoed.set(ws, echoed);
+    }
+    const header = Buffer.alloc(12);
+    header[0] = 0x80;
+    header[1] = 120 | (marker ? 0x80 : 0);
+    header.writeUInt16BE(echoed.sequence++ & 0xffff, 2);
+    header.writeUInt32BE(timestamp >>> 0, 4);
+    header.writeUInt32BE(CAROL_AUDIO_SSRC, 8);
+    const wants: any = callWants.get(ws.data.ssrc!) ?? {};
+    if (Number(wants[String(CAROL_AUDIO_SSRC)] ?? wants.any ?? 100) > 0) {
+      udp.send(sealRtp(Buffer.concat([header, payload]), key, echoed.counter++, 12), peer.port, peer.address);
+    }
+  }, carolEcho);
 }
 
 /** Every 50 packets, a receiver report (RTCP 201) about the call's audio
@@ -9293,6 +9337,29 @@ const server = Bun.serve<SocketData>({
       const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
       const spoke = calls.filter((ws) => bobSpeaks(ws)).length;
       return new Response(`Bob speaks in ${spoke} call(s)\n`, { status: spoke ? 200 : 409 });
+    }
+    if (req.method === "POST" && path === "/_control/carol-echo") {
+      // Carol, on a laptop's speakers, sends back all Alice says ?delay=MS
+      // later, 300 by default; ?off stops her.
+      if (url.searchParams.has("off")) {
+        carolEcho = undefined;
+        return new Response("Carol no longer sends Alice's voice back\n");
+      }
+      const delay = Number(url.searchParams.get("delay") ?? 300);
+      if (!Number.isFinite(delay) || delay < 0) return new Response("delay is in ms\n", { status: 400 });
+      carolEcho = delay;
+      // She sits muted in the Lounge; she unmutes to be heard, and says
+      // which SSRC is hers in each call, as speaking does.
+      const state = voice.get(users.carol.id);
+      if (state?.self_mute) {
+        voice.set(users.carol.id, { ...state, self_mute: false, self_deaf: false });
+        announce(users.carol.id);
+      }
+      const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
+      for (const ws of calls) {
+        ws.send(JSON.stringify({ op: 5, d: { user_id: users.carol.id, ssrc: CAROL_AUDIO_SSRC, speaking: 1 } }));
+      }
+      return new Response(`Carol sends Alice's voice back ${delay} ms later in ${calls.length} call(s)\n`);
     }
     if (req.method === "POST" && path === "/_control/voice-link") {
       voiceLink.ping = Number(url.searchParams.get("ping") ?? 0);

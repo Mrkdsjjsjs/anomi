@@ -404,3 +404,6 @@ msgstr "That theme was made by a newer Anomi. Update to use it."
 
 msgid "That theme names no colours Yapfast knows."
 msgstr "That theme names no colours Anomi knows."
+
+msgid "Yapfast and its streams run only on the cores ticked, each with its second thread. The rest stay free for games."
+msgstr "Anomi and its streams run only on the cores ticked, each with its second thread. The rest stay free for games."

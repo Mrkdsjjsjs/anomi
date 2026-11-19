@@ -1,4 +1,8 @@
 //! Opens web pages in the browser people chose.
+//!
+//! A browser that wasn't running starts from here, and would otherwise take
+//! the processor cores Yapfast keeps to from the thread that starts it; it
+//! starts on every core instead (`yapfast_core::cpu`, `docs/cpu.md`).
 
 /// Opens `page` in the default browser, and logs why if it couldn't.
 pub fn open(page: &str) {
@@ -10,7 +14,7 @@ pub fn open(page: &str) {
         }
         Ok(()) => return,
     }
-    if let Err(error) = webbrowser::open(page) {
+    if let Err(error) = yapfast_core::cpu::unconfined(|| webbrowser::open(page)) {
         tracing::warn!(target: crate::LOG, %error, "could not open a page in the browser");
     }
 }
@@ -23,13 +27,15 @@ pub fn open(page: &str) {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn xdg_open(page: &str) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
-    let mut child = Command::new("xdg-open")
+    let mut command = Command::new("xdg-open");
+    command
         .arg(page)
         .env_remove("LD_LIBRARY_PATH")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    yapfast_core::cpu::free_child(&mut command);
+    let mut child = command.spawn()?;
     std::thread::Builder::new()
         .name("xdg-open".into())
         .spawn(move || match child.wait() {

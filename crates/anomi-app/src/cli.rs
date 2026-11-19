@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use yapfast_core::runtime::BackgroundRuntime;
 
+use crate::layout::Layout;
+
 /// What a start asks for.
 #[derive(Debug, Default)]
 pub struct Start {
@@ -42,12 +44,19 @@ pub fn main() -> Result<()> {
     };
     crate::logging::init();
     yapfast_core::init_tls()?;
-    let runtime = BackgroundRuntime::new().context("could not start background workers")?;
     let root = match &start.data_dir {
         Some(directory) => directory.clone(),
         None => yapfast_core::default_directory()?,
     };
-    crate::run::run(runtime, root, start)
+    // The layout first, for the cores it chooses: set on this thread before
+    // any other starts, every thread after takes them from its own.
+    let layout = Layout::read(&root);
+    crate::run::place_on_cores(&layout);
+    // openmls's pool for DAVE, small and named, rather than one thread for
+    // each of the processor's.
+    yapfast_core::cpu::init_pools();
+    let runtime = BackgroundRuntime::new().context("could not start background workers")?;
+    crate::run::run(runtime, root, layout, start)
 }
 
 pub enum Parsed {

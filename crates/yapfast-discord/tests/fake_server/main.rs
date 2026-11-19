@@ -28,6 +28,7 @@ use yapfast_discord::{
 mod account;
 mod calls;
 mod direct_messages;
+mod echo;
 mod expressions;
 mod links;
 mod messages;

@@ -102,7 +102,8 @@ pub fn choices(share: &Share, inner: f32, motion: Motion) -> impl View<Intent> +
     quality(all, share, TOP_SECTION, motion)
 }
 
-/// Resolutions, frame rates and encoding under `all`, `top` above the first.
+/// Resolutions, frame rates, encoding and the bitrate limit under `all`,
+/// `top` above the first.
 fn quality<'a>(
     all: Column<Element<'a, Intent>>,
     share: &'a Share,
@@ -119,7 +120,30 @@ fn quality<'a>(
     if let Some(quality) = &rows_of.quality {
         all = all.push(item(quality, motion).boxed());
     }
+    // The limit chosen, whose list opens below it, as One application's.
+    if let Some(bitrate) = &rows_of.bitrate {
+        all = all.push(
+            item(bitrate, motion)
+                .arrow(true)
+                .expanded(share.bitrates_open)
+                .boxed(),
+        );
+        if share.bitrates_open {
+            all = all.push(indented(rows(&rows_of.bitrates, 0.0, motion)));
+        }
+    }
     all
+}
+
+/// Rows a list opened under its row, past that row's text's start.
+fn indented(rows: Element<'_, Intent>) -> Element<'_, Intent> {
+    container(rows)
+        .padding(Padding {
+            left: APPS_INDENT,
+            ..Padding::ZERO
+        })
+        .width(Fill)
+        .boxed()
 }
 
 /// All applications, No sound and One application, whose list opens below
@@ -135,15 +159,7 @@ fn sound(share: &Share, motion: Motion) -> Element<'_, Intent> {
         all = all.push(entry.boxed());
     }
     if share.apps_open {
-        all = all.push(
-            container(rows(&share.rows.apps, 0.0, motion))
-                .padding(Padding {
-                    left: APPS_INDENT,
-                    ..Padding::ZERO
-                })
-                .width(Fill)
-                .boxed(),
-        );
+        all = all.push(indented(rows(&share.rows.apps, 0.0, motion)));
     }
     all.boxed()
 }

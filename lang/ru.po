@@ -10510,3 +10510,153 @@ msgid_plural "Showing {n} members"
 msgstr[0] "Показано: {n} участник"
 msgstr[1] "Показано: {n} участника"
 msgstr[2] "Показано: {n} участников"
+
+msgid "OPTIMIZATION"
+msgstr "ОПТИМИЗАЦИЯ"
+
+msgid "CPU load distribution"
+msgstr "Распределение нагрузки ЦП"
+
+msgid "All cores"
+msgstr "Все ядра"
+
+msgid "Choose cores"
+msgstr "Вручную"
+
+msgid "Yapfast and its streams run only on the cores ticked, each with its second thread. The rest stay free for games."
+msgstr "Anomi и его трансляции работают только на отмеченных ядрах, каждое — вместе со вторым потоком. Остальные остаются свободными для игр."
+
+msgid "Efficiency cores"
+msgstr "Энергоэффективные ядра"
+
+msgid "Performance cores"
+msgstr "Производительные ядра"
+
+msgid "Cores"
+msgstr "Ядра"
+
+msgid "Chiplet {}"
+msgstr "Чиплет {}"
+
+msgid "Chiplet {} · L3 {} MB"
+msgstr "Чиплет {} · L3 {} МБ"
+
+msgid "Encode streams on"
+msgstr "Кодировать трансляции на"
+
+msgid "Processor"
+msgstr "Процессор"
+
+msgid "the processor"
+msgstr "процессор"
+
+msgid "Auto takes the integrated graphics first, then a discrete card, then the processor. Now it's {}."
+msgstr "«Авто» берёт сначала встроенную графику, затем дискретную видеокарту, затем процессор. Сейчас это {}."
+
+msgid "The graphics card chosen isn't found now, so streams encode as Auto chooses: {}."
+msgstr "Выбранная видеокарта сейчас не найдена, поэтому трансляции кодируются так, как выбирает «Авто»: {}."
+
+msgid "The processor encodes with x264: it takes processor time, and H.265 and AV1 aren't offered."
+msgstr "Процессор кодирует через x264: это нагружает процессор, а H.265 и AV1 недоступны."
+
+msgid "The interface draws on the processor and leaves the graphics cards free."
+msgstr "Интерфейс рисуется процессором и не занимает видеокарты."
+
+msgid "{} graphics"
+msgstr "Графика {}"
+
+msgid "Echo cancellation in Discord calls"
+msgstr "Эхоподавление в звонках Discord"
+
+msgid "Keeps what your speakers play out of your microphone, so others don't hear themselves. Turn it off only if you use headphones."
+msgstr "Не даёт звуку из колонок попадать в микрофон, чтобы собеседники не слышали сами себя. Выключайте, только если вы в наушниках."
+
+msgid "Suppress their noise"
+msgstr "Подавлять его шум"
+
+msgid "Remove my echo"
+msgstr "Убирать моё эхо"
+
+msgid "Bitrate limit"
+msgstr "Предел битрейта"
+
+msgid "BITRATE LIMIT"
+msgstr "ПРЕДЕЛ БИТРЕЙТА"
+
+msgid "2 Mbit/s"
+msgstr "2 Мбит/с"
+
+msgid "3.5 Mbit/s"
+msgstr "3,5 Мбит/с"
+
+msgid "5 Mbit/s"
+msgstr "5 Мбит/с"
+
+msgid "6 Mbit/s"
+msgstr "6 Мбит/с"
+
+msgid "8 Mbit/s"
+msgstr "8 Мбит/с"
+
+msgid "9 Mbit/s"
+msgstr "9 Мбит/с"
+
+msgid "3.5 Mbit/s up to 720p, 9 above"
+msgstr "3,5 Мбит/с до 720p, выше — 9"
+
+msgid "The graphics card's encoder failed, so the processor encodes the stream now."
+msgstr "Кодировщик видеокарты отказал, поэтому теперь трансляцию кодирует процессор."
+
+msgid "The graphics card chosen for streams isn't there, so {} encodes this one."
+msgstr "Видеокарты, выбранной для трансляций, нет, поэтому эту трансляцию кодирует {}."
+
+msgid "The graphics card chosen for streams isn't there, so another one encodes this one."
+msgstr "Видеокарты, выбранной для трансляций, нет, поэтому эту трансляцию кодирует другая."
+
+msgid "The graphics card chosen for streams isn't there, so the processor encodes this one."
+msgstr "Видеокарты, выбранной для трансляций, нет, поэтому эту трансляцию кодирует процессор."
+
+msgid "{} couldn't encode the stream, so {} encodes it."
+msgstr "Не удалось кодировать трансляцию на {}, поэтому её кодирует {}."
+
+msgid "{} couldn't encode the stream, so the processor encodes it."
+msgstr "Не удалось кодировать трансляцию на {}, поэтому её кодирует процессор."
+
+msgid "The processor encodes the stream on all its cores, which a game may feel: a graphics card can encode it instead (Settings, Advanced)."
+msgstr "Процессор кодирует трансляцию на всех своих ядрах, и игра может это почувствовать: вместо него трансляцию может кодировать видеокарта (Настройки, Дополнительно)."
+
+msgid "Could not read the processor's cores."
+msgstr "Не удалось узнать ядра процессора."
+
+msgid "Performance cores: {0}, efficiency cores: {1}."
+msgstr "Производительных ядер: {0}, энергоэффективных: {1}."
+
+msgid "Chiplets: {0}, cores: {1}, threads: {2}."
+msgstr "Чиплетов: {0}, ядер: {1}, потоков: {2}."
+
+msgid "Cores: {0}, threads: {1}."
+msgstr "Ядер: {0}, потоков: {1}."
+
+msgid "Runs on the CPUs the system gave it: {0}."
+msgstr "Работает на логических процессорах, выделенных системой: {0}."
+
+msgid "Runs on every core: too few to set some aside."
+msgstr "Работает на всех ядрах: их слишком мало, чтобы освободить часть."
+
+msgid "Runs on every core."
+msgstr "Работает на всех ядрах."
+
+msgid "Runs on cores {0} (CPUs {1}), as chosen."
+msgstr "Работает на ядрах {0} (ЦП {1}), выбранных вручную."
+
+msgid "Runs on cores {0} (CPUs {1}): the chiplet with the smaller cache, {2} MB."
+msgstr "Работает на ядрах {0} (ЦП {1}): это чиплет с меньшим кэшем, {2} МБ."
+
+msgid "Runs on cores {0} (CPUs {1}): the chiplet without core 0."
+msgstr "Работает на ядрах {0} (ЦП {1}): это чиплет без ядра 0."
+
+msgid "Runs on cores {0} (CPUs {1}): the efficiency cores."
+msgstr "Работает на ядрах {0} (ЦП {1}): это энергоэффективные ядра."
+
+msgid "Runs on cores {0} (CPUs {1}): the last ones, core 0 stays free."
+msgstr "Работает на ядрах {0} (ЦП {1}): последних, ядро 0 остаётся свободным."

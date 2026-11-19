@@ -75,9 +75,23 @@ fn schedule(
 }
 
 /// The most bit/s a stream of `height` lines may take, as Discord's client
-/// decides it: 3.5 Mbit/s up to 720p, 9 Mbit/s above. Op 12 announces it.
+/// decides it: 3.5 Mbit/s up to 720p, 9 Mbit/s above.
 pub fn max_bitrate(height: u32) -> u32 {
     if height > 720 { 9_000_000 } else { 3_500_000 }
+}
+
+/// The most bit/s a stream of `height` lines is sent at, with the bitrate
+/// limit the person chose, `max_kbps`, none for Auto: Discord's cap for the
+/// height, or the limit when that's lower, never below
+/// [`congestion::FLOOR`]. A limit only lowers it: going past Discord's cap
+/// waits for a test against Discord's own servers. Op 12 announces it, and
+/// the congestion controller stays under it.
+pub fn cap(height: u32, max_kbps: Option<u32>) -> u32 {
+    let discord = max_bitrate(height);
+    max_kbps.map_or(discord, |kbps| {
+        kbps.saturating_mul(1000)
+            .clamp(congestion::FLOOR as u32, discord)
+    })
 }
 
 /// Op 5's speaking flags for a stream's sound: shared sound, not a
@@ -142,6 +156,9 @@ struct Shared {
     fps: AtomicU32,
     /// Sending: the bit/s to encode at, as [`Controller`] decides.
     target: AtomicU64,
+    /// Sending: the bitrate limit the person chose, in kbit/s; 0 for none.
+    /// See [`cap`].
+    ceiling: AtomicU32,
     /// Sending: the codecs offered, most wanted first, and whether that
     /// changed since Discord was told. Receiving: the codecs decoded.
     offers: Mutex<Vec<Codec>>,
@@ -164,6 +181,7 @@ impl Shared {
             size: Mutex::new(size),
             fps: AtomicU32::new(0),
             target: AtomicU64::new(congestion::start(max_bitrate(size.1).into())),
+            ceiling: AtomicU32::new(0),
             offers: Mutex::new(vec![SEND_CODEC]),
             offers_changed: AtomicBool::new(false),
             chosen: Mutex::new(None),
@@ -171,6 +189,14 @@ impl Shared {
             keyframe_requests: AtomicU64::new(0),
             resent: AtomicU64::new(0),
         })
+    }
+
+    /// The bitrate limit the person chose, in kbit/s.
+    fn ceiling(&self) -> Option<u32> {
+        match self.ceiling.load(Ordering::Relaxed) {
+            0 => None,
+            kbps => Some(kbps),
+        }
     }
 }
 
@@ -272,6 +298,21 @@ impl StreamSender {
     /// Announces a new frame rate with the next frame, and paces frames by it.
     pub fn set_fps(&self, fps: u32) {
         self.shared.fps.store(fps, Ordering::Relaxed);
+    }
+
+    /// Sends at most `max_kbps` from now on, none for Auto, within Discord's
+    /// cap for the stream's height ([`cap`]): the target drops under it at
+    /// once, and the next frame announces it with op 12 and caps the
+    /// congestion controller at it. A limit raised again lets the target
+    /// rise as the uplink allows.
+    pub fn set_ceiling(&self, max_kbps: Option<u32>) {
+        self.shared
+            .ceiling
+            .store(max_kbps.unwrap_or(0), Ordering::Relaxed);
+        let height = lock(&self.shared.size).1;
+        self.shared
+            .target
+            .fetch_min(cap(height, max_kbps).into(), Ordering::Relaxed);
     }
 
     /// Whether the next frame should be a keyframe: at the start, after
@@ -397,12 +438,26 @@ impl StreamReceiver {
     }
 }
 
+/// Op 12's video state for a camera, capped as Discord's client caps its
+/// height.
 pub(crate) fn video_attributes(
+    ssrc: u32,
+    video: u32,
+    rtx: u32,
+    size: (u32, u32),
+    fps: u32,
+) -> Value {
+    attributes(ssrc, video, rtx, size, fps, max_bitrate(size.1))
+}
+
+/// Op 12's video state, announcing `bitrate` as its `max_bitrate`.
+fn attributes(
     ssrc: u32,
     video: u32,
     rtx: u32,
     (width, height): (u32, u32),
     fps: u32,
+    bitrate: u32,
 ) -> Value {
     json!({
         "audio_ssrc": ssrc,
@@ -415,7 +470,7 @@ pub(crate) fn video_attributes(
             "active": true,
             "quality": 100,
             "rtx_ssrc": rtx,
-            "max_bitrate": max_bitrate(height),
+            "max_bitrate": bitrate,
             "max_framerate": fps,
             "max_resolution": {"type": "fixed", "width": width, "height": height},
         }],
@@ -514,7 +569,9 @@ async fn send(
     let mut connection = open(server, user, channel, Role::Send, shared).await?;
     let (ssrc, video, rtx) = (connection.ssrc, connection.video, connection.rtx);
     let mut size = *lock(&shared.size);
-    let mut pacing = Controller::new(max_bitrate(size.1).into());
+    // Discord's cap for the size, or the person's limit below it.
+    let mut capped = cap(size.1, shared.ceiling());
+    let mut pacing = Controller::new(capped.into());
     shared.target.store(pacing.target(), Ordering::Relaxed);
     // When the last video sender reports went out, by the time in them.
     let mut echoed = [(0u32, std::time::Instant::now()); ECHOED];
@@ -522,7 +579,7 @@ async fn send(
     send_json(
         &mut connection.ws,
         12,
-        video_attributes(ssrc, video, rtx, size, fps),
+        attributes(ssrc, video, rtx, size, fps, capped),
     )
     .await?;
     send_json(
@@ -570,11 +627,14 @@ async fn send(
                     let _ = connection.ws.close(None).await;
                     return Ok(());
                 };
-                let wanted = (*lock(&shared.size), shared.fps.load(Ordering::Relaxed));
-                if wanted != (size, fps) {
-                    (size, fps) = wanted;
-                    send_json(&mut connection.ws, 12, video_attributes(ssrc, video, rtx, size, fps)).await?;
-                    if let Some(reason) = pacing.set_cap(max_bitrate(size.1).into()) {
+                // A new size, frame rate or bitrate limit, announced before
+                // the first frame that has it.
+                let (wanted_size, wanted_fps) = (*lock(&shared.size), shared.fps.load(Ordering::Relaxed));
+                let wanted = (wanted_size, wanted_fps, cap(wanted_size.1, shared.ceiling()));
+                if wanted != (size, fps, capped) {
+                    (size, fps, capped) = wanted;
+                    send_json(&mut connection.ws, 12, attributes(ssrc, video, rtx, size, fps, capped)).await?;
+                    if let Some(reason) = pacing.set_cap(capped.into()) {
                         retarget(shared, &pacing, reason, None);
                     }
                 }
@@ -666,7 +726,7 @@ async fn send(
                     // Tell whoever connected about the video again, in case
                     // the server doesn't pass it on to late viewers.
                     if op == 11 {
-                        send_json(&mut connection.ws, 12, video_attributes(ssrc, video, rtx, size, fps)).await?;
+                        send_json(&mut connection.ws, 12, attributes(ssrc, video, rtx, size, fps, capped)).await?;
                         send_json(&mut connection.ws, 5, json!({"speaking": SOUNDSHARE, "delay": 0, "ssrc": ssrc})).await?;
                     }
                 }
@@ -1248,6 +1308,47 @@ mod tests {
         }
         // Each stream has its own.
         assert_eq!(Video::new(Codec::H264).orientation, Orientation::default());
+    }
+
+    /// The person's bitrate limit only lowers Discord's cap for the height,
+    /// down to the controller's floor, and op 12 announces what's left.
+    #[test]
+    fn caps_at_the_limit_within_discords_cap() {
+        assert_eq!(cap(1440, None), 9_000_000);
+        assert_eq!(cap(720, None), 3_500_000);
+        assert_eq!(cap(1440, Some(5_000)), 5_000_000);
+        assert_eq!(cap(720, Some(5_000)), 3_500_000, "never past Discord's cap");
+        assert_eq!(cap(1080, Some(20_000)), 9_000_000);
+        assert_eq!(cap(1080, Some(100)), congestion::FLOOR as u32);
+        assert_eq!(cap(1080, Some(u32::MAX)), 9_000_000);
+        let announced = attributes(1, 2, 3, (3440, 1440), 60, cap(1440, Some(6_000)));
+        assert_eq!(announced["streams"][0]["max_bitrate"], 6_000_000);
+        let camera = video_attributes(1, 2, 3, (1280, 720), 30);
+        assert_eq!(camera["streams"][0]["max_bitrate"], 3_500_000);
+    }
+
+    /// A limit set while live lowers the target the encoder follows at
+    /// once; taken away, it leaves the target for the controller to raise.
+    #[test]
+    fn a_limit_lowers_the_target_at_once() {
+        let (frames, _frames) = mpsc::channel(1);
+        let (sounds, _sounds) = mpsc::channel(1);
+        let sender = StreamSender {
+            frames,
+            sounds,
+            shared: Shared::new((1920, 1080)),
+        };
+        assert_eq!(sender.target(), 2_500_000);
+        sender.set_ceiling(Some(2_000));
+        assert_eq!(
+            (sender.target(), sender.shared.ceiling()),
+            (2_000_000, Some(2_000))
+        );
+        sender.set_ceiling(None);
+        assert_eq!(
+            (sender.target(), sender.shared.ceiling()),
+            (2_000_000, None)
+        );
     }
 
     #[test]

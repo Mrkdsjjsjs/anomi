@@ -170,6 +170,7 @@ impl Playback {
             }
             Wake::Report(Some(
                 Report::AudioError(_)
+                | Report::Notice(_)
                 | Report::Sharing { .. }
                 | Report::Sending(_)
                 | Report::Streaming

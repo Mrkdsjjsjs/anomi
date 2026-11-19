@@ -143,7 +143,10 @@ of the server, with what Discord's client adds there, in its order:
 - After Add note: Mute, a box that mutes them for this account alone and
   keeps their volume for when it's unticked, and Mute Soundboard, a box
   that silences the soundboard sounds they play, for this account alone;
-  Yapfast remembers both, as Discord's client keeps them locally. One's own
+  Yapfast remembers both, as Discord's client keeps them locally. Then two
+  boxes of Yapfast's own, kept as Mute is, which Discord's client lacks:
+  Suppress their noise and Remove my echo (`docs/discord/voice.md`,
+  "Cleaning someone's voice"); a DM call's menu has those two alone. One's own
   entry, in the call Yapfast is in there, has Mute and Deafen boxes for this
   account's own instead, and no volume.
 - After Roles: Move to, a submenu of the server's other voice channels.

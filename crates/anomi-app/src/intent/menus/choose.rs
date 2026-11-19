@@ -241,6 +241,12 @@ fn act(app: &mut App, choice: MenuChoice, subject: Subject) -> Task<Message> {
             }
             None
         }
+        C::SuppressTheirNoise | C::RemoveMyEcho => {
+            if let Some(on) = ticked {
+                clean(app, choice == C::SuppressTheirNoise, &target, on);
+            }
+            None
+        }
         C::SelfMute => ticked.map(|muted| Action::Voice(yapfast_core::voice::Command::Mute(muted))),
         C::SelfDeafen => {
             ticked.map(|deafened| Action::Voice(yapfast_core::voice::Command::Deafen(deafened)))
@@ -322,6 +328,32 @@ fn mute_locally(app: &mut App, soundboard: bool, person: &str, muted: bool) {
             &mut saved.muted_people
         };
         if muted {
+            people.insert(person.to_owned());
+        } else {
+            people.remove(person);
+        }
+    });
+}
+
+/// Takes the noise out of someone's voice, or this account's own echo
+/// coming back through their speakers, on this device alone, and keeps it:
+/// the call's audio has it at its next tick.
+fn clean(app: &mut App, noise: bool, person: &str, on: bool) {
+    use yapfast_core::volume;
+    let mut cleaning = volume::cleaning(person);
+    if noise {
+        cleaning.noise = on;
+    } else {
+        cleaning.own_echo = on;
+    }
+    volume::set_cleaning(person, cleaning);
+    app.layout.edit(|saved| {
+        let people = if noise {
+            &mut saved.denoised_people
+        } else {
+            &mut saved.echo_removed_people
+        };
+        if on {
             people.insert(person.to_owned());
         } else {
             people.remove(person);

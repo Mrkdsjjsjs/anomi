@@ -90,3 +90,20 @@ message-key persistence and recovery against the local server. Unit tests
 separately cover the Linux fallback's permissions, missing credentials,
 metadata damage, retained store passwords and exclusive locking. Matrix storage
 on Windows remains untested.
+
+## Settings files
+
+The settings are plain JSON in the same data folder: `layout.json`, the
+window's settings, which Anomi and the Slint app share, and `devices.json`,
+the devices and stream quality the core remembers. Neither is secret, but
+they name the people one mutes, turns down or filters, so on Unix they're
+their owner's alone (0600), as is a folder made for them (0700). Each is
+written whole beside the old file and moved over it
+(`yapfast_core::layout_file::write_private`), so a crash leaves the old one;
+a file an older build left readable by others is private from its next
+write. Unlinking Discord leaves both.
+
+Each app keeps the `layout.json` keys it doesn't know and writes them back
+as they came, so running one doesn't erase what the other keeps. A key it
+knows, in a shape it can't read, is left at its default and costs no other
+setting.

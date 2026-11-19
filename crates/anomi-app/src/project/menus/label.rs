@@ -53,6 +53,8 @@ pub(super) fn label(choice: MenuChoice, in_call: bool) -> (&'static str, Icon) {
         C::LocalMute => (tr!("Menu" => "Mute"), Icon::MicOff),
         C::SelfMute => (yapfast_lang::text_in("Microphone", "Mute"), Icon::MicOff),
         C::SoundboardMute => (tr!("Mute Soundboard"), Icon::Soundboard),
+        C::SuppressTheirNoise => (tr!("Suppress their noise"), Icon::NoiseBars),
+        C::RemoveMyEcho => (tr!("Remove my echo"), Icon::Volume),
         C::SelfDeafen => (tr!("Deafen"), Icon::HeadphoneOff),
         C::MoveTo => (tr!("Move to"), Icon::Forward),
         C::ServerMute => (tr!("Server mute"), Icon::MicOff),
@@ -125,7 +127,12 @@ pub(super) fn group(choice: MenuChoice) -> u8 {
         | C::UnfollowCategory => 3,
         C::ServerNickname | C::Roles | C::MoveTo => 4,
         C::Apps => 10,
-        C::LocalMute | C::SoundboardMute | C::SelfMute | C::SelfDeafen => 8,
+        C::LocalMute
+        | C::SoundboardMute
+        | C::SuppressTheirNoise
+        | C::RemoveMyEcho
+        | C::SelfMute
+        | C::SelfDeafen => 8,
         C::ServerMute
         | C::ServerDeafen
         | C::Disconnect
@@ -175,6 +182,8 @@ pub(super) fn checkbox(choice: MenuChoice) -> bool {
             | C::HideMuted
             | C::LocalMute
             | C::SoundboardMute
+            | C::SuppressTheirNoise
+            | C::RemoveMyEcho
             | C::SelfMute
             | C::SelfDeafen
             | C::ServerMute
@@ -217,7 +226,7 @@ pub(super) fn discord_order(choices: &mut [MenuChoice]) {
 }
 
 /// Every choice, for [`choice_of`].
-const CHOICES: [MenuChoice; 66] = {
+const CHOICES: [MenuChoice; 68] = {
     use MenuChoice as C;
     [
         C::MarkRead,
@@ -280,6 +289,8 @@ const CHOICES: [MenuChoice; 66] = {
         C::ServerSettings,
         C::LocalMute,
         C::SoundboardMute,
+        C::SuppressTheirNoise,
+        C::RemoveMyEcho,
         C::SelfMute,
         C::SelfDeafen,
         C::MoveTo,
@@ -358,6 +369,8 @@ pub(crate) fn choice_id(choice: MenuChoice) -> &'static str {
         C::ServerSettings => "server-settings",
         C::LocalMute => "local-mute",
         C::SoundboardMute => "soundboard-mute",
+        C::SuppressTheirNoise => "suppress-their-noise",
+        C::RemoveMyEcho => "remove-my-echo",
         C::SelfMute => "self-mute",
         C::SelfDeafen => "self-deafen",
         C::MoveTo => "move-to",

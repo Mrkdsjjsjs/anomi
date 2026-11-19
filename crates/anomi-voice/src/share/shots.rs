@@ -28,6 +28,7 @@ pub fn shots() -> Vec<Shot> {
         shot("share_menu_screens", || window(fixtures::listed())),
         shot("share_menu_one_screen", || window(fixtures::one_screen())),
         shot("share_menu_apps", || window(fixtures::apps())),
+        shot("share_menu_bitrates", || window(fixtures::bitrates())),
         shot("share_menu_switching", || window(fixtures::switching())),
         shot("share_menu_live", || window(fixtures::live())),
         shot("share_menu_live_quality", || {

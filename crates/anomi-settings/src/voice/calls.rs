@@ -1,7 +1,9 @@
 //! How calls start and sound: the switches, the input profile over the
 //! microphone's processing, the choices of noise suppression and of waiting
 //! alone, the soundboard's volume, the input mode with its key and release
-//! delay, and the gate's sensitivity (`ui/settings.slint:971-1148`).
+//! delay, and the gate's sensitivity (`ui/settings.slint:971-1148`). Anomi
+//! adds the switch for echo cancellation, which the Slint app keeps on
+//! unseen; the input profile leaves it as it is.
 
 use iced::widget::column;
 
@@ -149,9 +151,20 @@ pub fn soundboard(page: &Voice) -> Element<'_, Intent> {
     .boxed()
 }
 
-/// The switches for the room's echo and Windows' effects.
+/// The switches for echo cancellation, the room's echo and Windows'
+/// effects.
 pub fn room(page: &Voice, motion: Motion) -> Vec<Element<'_, Intent>> {
     let mut parts = vec![
+        switch(
+            tr!("Echo cancellation in Discord calls"),
+            page.echo_cancellation,
+            motion,
+        )
+        .description(tr!(
+            "Keeps what your speakers play out of your microphone, so others don't hear themselves. Turn it off only if you use headphones."
+        ))
+        .on_toggle(Intent::EchoCancellation)
+        .view(),
         switch(
             tr!("Take out your room's echo in Discord calls"),
             page.dereverb,

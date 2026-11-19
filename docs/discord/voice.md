@@ -10,6 +10,9 @@ Scope for the beta:
 - The same devices, push-to-talk, voice activation, echo cancellation and
   voice leveling as Yapfast calls. Noise suppression is DeepFilterNet, or
   RNNoise, rather than WebRTC's, as described under Microphone below.
+- Someone else's voice can be cleaned here before it plays: their noise
+  suppressed, or our own echo from their speakers turned down; see
+  [Cleaning someone's voice](#cleaning-someones-voice).
 
 Clicking a voice channel joins through the same voice dock and one-call rule as
 Matrix voice, and, as Discord's client does, without showing the call: a second
@@ -334,6 +337,72 @@ voice server didn't answer address discovery". At the default log level, an
 answer to a later ask logs at info ("address discovery answered on attempt 3
 of 5"), and giving up logs a warning with the number of asks.
 
+The call's thread doesn't ask `volume.rs` for each speaker's volume as it
+mixes. It keeps its own copy, by Discord user id, of everyone who doesn't
+play as they come: their volume, a local mute as 0, and how their voice is
+cleaned, below (`People` in `discord_audio.rs`). It copies them again on the
+tick after `volume::changes()` says one changed, so a tick costs one atomic
+load and a lookup by number for each voice, with no lock on the shared maps
+and no string.
+
+### Cleaning someone's voice
+
+Someone else's menu in a Discord call has two boxes after Mute Soundboard,
+in a server's voice channel and in a DM's or group DM's call, where they're
+all the menu has: one takes the noise out of their voice, the other turns
+them down while what comes from them is only this account's own voice, back
+from their speakers (`MenuChoice::SuppressTheirNoise` and `RemoveMyEcho`).
+Neither is offered for this account, nor in Matrix calls, whose audio LiveKit
+plays. They're kept by user id beside the volume (`volume::Cleaning`) and
+remembered in `layout.json` (`denoised_people`, `echo_removed_people`), so
+they hold in every call, for every account, and after a restart.
+
+Each tick, the frame of someone with a box ticked is cleaned before the mix,
+into a frame of their own: their two channels in one; RNNoise on each 10 ms,
+turning noise down at most 30 dB, as Medium does the microphone's, so what
+it mixes back of their voice keeps the ends of words; then the echo gate;
+then back into both channels. With RNNoise their voice plays 10 ms later,
+and either way in mono, which a music bot's stereo loses. Their speaking
+ring follows the cleaned voice, so noise or the echo doesn't light it.
+Nothing is cleaned for someone silent, since the call has no frame of theirs,
+nor muted here, nor while deafened. RNNoise takes about 40 µs a block, 0.4%
+of a core while they speak, and the state of someone cleaned about 45 KB.
+Eight people are cleaned at once at most; anyone more plays as they come, and
+the log says so once. When someone speaks again after a pause, RNNoise first
+lets go of the 10 ms it held of what they said before, which would otherwise
+play first. Their denoiser goes after 10 s without them, as the call forgets
+a speaker; their echo gate keeps what it learned for a minute, since they
+send only while their microphone hears something, and learning it again
+takes seconds of our speech.
+
+DeepFilterNet isn't offered here: it would cost 2.7% of a core and 39 MiB a
+person, and its model isn't Send, so it can't run on the call's thread.
+Voices that Discord's own Krisp already cleaned change little; on noisy ones
+RNNoise can sound a little underwater.
+
+The echo gate (`echo_gate.rs`) is for someone on a laptop's speakers, whose
+microphone sends our voice back to us a few hundred milliseconds later. The
+call hands every 20 ms it sent, or that it sent nothing, to each gate on its
+thread just before it plays everyone (`Listener::sent`), whether that person
+speaks or not. A gate learns how late and how loud our voice comes back from
+them, and while what comes from them is only that, turns them down about
+20 dB, ramping so it doesn't click. Until it has learned the delay, from a
+few seconds of our speech, it does nothing, and it stops on its own when our
+voice no longer comes back, as when they put headphones on. It works like a
+speakerphone: while our echo comes, they come through only by talking louder
+than it, and the start of what they say may be cut. It takes out only our
+own voice, not others' or the sounds their speakers play, and everyone else
+in the call still hears our echo from them. WebRTC's AEC3 on their voice
+would mostly fail: the echo comes 150 to 600 ms late and drifts with both
+sides' jitter buffers, through two Opus encodings, their speakers, their
+noise suppression and their gain control.
+
+`echo_gate`'s tests run the gate on made-up voices, through Opus too, and
+over two recordings of a real call (`gates_a_recording`); the fake's
+`POST /_control/carol-echo?delay=MS` has Carol send Alice's voice back, which
+the service test `carol_sends_alices_voice_back` checks, and which shows the
+gate in the window.
+
 ## Camera video
 
 Turning the camera on in a call does what Discord's clients do: the main
@@ -536,8 +605,8 @@ whose sounds are `testing/fixtures`' tones.
 
 Discord's own client suppresses noise with Krisp, a neural network, and
 WebRTC's suppressor sounded different from it. So Yapfast's Discord microphone
-runs, in 10 ms blocks: WebRTC's echo cancellation and high-pass filter; if
-asked, taking the room's echo out; a noise suppressor, which also tells the
+runs, in 10 ms blocks: WebRTC's echo cancellation, unless turned off, and
+high-pass filter; if asked, taking the room's echo out; a noise suppressor, which also tells the
 gate which blocks are speech; WebRTC's gain control on what's left; then
 Yapfast's leveling and the microphone's volume, from
 [Settings](../voice.md#sounds). On Windows the microphone skips the system's
@@ -681,7 +750,20 @@ Echo cancellation is WebRTC's AEC3 with its defaults, fed the speakers' mix
 as it's written to PulseAudio. It takes no echo out with the speakers 600 ms
 or more behind, past what its delay search covers. A room reverberating for
 0.65 s or more leaves enough of the echo for the gate to send some of it,
-which longer filters in AEC3's configuration could help.
+which longer filters in AEC3's configuration could help. A watched stream's
+sound plays through its own output, not the call's mix, so it isn't in the
+reference, nor are Yapfast's own sounds.
+
+Settings, Voice & video, can turn echo cancellation off, for headphones; it's
+on unless turned off (`echo_cancellation` in `layout.json`,
+`noise::set_echo_cancellation`). Off, the microphone's first module is the
+high-pass filter alone, made again at the next block, as switching the
+suppressor is, and the speakers' thread stops handing its frames over as the
+reference. It saves at most 0.3% of a core, and with headphones AEC3 already
+stops suppressing about 6 s after it finds no echo, so the setting says to
+turn it off only with headphones: with speakers, everyone else hears
+themselves. `YAPFAST_ECHO_CANCELLATION=off` runs `processes_a_recording`
+without it.
 
 `scripts/compare-noise-suppression [LIMIT]` compares the two, and Off through
 the whole microphone, at a strength's limit in dB, on 90 s of speech, two
@@ -703,7 +785,8 @@ To hear the processing, run a recording through it: raw mono 16-bit 48 kHz in
 `cargo test -p yapfast-core processes_a_recording -- --ignored --nocapture`.
 `YAPFAST_SUPPRESSOR=rnnoise` or `off` chooses the suppressor,
 `YAPFAST_NOISE_LIMIT` limits it in dB, `YAPFAST_DEREVERB=on` takes the room's echo
-out and `YAPFAST_LEVELING=off` turns leveling off. `YAPFAST_AUDIO_FAR`, in the same
+out, `YAPFAST_ECHO_CANCELLATION=off` leaves echo cancellation out and
+`YAPFAST_LEVELING=off` turns leveling off. `YAPFAST_AUDIO_FAR`, in the same
 format and as long, is what the speakers played, for echo cancellation;
 `YAPFAST_AUDIO_ECHOED` then gets the microphone with only echo cancelled.
 It also prints how long what the gate sends would wait for a call's tick on

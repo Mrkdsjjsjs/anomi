@@ -1465,6 +1465,12 @@ struct Layout {
     ui_fonts: Vec<crate::custom_font::Stored>,
     /// Where the window was when Yapfast last ran, and how big.
     window: Option<placement::Placement>,
+    /// Every key this app doesn't know, kept as it came and written back
+    /// with the rest: Anomi's own settings, such as whose noise its calls
+    /// take out (`crates/anomi-app/src/layout/saved.rs`), and a newer
+    /// version's. Running this app on the same data folder keeps them.
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Yapfast's sounds start as they're made: 12 dB under full scale at the loudest.
@@ -1625,9 +1631,7 @@ impl Layout {
     fn read(root: &std::path::Path) -> Self {
         let saved = std::fs::read(root.join(LAYOUT)).ok();
         let fresh = saved.is_none();
-        let mut layout: Self = saved
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let mut layout = saved.map(|bytes| Self::parse(&bytes)).unwrap_or_default();
         if layout.first_version.is_none() {
             layout.first_version = Some(new_tags::first_version(fresh));
         }
@@ -1638,6 +1642,38 @@ impl Layout {
         }
         theme::tidy(&mut layout.custom_themes);
         layout
+    }
+
+    /// The settings a file holds. A setting whose value doesn't read as its
+    /// type, as one another version writes in a shape of its own, is left
+    /// at its default and costs no other: once it reset them all, and the
+    /// next write lost the volumes and mutes with it. Anomi reads its copy
+    /// the same way (`crates/anomi-app/src/layout/mod.rs`, `parse`).
+    fn parse(bytes: &[u8]) -> Self {
+        use serde::Deserialize as _;
+        use serde_json::{Map, Value};
+        if let Ok(layout) = serde_json::from_slice::<Self>(bytes) {
+            return layout;
+        }
+        let Ok(Value::Object(values)) = serde_json::from_slice::<Value>(bytes) else {
+            return Self::default();
+        };
+        let mut fine = Map::new();
+        for (key, value) in values {
+            let alone = Value::Object(Map::from_iter([(key, value)]));
+            let fits = Self::deserialize(&alone).is_ok();
+            let Value::Object(alone) = alone else {
+                continue;
+            };
+            for (key, value) in alone {
+                if fits {
+                    fine.insert(key, value);
+                } else {
+                    tracing::warn!(key, "a layout.json setting doesn't read; left as default");
+                }
+            }
+        }
+        Self::deserialize(&Value::Object(fine)).unwrap_or_default()
     }
 
     /// The profile switches, as saved.

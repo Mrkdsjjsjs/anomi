@@ -96,9 +96,10 @@ there (`yapfast_discord::stream_connection`). The connection is a call's
 heartbeats acknowledge the last sequence number, and binary DAVE messages start
 with one. It identifies with the stream's RTC server and `video: true`,
 discovers its address, then uses `aead_aes256_gcm_rtpsize` transport
-encryption. Yapfast offers H264, and AV1 then H265 before it where the GPU
-encodes them ([Encoding on the GPU](#encoding-on-the-gpu)), and announces its
-size with op 12, again whenever someone connects. H264 frames come from x264 (`vendor/x264-src`,
+encryption. Yapfast offers H264, and AV1 then H265 before it where the
+graphics card it encodes on encodes them ([Encoding on the
+GPU](#encoding-on-the-gpu)), and announces its size with op 12, again
+whenever someone connects. H264 frames come from x264 (`vendor/x264-src`,
 built from source) through `native/h264.c`, with a keyframe at least every 3 s
 and whenever RTCP asks for one; [Choosing the H264
 encoder](#choosing-the-h264-encoder) says how it's set up and why. Yapfast also
@@ -137,8 +138,9 @@ beside the chosen audio devices (`devices.json`), and starts at 1080p30 without
 it. In the iced window (`anomi`), while live, the share buttons, the gear on
 "Your screen" in the dock and the gear on one's own stream's tile open the
 stream's own menu, as Discord's client has it: "Stream Quality" with the frame
-rates, the resolutions and the encoding in its submenu, "Sound", "Change
-Windows" and "Stop Streaming". A choice there changes the stream at once
+rates, the resolutions, the encoding and the bitrate limit in its submenu,
+"Sound", "Change Windows" and "Stop Streaming". A choice there changes the
+stream at once
 (`voice::Command::Quality`, which out of a stream only remembers the choice)
 and the menu stays open; the Slint menu hides them while live. The stream and its connection go on: the gateway's stream ops carry
 no quality, and op 12 is the stream's video state, which [the voice
@@ -151,18 +153,33 @@ opens again at the new size and rate. A new size or frame rate opens the
 encoder again (each encoder sets its rate control by the frame rate it
 opened with), as a new effort does x264's; the old one closes first, and
 the new one starts with a keyframe, at the stream's target, never above
-the new size's cap. Op 12, sent before the first frame of the new size or
-rate, announces its `max_resolution`, `max_framerate` and `max_bitrate`
-with the same SSRCs, so viewers keep watching; a change the worker can't
+the new size's cap. A new bitrate limit opens nothing: the stream's target
+drops under a lower one at once (`StreamSender::set_ceiling`), and the
+encoder follows it with its next frame. Op 12, sent before the first frame
+of the new size, rate or limit, announces its `max_resolution`,
+`max_framerate` and `max_bitrate` with the same SSRCs, so viewers keep
+watching; a change the worker can't
 take shows in the dock's notice, as other stream errors do. The menu lists
 every screen, window and camera, and is never taller than
 the window: where they don't all fit, as with many windows open or the window
 short or zoomed, the choices scroll as one above Go Live, which stays in view.
 Larger screens, and those of another shape, are scaled down to fit. Yapfast
 caps them at the bitrates Discord's client uses: at most 3.5 Mbit/s up to 720p
-and 9 Mbit/s above, the cap op 12 announces, with the frame rate as its
-`max_framerate`. Discord's client allows accounts without Nitro 720p30, but
-trials 1080p30 at 3.5 or 5 Mbit/s for them. The worker converts captured
+and 9 Mbit/s above, with the frame rate as op 12's `max_framerate`. The
+menu's "Bitrate limit" (Auto, or 2, 3.5, 5, 6, 8 or 9 Mbit/s) lowers that
+cap, never raises it: `stream_connection::cap` takes the lower of the two,
+and at least 500 kbit/s. Auto is Discord's cap alone. The limit is kept
+with the stream's quality in `devices.json` (`StreamQuality::max_kbps`),
+reaches the worker with `Job::Share` and `Control::Quality`, and bounds
+everything Discord's cap bounds: the target a stream starts at, the
+congestion controller below, the encoder's bitrate and op 12's
+`max_bitrate`, which announces the cap in force. It's a ceiling, not a
+target: the congestion controller still lowers the bitrate when the uplink
+queues or loses packets. Past 9 Mbit/s waits for a test against Discord's
+own servers: the fake can't show whether its stream server clamps the
+stream, drops packets or closes the connection. Discord's client allows
+accounts without Nitro 720p30, but trials 1080p30 at 3.5 or 5 Mbit/s for
+them. The worker converts captured
 frames to I420 with libyuv, scales them with libyuv's filtering scaler, and
 encodes those; the preview is the same picture scaled down to 720p. While
 the window isn't in front the UI tells the worker (`Frames::pause`) and the
@@ -183,7 +200,9 @@ the delay since (`dlsr`), as RFC 3550 describes, and reads the share of
 packets lost from them. A queue at the router lengthens the round trip as
 much as the delay it adds.
 
-A stream starts at 2.5 Mbit/s, or its cap when that's lower. Each report
+A stream starts at 2.5 Mbit/s, or its cap when that's lower: Discord's for
+its height, or the bitrate limit below it, which a limit set while live
+also takes the target down to at once. Each report
 whose round trip is within 25 ms of the lowest of the last minute, with at
 most 2% of packets lost, raises the target by 8%, up to the cap: about 17 s
 from the start to 1080p's 9 Mbit/s, with a report a second. It doesn't rise
@@ -420,19 +439,67 @@ buffer starved keyframes. Capped CRF ran past Discord's cap.
 
 ## Encoding on the GPU
 
-With "Encode streams with the GPU" in Settings, Advanced, on unless turned off,
-a stream's H264 goes to the graphics card's encoder where it has one:
-`native/hwenc.c` opens FFmpeg's NVENC encoder, then on Windows its AMF one
-(AMD) and on Linux its VA-API one (AMD and Intel), and x264 when none opens.
-It's on by default because it takes almost no processor time and looks better
-than x264 at low bitrates. Intel graphics encode with x264 on Windows so far.
-The setting lives in `layout.json` and reaches the worker with each
-`Job::Share`; the camera stays on x264. When the GPU's H264 encoder fails
-during a stream, x264 takes over from that frame with a keyframe. The worker
-logs which encoder each stream got ("encoding the stream", `engine` and
-`codec`), and for each codec none opened for, why each GPU encoder failed
-("no GPU encoder opened"). The call's Stream tab shows the encoder and the
-codec Discord chose ([Voice](voice.md)).
+"Encode streams on" in Settings, Advanced, chooses where a stream's encoder
+runs (`stream_worker::EncodeOn`, kept in `layout.json` as `stream_encoder`:
+`"auto"`, `"software"`, or a card's key such as `"pci:0000:73:00.0"`): Auto,
+one of the graphics cards `yapfast_core::adapters` lists with an encoder this
+build has, or the processor, x264, which encodes H264 alone. The Slint
+window's "Encode streams with the GPU" switch sets Auto or the processor. A
+graphics card takes almost no processor time and looks better than x264 at
+low bitrates. Intel graphics encode with x264 on Windows so far, and the
+camera stays on x264. The choice reaches the worker with each `Job::Share`,
+and one sharing takes a change at once (`stream_worker::set_encode_on`,
+`Control::EncodeOn`): it closes its encoder, and the next frame opens one on
+the new choice with a keyframe, as for a new quality. The stream's codecs
+stay those it offered as it started; one the new choice can't encode is
+withdrawn, as below.
+
+The worker reads the adapters from sysfs, which loads no driver, and tries
+them in order: the one chosen, then Auto's order, then the processor. Auto's
+order (`adapters::encoder_order`, which `adapters::auto_encoder` heads) has
+the integrated cards first, then the discrete ones, those without a monitor
+before those with, and never a laptop's sleeping card, which it would wake
+on battery. Integrated first keeps the card a game draws on free: every
+encoder takes its frames from main memory, read back from the card the
+compositor draws on whichever card encodes, so the integrated one spares the
+game's card the upload, a CUDA context and its encoder's time. The cost is
+H264's picture, which AMD's VCN encodes worse than NVENC at Discord's
+9 Mbit/s. All of a stream's codecs come from one card: the first on which
+AV1 or H265 opens, or else H264, offers AV1 then H265 where they open there,
+then H264. NVENC opens on the chosen NVIDIA card by its CUDA number (FFmpeg's
+`gpu`), counted in PCI bus order as `adapters::cuda_index` counts: the worker
+starts with `CUDA_DEVICE_ORDER=PCI_BUS_ID`, where CUDA would count the
+fastest first. VA-API opens the card's render node by its
+`/dev/dri/by-path` name. AMF can't be pointed at a card while FFmpeg's
+Windows build has no D3D11VA, so on Windows an AMD card is AMF's own pick.
+Where no adapters can be listed, the worker tries every encoder as before:
+NVENC, then AMF, then VA-API on each render node.
+
+When the card chosen isn't there, taken out or an integrated one the
+firmware turned off, the stream encodes as Auto would; when a card's encoder
+doesn't open, as at a size it can't take, the next card is tried. Either way
+the dock says so once, as a stream's error (`Report::Notice`): "The graphics
+card chosen for streams isn't there, so … encodes this one." or "… couldn't
+encode the stream, so … encodes it." The processor chosen says nothing. When
+a graphics card's H264 encoder fails during a stream, x264 takes over from
+that frame with a keyframe, and the dock says that too; AV1 and H265 have no
+other place, and are withdrawn. The worker logs which encoder each stream got
+("encoding the stream", `engine` and `codec`), and for each codec none opened
+for, why each GPU encoder failed ("no GPU encoder opened"). The call's Stream
+tab shows the encoder and the codec Discord chose ([Voice](voice.md)).
+
+The worker runs on the processor's cores Settings chose for Yapfast
+([cpu.md](../cpu.md)): `stream_worker::set_cpus` keeps them, a worker
+starting is told with a line after its job, and those running with each
+change (`Control::Cpus`, which any job takes, in the thread reading the
+lines). With a graphics card encoding, the worker needs well under one core
+and stays there. While x264 encodes and those cores make up fewer than four
+physical ones, too few for it beside a game, the worker spreads over every
+CPU Yapfast started with, at a lower priority (nice 5 on Linux, below normal
+on Windows), and the dock says so. Once a card encodes again it goes back to
+the cores chosen, at the priority it has: raising it back takes a privilege.
+x264 slices each frame over as many threads as the worker has CPUs, up to
+four (`cpu::threads`).
 
 FFmpeg is built from `vendor/ffmpeg-src` into the one binary, with only its
 hardware encoders and every symbol prefixed so it can't meet the FFmpeg
@@ -442,9 +509,10 @@ NVIDIA's driver 520 or newer for NVENC, and for AMF an AMD driver with AMF
 1.5.2 or newer, from about May 2026 on; an older one fails to open, and x264
 encodes.
 
-VA-API tries each render node (`/dev/dri/renderD128` on) with the libva
-driver its kernel driver calls for: radeonsi for amdgpu, iHD then i965 for
-Intel's. Naming it overrides `LIBVA_DRIVER_NAME`, which NixOS and others set
+VA-API opens the card's render node, or, where no adapters can be listed,
+tries each one (`/dev/dri/renderD128` on), with the libva driver its kernel
+driver calls for: radeonsi for amdgpu, iHD then i965 for Intel's. Naming
+it overrides `LIBVA_DRIVER_NAME`, which NixOS and others set
 to `nvidia` for browsers, and which would otherwise load NVIDIA's decoding-only
 driver for every GPU, AMD's and Intel's too. NVIDIA's nodes are skipped:
 NVENC encodes there. NixOS keeps libva itself off the library path, so the
@@ -463,13 +531,13 @@ insert, with a patch to FFmpeg for each (AMF's sets the target, peak and buffer
 on the running encoder). "Higher quality" changes nothing on the GPU: NVENC's
 slowest preset looked no better than p4.
 
-Where the GPU's encoder encodes AV1 or H265, the stream offers them too,
+Where the card's encoder encodes AV1 or H265, the stream offers them too,
 first, AV1 before H265, as Discord's client orders them: each looks better
 than the one after it at the same bitrate. When the stream starts, the
-worker opens each to see that it opens, and keeps the first: an encoder
-FFmpeg has isn't enough, the GPU and its driver must encode the codec. There
-is no AV1 encoder on the processor, so with "Encode streams with the GPU"
-off, the stream offers H264 alone. Discord picks the codec Yapfast offers
+worker opens each on the card to see that it opens, and keeps the first: an
+encoder FFmpeg has isn't enough, the GPU and its driver must encode the
+codec. There is no AV1 or H265 encoder on the processor, so with the
+processor chosen, or no card opening, the stream offers H264 alone. Discord picks the codec Yapfast offers
 first that every viewer's client decodes (op 4's `video_codec`), and when
 someone who can't decode it starts watching, switches the stream with op
 14; Yapfast then opens the other encoder and starts it with a keyframe,

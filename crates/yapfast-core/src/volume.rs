@@ -5,7 +5,9 @@
 //! it plays. Its sliders show them on Discord's scale; see [`from_slider`].
 //! The microphone's volume and the speakers' apply to every call on top:
 //! everyone plays at their own volume times the speakers'. Muting someone's
-//! soundboard here silences the sounds they play, not their voice.
+//! soundboard here silences the sounds they play, not their voice. Someone's
+//! voice can also be cleaned here before it's mixed ([`Cleaning`]), in
+//! Discord calls, whose audio Yapfast mixes itself.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -71,6 +73,8 @@ static VOLUMES: LazyLock<[RwLock<HashMap<String, f32>>; 2]> = LazyLock::new(Defa
 static MUTED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(RwLock::default);
 /// Those whose soundboard sounds this account doesn't hear.
 static SOUNDBOARD_MUTED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(RwLock::default);
+/// Those whose voice is cleaned before it's mixed, and how; no one else's is.
+static CLEANING: LazyLock<RwLock<HashMap<String, Cleaning>>> = LazyLock::new(RwLock::default);
 static CHANGED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
 
 /// The microphone's and the speakers' gains in every call, as f32 bits.
@@ -152,6 +156,85 @@ pub fn heard(kind: Kind, person: &str) -> f32 {
     }
 }
 
+/// What's done to someone's voice here before it's mixed, as the boxes in
+/// their menu in a call ask: nothing unless chosen. Each costs nothing while
+/// they're silent, muted here or deafened to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cleaning {
+    /// RNNoise takes the noise out of their voice, which then plays 10 ms
+    /// later, in mono.
+    pub noise: bool,
+    /// They're turned down while what comes from them is only this
+    /// account's own voice, back from their speakers (`echo_gate`).
+    pub own_echo: bool,
+}
+
+impl Cleaning {
+    /// Whether anything is done.
+    pub fn any(self) -> bool {
+        self.noise || self.own_echo
+    }
+}
+
+/// Sets what's done to `person`'s voice before it's mixed; nothing done
+/// forgets them.
+pub fn set_cleaning(person: &str, cleaning: Cleaning) {
+    let changed = {
+        let mut people = CLEANING
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cleaning.any() {
+            people.insert(person.to_owned(), cleaning) != Some(cleaning)
+        } else {
+            people.remove(person).is_some()
+        }
+    };
+    if changed {
+        CHANGED.send_modify(|changes| *changes += 1);
+    }
+}
+
+/// What's done to `person`'s voice before it's mixed.
+pub fn cleaning(person: &str) -> Cleaning {
+    CLEANING
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(person)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// Each person whose voice doesn't play as it comes: the gain it plays at
+/// before the speakers' volume, 0.0 while muted here, and how it's
+/// cleaned. Anyone else plays at 1.0, uncleaned. A Discord call keeps a
+/// copy, which it looks up without locks, and copies again when
+/// [`changes`] says one changed. A person may come more than once, the
+/// same each time.
+#[cfg(feature = "discord")]
+pub(crate) fn each_voice(mut each: impl FnMut(&str, f32, Cleaning)) {
+    let volumes = volumes(Kind::Voice)
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let muted = MUTED
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cleaning = CLEANING
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for person in volumes.keys().chain(muted.iter()).chain(cleaning.keys()) {
+        let gain = if muted.contains(person) {
+            0.0
+        } else {
+            volumes
+                .get(person)
+                .copied()
+                .unwrap_or(Kind::Voice.default_gain())
+        };
+        let cleaned = cleaning.get(person).copied().unwrap_or_default();
+        each(person.as_str(), gain, cleaned);
+    }
+}
+
 /// Sets how loud the microphone sends in every call, from 0.0 to [`MAX`].
 pub fn set_microphone(gain: f32) {
     MICROPHONE.store(gain.clamp(0.0, MAX).to_bits(), Ordering::Relaxed);
@@ -175,7 +258,7 @@ pub fn speakers() -> f32 {
     f32::from_bits(SPEAKERS.load(Ordering::Relaxed))
 }
 
-/// Changes whenever a volume or a mute does.
+/// Changes whenever a volume, a mute or someone's [`Cleaning`] does.
 pub fn changes() -> watch::Receiver<u64> {
     CHANGED.subscribe()
 }
@@ -240,6 +323,62 @@ mod tests {
         assert!(!muted("volume-test-6"), "their voice plays");
         mute_soundboard("volume-test-6", false);
         assert!(!soundboard_muted("volume-test-6"));
+    }
+
+    #[test]
+    fn cleaning_is_kept_by_person_until_nothing_is_done() {
+        let person = "volume-test-7";
+        assert_eq!(cleaning(person), Cleaning::default(), "nothing by default");
+        let mut changes = changes();
+        let both = Cleaning {
+            noise: true,
+            own_echo: true,
+        };
+        set_cleaning(person, both);
+        assert!(changes.has_changed().unwrap(), "a call copies it at once");
+        changes.mark_unchanged();
+        assert_eq!(cleaning(person), both);
+        let noise = Cleaning {
+            noise: true,
+            own_echo: false,
+        };
+        set_cleaning(person, noise);
+        assert_eq!(cleaning(person), noise);
+        set_cleaning(person, Cleaning::default());
+        assert!(changes.has_changed().unwrap());
+        assert!(!cleaning(person).any(), "forgotten");
+        assert_eq!(get(Kind::Voice, person), 1.0, "the volume stays");
+    }
+
+    #[cfg(feature = "discord")]
+    #[test]
+    fn a_call_copies_everyone_who_plays_other_than_as_they_come() {
+        set(Kind::Voice, "volume-test-8", 0.5);
+        mute("volume-test-9", true);
+        set(Kind::Voice, "volume-test-9", 1.5);
+        let noise = Cleaning {
+            noise: true,
+            own_echo: false,
+        };
+        set_cleaning("volume-test-10", noise);
+        let mut copied = HashMap::new();
+        each_voice(|person, gain, cleaning| {
+            copied.insert(person.to_owned(), (gain, cleaning));
+        });
+        assert_eq!(copied["volume-test-8"], (0.5, Cleaning::default()));
+        assert_eq!(
+            copied["volume-test-9"],
+            (0.0, Cleaning::default()),
+            "muted here"
+        );
+        assert_eq!(
+            copied["volume-test-10"],
+            (1.0, noise),
+            "as they come, cleaned"
+        );
+        assert!(!copied.contains_key("volume-test-11"));
+        mute("volume-test-9", false);
+        set_cleaning("volume-test-10", Cleaning::default());
     }
 
     #[test]

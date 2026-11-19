@@ -1,6 +1,14 @@
 //! Sound through PulseAudio, or PipeWire's PulseAudio server.
 
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{
+        Once,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use libpulse_binding::{
@@ -22,12 +30,37 @@ use crate::voice::NAMED;
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
 const REALTIME: i32 = 10;
 
-/// Says how it raised the calling thread, or why it couldn't.
+/// The name libpulse gives the thread that carries each stream's samples
+/// to the server, at normal priority.
+const STREAM_THREAD: &str = "threaded-ml";
+
+/// RealtimeKit, on the system bus: it raises a thread of the asking process
+/// to real-time priority where the user's limits don't let the process do
+/// it itself, as PipeWire's clients ask it.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+const RTKIT: &str = "org.freedesktop.RealtimeKit1";
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+const RTKIT_PATH: &str = "/org/freedesktop/RealtimeKit1";
+
+/// How long the audio thread waits for rtkit's answer before it carries
+/// on at normal priority.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+const RTKIT_WAIT: Duration = Duration::from_secs(2);
+
+/// Says how it raised the calling thread, or why it couldn't: by itself
+/// where the limits allow it (`ulimit -r`), else through rtkit.
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
 pub fn raise_priority(priority: super::Priority) -> Result<&'static str, String> {
-    let (sched_priority, how) = match priority {
-        super::Priority::Playback => (REALTIME, "SCHED_FIFO 10"),
-        super::Priority::Capture => (REALTIME - 1, "SCHED_FIFO 9"),
+    let put_back = PUT_BACK.swap(0, Ordering::Relaxed);
+    if put_back > 0 {
+        tracing::warn!(
+            threads = put_back,
+            "an audio thread ran too long without waiting and went back to normal priority"
+        );
+    }
+    let (sched_priority, how, through_rtkit) = match priority {
+        super::Priority::Playback => (REALTIME, "SCHED_FIFO 10", "SCHED_RR 10 through rtkit"),
+        super::Priority::Capture => (REALTIME - 1, "SCHED_FIFO 9", "SCHED_RR 9 through rtkit"),
     };
     let param = libc::sched_param { sched_priority };
     // SAFETY: 0 is the calling thread, and `param` outlives the call. Threads
@@ -35,10 +68,153 @@ pub fn raise_priority(priority: super::Priority) -> Result<&'static str, String>
     let raised = unsafe {
         libc::sched_setscheduler(0, libc::SCHED_FIFO | libc::SCHED_RESET_ON_FORK, &param)
     };
-    if raised != 0 {
+    if raised == 0 {
+        return Ok(how);
+    }
+    let refused = std::io::Error::last_os_error();
+    match rtkit(sched_priority) {
+        Ok(given) if given == sched_priority => Ok(through_rtkit),
+        Ok(_) => Ok("SCHED_RR through rtkit, below the priority asked"),
+        Err(error) => Err(format!("{refused}; {error}")),
+    }
+}
+
+/// Asks rtkit to put the calling thread on SCHED_RR at `priority`, or the
+/// highest it allows below that, and says which. rtkit raises a thread
+/// only for a process whose RLIMIT_RTTIME is within its own limit, 200 ms
+/// here, so this sets it first: a real-time thread of Yapfast's that ran
+/// that long without once waiting would end the process rather than hold
+/// a core. rtkit resets threads started after to normal priority.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+fn rtkit(priority: i32) -> Result<i32, String> {
+    use zbus::zvariant::{OwnedValue, Value};
+    let bus = zbus::blocking::connection::Builder::system()
+        .map(|builder| builder.method_timeout(RTKIT_WAIT))
+        .and_then(|builder| builder.build())
+        .map_err(|error| format!("no system bus for rtkit: {error}"))?;
+    let property = |name: &str| -> Result<i64, String> {
+        let reply = bus
+            .call_method(
+                Some(RTKIT),
+                RTKIT_PATH,
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &(RTKIT, name),
+            )
+            .and_then(|reply| reply.body().deserialize::<OwnedValue>())
+            .map_err(|error| format!("rtkit: {error}"))?;
+        match &*reply {
+            Value::I32(value) => Ok(i64::from(*value)),
+            Value::I64(value) => Ok(*value),
+            _ => Err(format!("rtkit gave {name} as something else than a number")),
+        }
+    };
+    let priority = i64::from(priority).min(property("MaxRealtimePriority")?);
+    let priority = u32::try_from(priority)
+        .ok()
+        .filter(|&priority| priority > 0)
+        .ok_or("rtkit allows no real-time priority")?;
+    limit_real_time(property("RTTimeUSecMax")?)?;
+    // SAFETY: gettid has no preconditions.
+    let thread = unsafe { libc::gettid() };
+    let thread = u64::try_from(thread).map_err(|error| error.to_string())?;
+    bus.call_method(
+        Some(RTKIT),
+        RTKIT_PATH,
+        Some(RTKIT),
+        "MakeThreadRealtime",
+        &(thread, priority),
+    )
+    .map_err(|error| format!("rtkit: {error}"))?;
+    i32::try_from(priority).map_err(|error| error.to_string())
+}
+
+/// Lowers the process's RLIMIT_RTTIME, the processor time in microseconds
+/// a real-time thread may take without waiting, to `most` where it's above,
+/// and its soft limit to half that. Past the hard limit Linux kills the
+/// whole program; past the soft one it sends SIGXCPU, on which the thread
+/// goes back to normal priority ([`put_back`]): a thread held up by a long
+/// job, as loading a suppressor's model, stutters rather than ends the call.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+fn limit_real_time(most: i64) -> Result<(), String> {
+    let most = libc::rlim_t::try_from(most).map_err(|_| "rtkit gave no time limit".to_owned())?;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a whole rlimit for the call to write.
+    if unsafe { libc::getrlimit(libc::RLIMIT_RTTIME, &mut limit) } != 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
-    Ok(how)
+    let hard = limit.rlim_max.min(most);
+    let soft = (hard / 2).max(1);
+    watch_real_time(soft);
+    if limit.rlim_max == hard && limit.rlim_cur <= soft {
+        return Ok(());
+    }
+    let limit = libc::rlimit {
+        rlim_cur: limit.rlim_cur.min(soft),
+        rlim_max: hard,
+    };
+    // SAFETY: `limit` outlives the call; lowering a limit needs no privilege.
+    if unsafe { libc::setrlimit(libc::RLIMIT_RTTIME, &limit) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+/// The soft RLIMIT_RTTIME [`limit_real_time`] set, which [`put_back`] sets
+/// again: Linux moves it a second on as it signals.
+static SOFT_LIMIT: AtomicU64 = AtomicU64::new(0);
+/// Threads [`put_back`] put back at normal priority since the last raise
+/// logged them.
+static PUT_BACK: AtomicU32 = AtomicU32::new(0);
+
+/// Has SIGXCPU put the thread that ran too long back at normal priority,
+/// rather than end the program, from now on.
+fn watch_real_time(soft: libc::rlim_t) {
+    static WATCHING: Once = Once::new();
+    SOFT_LIMIT.store(soft, Ordering::Relaxed);
+    WATCHING.call_once(|| {
+        let handler: extern "C" fn(libc::c_int) = put_back;
+        // SAFETY: an all-zero sigaction with an empty mask is a valid one,
+        // and the handler only makes system calls and touches atomics, as
+        // a signal handler may.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = handler as libc::sighandler_t;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+            if libc::sigaction(libc::SIGXCPU, &action, std::ptr::null_mut()) != 0 {
+                tracing::warn!(
+                    error = %std::io::Error::last_os_error(),
+                    "an audio thread that runs too long would end the program"
+                );
+            }
+        }
+    });
+}
+
+/// SIGXCPU's handler. Linux signals the thread that ran past the soft
+/// RLIMIT_RTTIME, as it runs: it goes back to normal priority, and the soft
+/// limit, which Linux moved a second on, back under the hard one for the
+/// next.
+extern "C" fn put_back(_: libc::c_int) {
+    let normal = libc::sched_param { sched_priority: 0 };
+    // SAFETY: plain system calls on the calling thread and the process's
+    // limits, with values that outlive them.
+    unsafe {
+        libc::sched_setscheduler(0, libc::SCHED_OTHER, &normal);
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_RTTIME, &mut limit) == 0 {
+            limit.rlim_cur = SOFT_LIMIT.load(Ordering::Relaxed).min(limit.rlim_max);
+            libc::setrlimit(libc::RLIMIT_RTTIME, &limit);
+        }
+    }
+    PUT_BACK.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Linux neither throttles a background window's process nor needs a
@@ -145,9 +321,15 @@ fn open(
         channels: u8::try_from(format.channels)?,
         rate: format.rate,
     };
-    Simple::new(
-        None, "Yapfast", direction, device, name, &spec, None, attributes,
-    )
+    // The stream's own thread, which libpulse starts here, keeps every core
+    // at normal priority rather than wait beside a game's threads on the
+    // few Yapfast keeps to (`docs/cpu.md`).
+    crate::cpu::keep_free(STREAM_THREAD);
+    crate::cpu::unconfined(|| {
+        Simple::new(
+            None, "Yapfast", direction, device, name, &spec, None, attributes,
+        )
+    })
     .map_err(|error| anyhow!("{error}"))
 }
 
@@ -610,5 +792,44 @@ mod others {
             let _ = stream.disconnect();
         }
         (heard.borrow_mut())(Heard::Stopped { source: input });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A thread past the soft RLIMIT_RTTIME is put back at normal priority
+    /// on SIGXCPU, which no longer ends the program, and the soft limit
+    /// Linux moved on comes back to half the hard one.
+    #[test]
+    fn a_real_time_thread_that_runs_too_long_goes_back_rather_than_ending_it() {
+        limit_real_time(200_000).expect("RLIMIT_RTTIME lowered");
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `limit` is a whole rlimit for the call to write.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_RTTIME, &mut limit) },
+            0
+        );
+        assert_eq!((limit.rlim_cur, limit.rlim_max), (100_000, 200_000));
+        // As Linux does as it signals: the soft limit a second on.
+        let moved = libc::rlimit {
+            rlim_cur: 1_100_000.min(limit.rlim_max),
+            ..limit
+        };
+        // SAFETY: plain values; the signal goes to this thread, whose
+        // handler is set.
+        unsafe {
+            libc::setrlimit(libc::RLIMIT_RTTIME, &moved);
+            libc::raise(libc::SIGXCPU);
+            libc::getrlimit(libc::RLIMIT_RTTIME, &mut limit);
+        }
+        assert_eq!(limit.rlim_cur, 100_000, "the soft limit is back");
+        assert!(PUT_BACK.swap(0, Ordering::Relaxed) >= 1, "and it's said");
+        // SAFETY: no preconditions.
+        assert_eq!(unsafe { libc::sched_getscheduler(0) }, libc::SCHED_OTHER);
     }
 }

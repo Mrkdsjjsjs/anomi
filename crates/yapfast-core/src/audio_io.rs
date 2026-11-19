@@ -80,8 +80,10 @@ pub use lasting::{LastingInput, LastingOutput};
 /// busy machine, such as one running a game, doesn't hold up what plays:
 /// MMCSS's "Pro Audio" task on Windows, which Discord's and browsers' audio
 /// threads take, and real-time scheduling on Linux where the user's limits
-/// allow it. Otherwise the thread carries on as it was. It lasts until the
-/// thread ends.
+/// allow it, or else through rtkit. Otherwise the thread carries on at
+/// normal priority, on every core rather than only those Yapfast keeps to
+/// (`docs/cpu.md`), so it needn't wait beside a game's threads. It lasts
+/// until the thread ends.
 ///
 /// `thread` names it for the log, which says at info level whether it was
 /// raised, and for [`NO_PRIORITY`], which leaves it at normal priority.
@@ -102,16 +104,29 @@ pub fn raise_capture_priority() {
 
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
 fn raise(thread: &str, priority: Priority) {
+    // Silent stand-ins have nothing to hold up, and a test run asks rtkit
+    // for no real-time threads.
+    if !devices() {
+        return;
+    }
     if priority_off(std::env::var(NO_PRIORITY).ok().as_deref(), thread) {
         tracing::info!(
             thread,
             "an audio thread stays at normal priority, as {NO_PRIORITY} says"
         );
+        crate::cpu::release_this_thread();
         return;
     }
     match platform::raise_priority(priority) {
         Ok(how) => tracing::info!(thread, how, "an audio thread raised its priority"),
-        Err(error) => tracing::info!(thread, %error, "an audio thread stays at normal priority"),
+        Err(error) => {
+            tracing::info!(
+                thread,
+                %error,
+                "an audio thread stays at normal priority, on every core"
+            );
+            crate::cpu::release_this_thread();
+        }
     }
 }
 

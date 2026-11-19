@@ -209,6 +209,8 @@ pub(crate) fn rows(core: &Application, layout: &Layout, target: &str, person: bo
                 C::HideMuted => notifications().is_some_and(|known| known.hide_muted),
                 C::LocalMute => yapfast_core::volume::muted(id),
                 C::SoundboardMute => yapfast_core::volume::soundboard_muted(id),
+                C::SuppressTheirNoise => yapfast_core::volume::cleaning(id).noise,
+                C::RemoveMyEcho => yapfast_core::volume::cleaning(id).own_echo,
                 C::SelfMute => state.voice.muted,
                 C::SelfDeafen => state.voice.deafened,
                 C::ServerMute => voice_person.is_some_and(|person| person.server_muted),

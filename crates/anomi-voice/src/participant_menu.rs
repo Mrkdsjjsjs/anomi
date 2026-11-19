@@ -116,5 +116,12 @@ pub fn shots() -> Vec<crate::shots::Shot> {
             theme: "bonfire",
             vm: fixture::alone,
         },
+        Shot {
+            area: "voice",
+            name: "participant_menu_cleaning",
+            size: GOLDEN,
+            theme: "bonfire",
+            vm: fixture::cleaning,
+        },
     ]
 }

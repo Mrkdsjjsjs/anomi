@@ -10,13 +10,17 @@
 //! stream's server, and it sends the video there; a [`Control::Switch`] line
 //! shares another screen, window or camera on the same stream. A `stop` line, or
 //! closing its input, ends the job. Frames go to the UI through [`crate::frames`].
+//!
+//! What Settings changes while workers run reaches each of them as a line
+//! too: the cores they may use ([`set_cpus`]) and where a stream encodes
+//! ([`set_encode_on`]).
 
 use std::{
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc as channel,
     },
@@ -39,8 +43,10 @@ use livekit::webrtc::{
 };
 
 use crate::{
+    adapters::{self, Adapter, EncoderApi},
+    cpu::CpuMask,
     decode::Decoder,
-    encode::{self, Effort, Encoder},
+    encode::{self, Device, Effort, Encoder},
     frames::{Frames, Writer},
     picture::{I420, Turn},
     stream_audio,
@@ -97,9 +103,13 @@ pub enum Job {
         /// How hard the encoder works on each frame.
         #[serde(default)]
         effort: Effort,
-        /// Encoding on the GPU's encoder, where it has one.
+        /// Where it encodes, as Settings chose.
         #[serde(default)]
-        hardware: bool,
+        encode_on: EncodeOn,
+        /// The most it sends, in kbit/s, within Discord's cap; none for
+        /// Auto. See [`stream_connection::cap`].
+        #[serde(default)]
+        max_kbps: Option<u32>,
     },
     /// Receives and decodes the stream at `server`, writing pictures that
     /// fit `width` by `height` to the frames file at `frames`.
@@ -305,13 +315,22 @@ pub enum Control {
     Audio(StreamAudio),
     /// Share at this quality from now on, keeping the stream and what it
     /// shares: frames that fit `width` by `height`, `fps` a second, encoded
-    /// with `effort`.
+    /// with `effort`, at most `max_kbps` (none for Auto).
     Quality {
         width: u32,
         height: u32,
         fps: u32,
         effort: Effort,
+        #[serde(default)]
+        max_kbps: Option<u32>,
     },
+    /// Encode where Settings now says, from the next frame on, keeping the
+    /// stream: an encoder opens there as for a new quality.
+    EncodeOn(EncodeOn),
+    /// Run on these logical CPUs, or on every one Yapfast started with when
+    /// none; see [`set_cpus`]. Any job takes it, from the line that brings
+    /// it.
+    Cpus(Option<CpuMask>),
     /// Play a watched stream's sound, or not, as being deafened changes.
     Hear(bool),
     /// Play a watched stream's or a video's sound this loud.
@@ -354,6 +373,10 @@ pub enum Report {
     /// Sharing: the sound asked for couldn't be heard, and the stream goes
     /// on without it.
     AudioError(String),
+    /// Sharing: how the stream encodes isn't what Settings asked for, as
+    /// when the graphics card chosen couldn't encode it, and the stream goes
+    /// on. The dock shows it as a stream's error.
+    Notice(String),
     /// Sharing: the video reaches the stream server. Watching: the first
     /// picture is on screen.
     Streaming,
@@ -436,6 +459,8 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
                 break;
             }
             match serde_json::from_str::<Control>(&line) {
+                // The whole process's, whatever its job.
+                Ok(Control::Cpus(cpus)) => cores::confine(cpus),
                 Ok(control) => {
                     let _ = controls.send(control);
                 }
@@ -453,26 +478,19 @@ fn serve(mut input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
             height,
             fps,
             effort,
-            hardware,
+            encode_on,
+            max_kbps,
         } => {
-            let fps = fps.clamp(1, 60);
-            let sink = Sink {
-                writer: Writer::open(&frames)?,
-                controls: received,
-                server: None,
-                sound: (source != Source::TestPattern).then_some(audio),
-                sound_failed: None,
-                video: None,
-                bounds: (width, height),
+            let mut sink = Sink::new(
+                Writer::open(&frames)?,
+                received,
+                (width, height),
                 fps,
                 effort,
-                hardware,
-                started: Instant::now(),
-                streaming: false,
-                preview_due: None,
-                thumbnail: None,
-                lost: None,
-            };
+                encode_on,
+                max_kbps,
+            );
+            sink.sound = (source != Source::TestPattern).then_some(audio);
             report(Report::Ready);
             match source {
                 Source::TestPattern => test_pattern(sink, &stop, report),
@@ -550,11 +568,25 @@ struct Sink {
     sound_failed: Option<String>,
     video: Option<Video>,
     /// The largest frame shared, which [`Control::Quality`] changes with
-    /// the frame rate and the effort.
+    /// the frame rate, the effort and the bitrate limit.
     bounds: (u32, u32),
     fps: u32,
     effort: Effort,
-    hardware: bool,
+    /// The most the stream sends, in kbit/s, within Discord's cap; none for
+    /// Auto.
+    max_kbps: Option<u32>,
+    /// Where Settings puts the encoder, which [`Control::EncodeOn`] changes.
+    encode_on: EncodeOn,
+    /// The graphics encoders to try for `encode_on`, best first, once read.
+    candidates: Option<Vec<Candidate>>,
+    /// The adapter `encode_on` names wasn't there, which the next encoder
+    /// placed says.
+    missing: bool,
+    /// Where the stream encodes.
+    placed: Placed,
+    /// What the dock should say about how the stream encodes, not reported
+    /// yet.
+    notice: Option<String>,
     started: Instant,
     streaming: bool,
     /// When the stream's next preview is due: from when it starts.
@@ -564,6 +596,27 @@ struct Sink {
     /// When the stream connection ended, while Discord may still name a
     /// server it moved the stream to.
     lost: Option<Instant>,
+}
+
+/// A graphics encoder a stream may encode on, with its adapter's name for
+/// the dock; none for whichever graphics encoder opens first, where no
+/// adapters could be listed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Candidate {
+    device: Device,
+    name: Option<String>,
+}
+
+/// Where a shared stream encodes: every codec on one adapter, so the others,
+/// the one a game draws on among them, stay free.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Placed {
+    /// Not yet, or not since Settings changed: on the first candidate that
+    /// opens.
+    Anywhere,
+    On(Candidate),
+    /// On the processor, until Settings changes.
+    Processor,
 }
 
 struct Video {
@@ -607,6 +660,61 @@ impl Video {
 /// where the GPU's encoder for them opens.
 const GPU_CODECS: [Codec; 2] = [Codec::Av1, Codec::H265];
 
+/// The graphics encoders `on` tries, best first, and whether the adapter it
+/// names is missing: that adapter, then Auto's order
+/// ([`adapters::encoder_order`], which [`adapters::auto_encoder`] heads);
+/// where no adapters can be listed, whichever graphics encoder opens first.
+/// Reading them loads no driver.
+fn candidates_for(on: &EncodeOn) -> (Vec<Candidate>, bool) {
+    if *on == EncodeOn::Software {
+        return (Vec::new(), false);
+    }
+    let listed = adapters::list();
+    if listed.is_empty() {
+        let any = Candidate {
+            device: Device::AnyGpu,
+            name: None,
+        };
+        return (vec![any], matches!(on, EncodeOn::Adapter(_)));
+    }
+    let candidate = |adapter: &Adapter| {
+        device_of(&listed, adapter).map(|device| Candidate {
+            device,
+            name: Some(adapter.name.clone()),
+        })
+    };
+    let chosen = match on {
+        EncodeOn::Adapter(key) => Some(adapters::find(&listed, key).and_then(candidate)),
+        _ => None,
+    };
+    let mut order: Vec<Candidate> = chosen.clone().flatten().into_iter().collect();
+    for adapter in adapters::encoder_order(&listed, adapters::machine()) {
+        // AMF can't be pointed at an adapter: two AMD cards are one choice.
+        if let Some(next) = candidate(adapter)
+            && !order.iter().any(|tried| tried.device == next.device)
+        {
+            order.push(next);
+        }
+    }
+    (order, chosen.is_some_and(|found| found.is_none()))
+}
+
+/// Where `adapter` encodes, among `listed`: NVENC on its CUDA number,
+/// VA-API on its render node, AMF on Windows. None where this build has no
+/// encoder for it.
+fn device_of(listed: &[Adapter], adapter: &Adapter) -> Option<Device> {
+    match adapter.encoder_api()? {
+        EncoderApi::Nvenc => Some(Device::Nvenc {
+            index: adapters::cuda_index(listed, adapter)?,
+        }),
+        EncoderApi::Amf => Some(Device::Amf),
+        EncoderApi::Vaapi => Some(Device::Vaapi {
+            node: adapter.render_node.clone()?,
+            kernel: adapter.kernel_driver.clone(),
+        }),
+    }
+}
+
 fn log_encoder(encoder: &Encoder) {
     let (width, height) = encoder.size();
     tracing::info!(
@@ -619,6 +727,42 @@ fn log_encoder(encoder: &Encoder) {
 }
 
 impl Sink {
+    /// A sink for frames that fit `bounds`, `fps` a second, encoded with
+    /// `effort` where `encode_on` says, at most `max_kbps`; without sound
+    /// until it's given one.
+    fn new(
+        writer: Writer,
+        controls: channel::Receiver<Control>,
+        bounds: (u32, u32),
+        fps: u32,
+        effort: Effort,
+        encode_on: EncodeOn,
+        max_kbps: Option<u32>,
+    ) -> Self {
+        Self {
+            writer,
+            controls,
+            server: None,
+            sound: None,
+            sound_failed: None,
+            video: None,
+            bounds,
+            fps: fps.clamp(1, 60),
+            effort,
+            max_kbps,
+            encode_on,
+            candidates: None,
+            missing: false,
+            placed: Placed::Anywhere,
+            notice: None,
+            started: Instant::now(),
+            streaming: false,
+            preview_due: None,
+            thumbnail: None,
+            lost: None,
+        }
+    }
+
     /// Takes a frame at the size it's sent: the preview shows it, scaled
     /// down to fit, and Discord gets it once the stream has a server.
     fn frame(&mut self, picture: &mut I420Buffer) -> Result<()> {
@@ -649,6 +793,7 @@ impl Sink {
         if let Some(server) = self.server.take() {
             let (offers, encoder) = self.offers(width, height)?;
             let sender = StreamSender::start(server, width, height, self.fps, offers)?;
+            sender.set_ceiling(self.max_kbps);
             let sound = match self.sound {
                 Some(audio) if audio != StreamAudio::Off => {
                     share_sound(&sender, audio, &mut self.sound_failed)
@@ -668,8 +813,9 @@ impl Sink {
         // Discord's choice of codec changes as viewers come and go.
         let current = video.encoder.as_ref().map(Encoder::codec);
         let codec = (video.sender.codec().or(current)).unwrap_or(stream_connection::SEND_CODEC);
-        // A new size, frame rate or effort (`Control::Quality`) needs
-        // another encoder, which starts with a keyframe.
+        // A new size, frame rate or effort (`Control::Quality`), or another
+        // place to encode (`Control::EncodeOn`, which closed the encoder),
+        // needs another encoder, which starts with a keyframe.
         let fits = video.encoder.as_ref().is_some_and(|encoder| {
             encoder.codec() == codec
                 && encoder.size() == (width, height)
@@ -709,7 +855,7 @@ impl Sink {
         else {
             return Ok(());
         };
-        let wanted = aim(sender.target(), height);
+        let wanted = aim(sender.target(), height, self.max_kbps);
         let aimed = encoder.bitrate();
         // Not on every wobble, which would churn the rate control.
         if wanted.abs_diff(aimed) > aimed / 10 {
@@ -743,56 +889,200 @@ impl Sink {
             }
             Err(error) => return Err(error),
         }
+        // x264 took over from the graphics encoder, which failed (encode.rs).
+        let on_processor = *encoder.device() == Device::Processor;
+        if on_processor && matches!(self.placed, Placed::On(_)) {
+            self.say(
+                tr!("The graphics card's encoder failed, so the processor encodes the stream now.")
+                    .to_owned(),
+            );
+            self.place(Placed::Processor, None);
+        }
         Ok(())
     }
 
     /// The codecs to offer Discord, most wanted first, and an encoder for
-    /// the first: AV1, then H265, where the GPU's encoder for each opens,
-    /// then H264. Discord streams the first every viewer decodes. Each is
-    /// opened to see that it opens, and only the first kept.
-    fn offers(&self, width: u32, height: u32) -> Result<(Vec<Codec>, Encoder)> {
-        let mut offers = vec![];
-        let mut first = None;
-        for codec in GPU_CODECS.iter().copied().filter(|_| self.hardware) {
-            if let Ok(encoder) = self.open(codec, width, height) {
-                offers.push(codec);
-                first.get_or_insert(encoder);
+    /// the first, all from one place: the first graphics adapter of
+    /// [`Self::candidates`] that opens AV1 or H265, or else H264, with AV1
+    /// then H265 where they open and H264 after them; or else the processor,
+    /// with H264 alone. Discord streams the first every viewer decodes. Each
+    /// is opened to see that it opens, and only the first kept.
+    fn offers(&mut self, width: u32, height: u32) -> Result<(Vec<Codec>, Encoder)> {
+        let mut failed = None;
+        for candidate in self.candidates() {
+            let mut offers = vec![];
+            let mut first = None;
+            for codec in GPU_CODECS {
+                if let Ok(encoder) = self.open_on(codec, width, height, &candidate.device) {
+                    offers.push(codec);
+                    first.get_or_insert(encoder);
+                }
             }
+            let first = match first {
+                Some(encoder) => Some(encoder),
+                None => (self.open_on(
+                    stream_connection::SEND_CODEC,
+                    width,
+                    height,
+                    &candidate.device,
+                ))
+                .ok(),
+            };
+            if let Some(encoder) = first {
+                offers.push(stream_connection::SEND_CODEC);
+                self.place(Placed::On(candidate), failed.as_ref());
+                log_encoder(&encoder);
+                return Ok((offers, encoder));
+            }
+            failed.get_or_insert(candidate);
         }
-        offers.push(stream_connection::SEND_CODEC);
-        let encoder = match first {
-            Some(encoder) => encoder,
-            None => self.open(stream_connection::SEND_CODEC, width, height)?,
-        };
+        // Placed first: x264 sizes its threads by the CPUs it may use.
+        self.place(Placed::Processor, failed.as_ref());
+        let encoder = self.open_on(
+            stream_connection::SEND_CODEC,
+            width,
+            height,
+            &Device::Processor,
+        )?;
         log_encoder(&encoder);
-        Ok((offers, encoder))
+        Ok((vec![stream_connection::SEND_CODEC], encoder))
     }
 
     /// An encoder for the stream in `codec`, as [`Self::open`] opens it.
-    fn encoder(&self, codec: Codec, width: u32, height: u32) -> Result<Encoder> {
+    fn encoder(&mut self, codec: Codec, width: u32, height: u32) -> Result<Encoder> {
         let encoder = self.open(codec, width, height)?;
         log_encoder(&encoder);
         Ok(encoder)
     }
 
-    /// An encoder in `codec`, at the stream's target, or what a stream of
-    /// `height` lines starts at before it has one; never above the cap of
-    /// `height` lines, which the stream's target follows once a frame of
-    /// the new size goes out.
-    fn open(&self, codec: Codec, width: u32, height: u32) -> Result<Encoder> {
+    /// An encoder in `codec` where the stream encodes: on its adapter, and
+    /// when that fails, H264 on the next candidate that opens it, then on
+    /// the processor; AV1 and H265 have no other place, as the stream's
+    /// codecs all come from one. After a change in Settings, on the first
+    /// candidate that opens it.
+    fn open(&mut self, codec: Codec, width: u32, height: u32) -> Result<Encoder> {
+        let mut failed = None;
+        match self.placed.clone() {
+            Placed::On(candidate) => {
+                let opened = self.open_on(codec, width, height, &candidate.device);
+                match opened {
+                    Ok(encoder) => return Ok(encoder),
+                    Err(error) if codec != stream_connection::SEND_CODEC => return Err(error),
+                    Err(_) => failed = Some(candidate),
+                }
+            }
+            Placed::Processor => return self.open_on(codec, width, height, &Device::Processor),
+            Placed::Anywhere => {}
+        }
+        for candidate in self.candidates() {
+            if failed.as_ref() == Some(&candidate) {
+                continue;
+            }
+            match self.open_on(codec, width, height, &candidate.device) {
+                Ok(encoder) => {
+                    self.place(Placed::On(candidate), failed.as_ref());
+                    return Ok(encoder);
+                }
+                Err(_) => {
+                    failed.get_or_insert(candidate);
+                }
+            }
+        }
+        if codec != stream_connection::SEND_CODEC {
+            bail!("no graphics card here encodes {}", codec.name());
+        }
+        self.place(Placed::Processor, failed.as_ref());
+        self.open_on(codec, width, height, &Device::Processor)
+    }
+
+    /// An encoder in `codec` on `device`, at the stream's target, or what
+    /// a stream of `height` lines starts at before it has one; never above
+    /// the cap of `height` lines and the bitrate limit, which the stream's
+    /// target follows once a frame of the new size goes out.
+    fn open_on(&self, codec: Codec, width: u32, height: u32, device: &Device) -> Result<Encoder> {
         let target = self.video.as_ref().map_or_else(
-            || congestion::start(stream_connection::max_bitrate(height).into()),
+            || congestion::start(stream_connection::cap(height, self.max_kbps).into()),
             |video| video.sender.target(),
         );
-        Encoder::new(
+        Encoder::on(
             codec,
             width,
             height,
             self.fps,
-            aim(target, height),
+            aim(target, height, self.max_kbps),
             self.effort,
-            self.hardware,
+            device,
         )
+    }
+
+    /// The graphics encoders to try for the stream, best first, read once
+    /// for each choice in Settings.
+    fn candidates(&mut self) -> Vec<Candidate> {
+        if self.candidates.is_none() {
+            let (candidates, missing) = candidates_for(&self.encode_on);
+            if missing {
+                tracing::info!(on = ?self.encode_on, "the graphics card chosen for streams isn't there");
+            }
+            self.missing = missing;
+            self.candidates = Some(candidates);
+        }
+        self.candidates.clone().unwrap_or_default()
+    }
+
+    /// Encodes on `placed` from now on, and says in the dock how that isn't
+    /// what Settings asked for: the adapter chosen isn't there, or `failed`,
+    /// tried before, didn't open. On the processor, the worker may spread
+    /// over every core ([`cores::encoding_on_processor`]).
+    fn place(&mut self, placed: Placed, failed: Option<&Candidate>) {
+        let missing = std::mem::take(&mut self.missing);
+        let failed = failed.and_then(|candidate| candidate.name.as_deref());
+        let notice = match (&placed, missing, failed) {
+            (Placed::On(Candidate { name: Some(used), .. }), true, _) => Some(tr!(
+                "The graphics card chosen for streams isn't there, so {} encodes this one.",
+                used
+            )),
+            (Placed::On(_), true, _) => Some(
+                tr!("The graphics card chosen for streams isn't there, so another one encodes this one.")
+                    .to_owned(),
+            ),
+            (Placed::Processor, true, _) => Some(
+                tr!("The graphics card chosen for streams isn't there, so the processor encodes this one.")
+                    .to_owned(),
+            ),
+            (Placed::On(Candidate { name: Some(used), .. }), false, Some(failed)) => Some(tr!(
+                "{} couldn't encode the stream, so {} encodes it.",
+                failed,
+                used
+            )),
+            (Placed::Processor, false, Some(failed)) => Some(tr!(
+                "{} couldn't encode the stream, so the processor encodes it.",
+                failed
+            )),
+            _ => None,
+        };
+        if let Some(notice) = notice {
+            self.say(notice);
+        }
+        let processor = placed == Placed::Processor;
+        self.placed = placed;
+        if cores::encoding_on_processor(processor) {
+            self.say(
+                tr!("The processor encodes the stream on all its cores, which a game may feel: a graphics card can encode it instead (Settings, Advanced).")
+                    .to_owned(),
+            );
+        }
+    }
+
+    /// Has the dock say `notice`, after what it hasn't said yet.
+    fn say(&mut self, notice: String) {
+        tracing::info!(
+            notice = notice.as_str(),
+            "telling Yapfast how the stream encodes"
+        );
+        self.notice = Some(match self.notice.take() {
+            Some(said) => format!("{said} {notice}"),
+            None => notice,
+        });
     }
 
     /// Takes Yapfast's controls, reports the stream starting, and fails once
@@ -804,18 +1094,34 @@ impl Sink {
                 Control::Send(server) => self.server = Some(server),
                 Control::Switch(source) => switch = Some(source),
                 // The next frame fits the new bounds and reopens the
-                // encoder; Discord hears of the frame rate with it.
+                // encoder; Discord hears of the frame rate and the bitrate
+                // limit with it, and the encoder follows the limit without
+                // opening again.
                 Control::Quality {
                     width,
                     height,
                     fps,
                     effort,
+                    max_kbps,
                 } => {
                     self.bounds = (width, height);
                     self.fps = fps.clamp(1, 60);
                     self.effort = effort;
+                    self.max_kbps = max_kbps;
                     if let Some(video) = &self.video {
                         video.sender.set_fps(self.fps);
+                        video.sender.set_ceiling(max_kbps);
+                    }
+                }
+                // The encoder closes, and the next frame opens one where
+                // Settings now says, with a keyframe.
+                Control::EncodeOn(on) if on != self.encode_on => {
+                    tracing::info!(?on, "encoding the stream elsewhere");
+                    self.encode_on = on;
+                    (self.candidates, self.missing) = (None, false);
+                    self.placed = Placed::Anywhere;
+                    if let Some(video) = self.video.as_mut() {
+                        video.encoder = None;
                     }
                 }
                 // The sound's thread makes the change, so the picture never
@@ -844,6 +1150,9 @@ impl Sink {
         });
         if let Some(error) = failed {
             report(Report::AudioError(error));
+        }
+        if let Some(notice) = self.notice.take() {
+            report(Report::Notice(notice));
         }
         match self.video.as_ref().map(|video| video.sender.link()) {
             Some(Link::Connected) if !self.streaming => {
@@ -1108,11 +1417,12 @@ fn test_pattern(mut sink: Sink, stop: &AtomicBool, report: &mut dyn FnMut(Report
 }
 
 /// The kbit/s to encode frames of `height` lines at, for a stream aiming
-/// at `target` bit/s: never above that size's cap. After a smaller size
-/// the stream's target follows the new cap only once its first frame goes
-/// out, and the encoder would otherwise go back up to the old one.
-fn aim(target: u64, height: u32) -> u32 {
-    (target.min(stream_connection::max_bitrate(height).into()) / 1000) as u32
+/// at `target` bit/s: never above that size's cap, nor the bitrate limit
+/// `max_kbps` ([`stream_connection::cap`]). After a smaller size or a lower
+/// limit the stream's target follows the new cap only once its next frame
+/// goes out, and the encoder would otherwise go back up to the old one.
+fn aim(target: u64, height: u32, max_kbps: Option<u32>) -> u32 {
+    (target.min(stream_connection::cap(height, max_kbps).into()) / 1000) as u32
 }
 
 /// How hard the encoder works at `quality`.
@@ -1586,13 +1896,107 @@ mod base64_pixels {
     }
 }
 
-/// Whether streams encode on the GPU where it has an encoder: Settings'
-/// choice, on until the UI says.
-static HARDWARE: AtomicBool = AtomicBool::new(true);
+/// Where Settings' "Encode streams on" puts a stream's encoder, as
+/// `layout.json`'s `stream_encoder` keeps it: `"auto"`, `"software"`, or an
+/// adapter's [`Adapter::key`] such as `"pci:0000:73:00.0"`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncodeOn {
+    /// The adapters in [`adapters::encoder_order`]'s order, the first of
+    /// which is [`adapters::auto_encoder`]'s, then the processor.
+    #[default]
+    Auto,
+    /// The processor: x264, which encodes H264 alone.
+    Software,
+    /// This adapter, then Auto's order, then the processor.
+    Adapter(String),
+}
 
-/// Encodes streams started from now on with the GPU's encoder, or not.
+impl EncodeOn {
+    /// The choice `stream_encoder` names; Auto for anything else.
+    pub fn parse(setting: &str) -> Self {
+        match setting {
+            "software" => Self::Software,
+            key if key.starts_with("pci:") || key.starts_with("luid:") => {
+                Self::Adapter(key.to_owned())
+            }
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Where streams encode: Settings' choice, Auto until the UI says.
+static ENCODE_ON: Mutex<EncodeOn> = Mutex::new(EncodeOn::Auto);
+
+/// Encodes streams where `setting` says, as `layout.json`'s
+/// `stream_encoder` keeps it ([`EncodeOn::parse`]): those started from now
+/// on, and those going on, which open their encoder there with the next
+/// frame without stopping.
+pub fn set_encode_on(setting: &str) {
+    let on = EncodeOn::parse(setting);
+    let changed = {
+        let mut chosen = ENCODE_ON
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::replace(&mut *chosen, on.clone()) != on
+    };
+    if changed {
+        tell_running(&Control::EncodeOn(on));
+    }
+}
+
+/// Encodes streams on a graphics card, as Auto picks it, or on the
+/// processor: the Slint window's switch, which [`set_encode_on`] replaces.
 pub fn set_hardware_encoding(on: bool) {
-    HARDWARE.store(on, Ordering::Relaxed);
+    set_encode_on(if on { "auto" } else { "software" });
+}
+
+/// The logical CPUs Settings chose for Yapfast, which its workers run on
+/// too; none for every one.
+static CPUS: Mutex<Option<CpuMask>> = Mutex::new(None);
+
+/// Runs the workers on `mask`, as [`crate::cpu::choose`] gave it, or on
+/// every CPU Yapfast started with when none: those started from now on, and
+/// those running. A worker whose stream x264 encodes spreads over every CPU,
+/// at a lower priority, while `mask` makes up fewer than four physical
+/// cores, and the dock says so.
+pub fn set_cpus(mask: Option<CpuMask>) {
+    let changed = {
+        let mut chosen = CPUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::replace(&mut *chosen, mask) != mask
+    };
+    if changed {
+        tell_running(&Control::Cpus(mask));
+    }
+}
+
+/// The CPUs [`set_cpus`] chose, for a worker starting.
+fn chosen_cpus() -> Option<CpuMask> {
+    *CPUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The inputs of the workers running, for what Settings changes while they
+/// run: their cores, and where a stream encodes. A worker's goes when it's
+/// dropped.
+static RUNNING: Mutex<Vec<Weak<Mutex<ChildStdin>>>> = Mutex::new(Vec::new());
+
+/// Tells every running worker `control`, forgetting those gone.
+fn tell_running(control: &Control) {
+    let Ok(line) = serde_json::to_string(control) else {
+        return;
+    };
+    let mut running = RUNNING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    running.retain(|input| {
+        let Some(input) = input.upgrade() else {
+            return false;
+        };
+        let mut input = input
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        writeln!(input, "{line}").is_ok()
+    });
 }
 
 /// Yapfast's handle on a running worker. Dropping it stops the worker.
@@ -1600,7 +2004,8 @@ pub struct Worker {
     /// Shared with the thread reading its reports, which waits on it when
     /// it ends without saying so.
     child: Arc<Mutex<Child>>,
-    stdin: Option<ChildStdin>,
+    /// Shared with [`RUNNING`], which holds it weakly.
+    stdin: Option<Arc<Mutex<ChildStdin>>>,
 }
 
 impl Worker {
@@ -1613,6 +2018,10 @@ impl Worker {
         let source = picked(source);
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT)?;
         let (width, height) = bounds(quality.resolution);
+        let encode_on = ENCODE_ON
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let job = Job::Share {
             source,
             audio,
@@ -1621,7 +2030,8 @@ impl Worker {
             height,
             fps: quality.fps,
             effort: effort(quality),
-            hardware: HARDWARE.load(Ordering::Relaxed),
+            encode_on,
+            max_kbps: quality.max_kbps,
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
@@ -1693,7 +2103,8 @@ impl Worker {
         self.control(control)
     }
 
-    /// Tells a sharing worker to share at `quality` from now on.
+    /// Tells a sharing worker to share at `quality` from now on, its
+    /// bitrate limit included.
     pub fn quality(&mut self, quality: StreamQuality) -> Result<()> {
         let (width, height) = bounds(quality.resolution);
         self.control(&Control::Quality {
@@ -1701,6 +2112,7 @@ impl Worker {
             height,
             fps: quality.fps,
             effort: effort(quality),
+            max_kbps: quality.max_kbps,
         })
     }
 
@@ -1728,8 +2140,11 @@ impl Worker {
         let line = serde_json::to_string(control)?;
         let stdin = self
             .stdin
-            .as_mut()
+            .as_ref()
             .context("the stream worker has stopped")?;
+        let mut stdin = stdin
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         writeln!(stdin, "{line}").context("could not reach the stream worker")?;
         Ok(())
     }
@@ -1744,6 +2159,9 @@ impl Worker {
         command
             .arg(ARGUMENT)
             .env(LANGUAGE, yapfast_lang::chosen().code)
+            // NVENC's device is counted as `adapters::cuda_index` counts it,
+            // in PCI bus order, not CUDA's fastest first.
+            .env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(crate::logging::for_worker());
@@ -1758,6 +2176,20 @@ impl Worker {
         let line = serde_json::to_string(job)?;
         if let Some(stdin) = stdin.as_mut() {
             writeln!(stdin, "{line}").context("could not reach the stream worker")?;
+            // Its cores, which a child inherits on Linux but may not on
+            // Windows.
+            if let Some(cpus) = chosen_cpus() {
+                let line = serde_json::to_string(&Control::Cpus(Some(cpus)))?;
+                writeln!(stdin, "{line}").context("could not reach the stream worker")?;
+            }
+        }
+        let stdin = stdin.map(|stdin| Arc::new(Mutex::new(stdin)));
+        if let Some(stdin) = &stdin {
+            let mut running = RUNNING
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            running.retain(|input| input.strong_count() > 0);
+            running.push(Arc::downgrade(stdin));
         }
         let (reports, receiver) = mpsc::unbounded_channel();
         let unexpected = match job {
@@ -1948,7 +2380,11 @@ fn signal_name(signal: i32) -> Option<&'static str> {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        if let Some(mut stdin) = self.stdin.take() {
+        // Its input closes as this lets go of it: RUNNING's is weak.
+        if let Some(stdin) = self.stdin.take() {
+            let mut stdin = stdin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let _ = writeln!(stdin, "stop");
         }
         let Ok(mut child) = self.child.lock() else {
@@ -1968,9 +2404,98 @@ impl Drop for Worker {
     }
 }
 
+/// A worker's processors, in the worker: those Settings chose for Yapfast
+/// ([`Control::Cpus`]), or, while x264 encodes a stream and they make up
+/// fewer than [`X264_CORES`] physical cores, every one Yapfast started with,
+/// at a lower priority: x264 can't keep up beside a game on so few. With a
+/// graphics encoder the worker needs well under one core, and stays on those
+/// chosen. [`crate::cpu`] reads the layout and sets the masks.
+mod cores {
+    use std::sync::{Mutex, MutexGuard};
+
+    use crate::cpu::{self, CpuMask};
+
+    /// The physical cores x264 wants of its own: it slices each frame over
+    /// up to four threads.
+    const X264_CORES: usize = 4;
+
+    struct Cores {
+        /// The logical CPUs chosen; none for every one.
+        chosen: Option<CpuMask>,
+        /// The shared stream encodes on the processor.
+        processor: bool,
+        /// Spread over every CPU, at a lower priority.
+        spread: bool,
+    }
+
+    static CORES: Mutex<Cores> = Mutex::new(Cores {
+        chosen: None,
+        processor: false,
+        spread: false,
+    });
+
+    fn cores() -> MutexGuard<'static, Cores> {
+        CORES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Runs the worker on `mask` from now on, or on every CPU when none.
+    pub(super) fn confine(mask: Option<CpuMask>) {
+        let mut cores = cores();
+        cores.chosen = mask;
+        settle(&mut cores, true);
+    }
+
+    /// Takes whether the shared stream now encodes on the processor; true
+    /// when that just spread the worker over every CPU, for the dock to
+    /// say. Nothing changes while no CPUs were chosen.
+    pub(super) fn encoding_on_processor(processor: bool) -> bool {
+        let mut cores = cores();
+        let before = cores.spread;
+        cores.processor = processor;
+        settle(&mut cores, false);
+        cores.spread && !before
+    }
+
+    /// Sets the mask `cores` asks for now, where that changed. The priority
+    /// lowered once stays lowered: raising it takes a privilege.
+    fn settle(cores: &mut Cores, chosen_changed: bool) {
+        let spread = cores.processor && cores.chosen.is_some_and(|mask| too_few(&mask));
+        if spread == cores.spread && !chosen_changed {
+            return;
+        }
+        if spread && !cores.spread {
+            cpu::lower_priority();
+        }
+        cores.spread = spread;
+        cpu::apply(if spread { None } else { cores.chosen.as_ref() });
+    }
+
+    /// Whether `mask` holds too few physical cores for x264 beside a game;
+    /// where the layout can't be read, two logical CPUs to a core.
+    fn too_few(mask: &CpuMask) -> bool {
+        let topology = cpu::detect();
+        let cores = if topology.cpus.is_empty() {
+            mask.len().div_ceil(2)
+        } else {
+            topology.cores_in(mask)
+        };
+        cores < X264_CORES
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sink writing to `frames`, at 1080p30 with little effort, encoding
+    /// where `on` says, without sound.
+    fn sink_writing(frames: &Frames, controls: channel::Receiver<Control>, on: EncodeOn) -> Sink {
+        let writer = Writer::open(&frames.path().unwrap()).unwrap();
+        let bounds = (SHARE_WIDTH, SHARE_HEIGHT);
+        Sink::new(writer, controls, bounds, 30, Effort::Light, on, None)
+    }
 
     #[test]
     fn shows_mobile_streams_upright_when_the_phone_turns() {
@@ -2123,23 +2648,7 @@ mod tests {
     fn offers_the_gpus_codecs_first() {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
         let (_controls, received) = channel::channel();
-        let mut sink = Sink {
-            writer: Writer::open(&frames.path().unwrap()).unwrap(),
-            controls: received,
-            server: None,
-            sound: None,
-            sound_failed: None,
-            video: None,
-            bounds: (SHARE_WIDTH, SHARE_HEIGHT),
-            fps: 30,
-            effort: Effort::Light,
-            hardware: true,
-            started: Instant::now(),
-            streaming: false,
-            preview_due: None,
-            thumbnail: None,
-            lost: None,
-        };
+        let mut sink = sink_writing(&frames, received, EncodeOn::Auto);
         let (offers, encoder) = sink.offers(320, 180).unwrap();
         eprintln!("offering {offers:?}, encoding with {}", encoder.engine());
         assert_eq!(offers.last(), Some(&Codec::H264));
@@ -2149,7 +2658,7 @@ mod tests {
             "in order"
         );
         assert_eq!(encoder.codec(), offers[0]);
-        sink.hardware = false;
+        let mut sink = sink_writing(&frames, channel::channel().1, EncodeOn::Software);
         let (offers, encoder) = sink.offers(320, 180).unwrap();
         assert_eq!((offers, encoder.engine()), (vec![Codec::H264], "x264"));
     }
@@ -2158,23 +2667,7 @@ mod tests {
     fn previews_what_it_sends_at_a_smaller_size() {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
         let (_controls, received) = channel::channel();
-        let mut sink = Sink {
-            writer: Writer::open(&frames.path().unwrap()).unwrap(),
-            controls: received,
-            server: None,
-            sound: None,
-            sound_failed: None,
-            video: None,
-            bounds: (SHARE_WIDTH, SHARE_HEIGHT),
-            fps: 30,
-            effort: Effort::Light,
-            hardware: false,
-            started: Instant::now(),
-            streaming: false,
-            preview_due: None,
-            thumbnail: None,
-            lost: None,
-        };
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
         // A 1080p picture, mid-grey: luma and chroma halfway.
         let mut picture = I420Buffer::new(SHARE_WIDTH, SHARE_HEIGHT);
         let (y, u, v) = picture.data_mut();
@@ -2197,23 +2690,7 @@ mod tests {
     fn switches_to_the_last_source_asked_for() {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
         let (controls, received) = channel::channel();
-        let mut sink = Sink {
-            writer: Writer::open(&frames.path().unwrap()).unwrap(),
-            controls: received,
-            server: None,
-            sound: None,
-            sound_failed: None,
-            video: None,
-            bounds: (SHARE_WIDTH, SHARE_HEIGHT),
-            fps: 30,
-            effort: Effort::Light,
-            hardware: false,
-            started: Instant::now(),
-            streaming: false,
-            preview_due: None,
-            thumbnail: None,
-            lost: None,
-        };
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
         let mut report = |_| {};
         assert_eq!(sink.check(&mut report).unwrap(), None);
         controls.send(Control::Switch(Source::Display(1))).unwrap();
@@ -2228,23 +2705,8 @@ mod tests {
     fn changes_the_sound_without_switching_the_picture() {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
         let (controls, received) = channel::channel();
-        let mut sink = Sink {
-            writer: Writer::open(&frames.path().unwrap()).unwrap(),
-            controls: received,
-            server: None,
-            sound: Some(StreamAudio::All),
-            sound_failed: None,
-            video: None,
-            bounds: (SHARE_WIDTH, SHARE_HEIGHT),
-            fps: 30,
-            effort: Effort::Light,
-            hardware: false,
-            started: Instant::now(),
-            streaming: false,
-            preview_due: None,
-            thumbnail: None,
-            lost: None,
-        };
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
+        sink.sound = Some(StreamAudio::All);
         let mut reported = vec![];
         for audio in [StreamAudio::Off, StreamAudio::Window(42), StreamAudio::All] {
             controls.send(Control::Audio(audio)).unwrap();
@@ -2268,23 +2730,8 @@ mod tests {
     fn previews_a_stream_once_its_picture_shows() {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
         let (_controls, received) = channel::channel();
-        let mut sink = Sink {
-            writer: Writer::open(&frames.path().unwrap()).unwrap(),
-            controls: received,
-            server: None,
-            sound: None,
-            sound_failed: None,
-            video: None,
-            bounds: (SHARE_WIDTH, SHARE_HEIGHT),
-            fps: 30,
-            effort: Effort::Light,
-            hardware: false,
-            started: Instant::now(),
-            streaming: false,
-            preview_due: Some(Instant::now()),
-            thumbnail: None,
-            lost: None,
-        };
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
+        sink.preview_due = Some(Instant::now());
         let mut picture = I420Buffer::new(SHARE_WIDTH, SHARE_HEIGHT);
         let (y, u, v) = picture.data_mut();
         y.fill(16);
@@ -2316,34 +2763,144 @@ mod tests {
     fn takes_a_new_quality() {
         let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
         let (controls, received) = channel::channel();
-        let mut sink = Sink {
-            writer: Writer::open(&frames.path().unwrap()).unwrap(),
-            controls: received,
-            server: None,
-            sound: None,
-            sound_failed: None,
-            video: None,
-            bounds: (SHARE_WIDTH, SHARE_HEIGHT),
-            fps: 30,
-            effort: Effort::Light,
-            hardware: false,
-            started: Instant::now(),
-            streaming: false,
-            preview_due: None,
-            thumbnail: None,
-            lost: None,
-        };
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
         let quality = Control::Quality {
             width: 1280,
             height: 720,
             fps: 120,
             effort: Effort::High,
+            max_kbps: Some(2_000),
         };
         controls.send(quality).unwrap();
         assert_eq!(sink.check(&mut |_| {}).unwrap(), None);
         assert_eq!(
-            (sink.bounds, sink.fps, sink.effort),
-            ((1280, 720), 60, Effort::High)
+            (sink.bounds, sink.fps, sink.effort, sink.max_kbps),
+            ((1280, 720), 60, Effort::High, Some(2_000))
+        );
+        // A quality from before there was a limit reads as Auto.
+        let older = r#"{"quality":{"width":1280,"height":720,"fps":30,"effort":"light"}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Control>(older).unwrap(),
+            Control::Quality { max_kbps: None, .. }
+        ));
+    }
+
+    /// A change of where streams encode reaches the sink while it shares:
+    /// it closes the encoder, and the next frame opens one there. The
+    /// same choice again changes nothing.
+    #[test]
+    fn takes_another_place_to_encode() {
+        let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
+        let (controls, received) = channel::channel();
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
+        sink.placed = Placed::Processor;
+        sink.candidates = Some(vec![]);
+        controls
+            .send(Control::EncodeOn(EncodeOn::Software))
+            .unwrap();
+        sink.check(&mut |_| {}).unwrap();
+        assert_eq!(sink.placed, Placed::Processor, "the same choice");
+        let chosen = EncodeOn::Adapter("pci:0000:73:00.0".into());
+        controls.send(Control::EncodeOn(chosen.clone())).unwrap();
+        sink.check(&mut |_| {}).unwrap();
+        assert_eq!(
+            (&sink.encode_on, &sink.placed, &sink.candidates),
+            (&chosen, &Placed::Anywhere, &None)
+        );
+    }
+
+    /// With no CPUs chosen, encoding on the processor or not leaves the
+    /// worker's CPUs as they are, and the dock has nothing to say.
+    #[test]
+    fn spreads_only_from_cpus_chosen() {
+        assert!(!cores::encoding_on_processor(true));
+        assert!(!cores::encoding_on_processor(false));
+        // The CPUs travel as Linux lists them.
+        let mask = crate::cpu::CpuMask::parse("8-15,24-31");
+        let line = serde_json::to_string(&Control::Cpus(mask)).unwrap();
+        assert_eq!(line, r#"{"cpus":"8-15,24-31"}"#);
+        assert_eq!(
+            serde_json::from_str::<Control>(&line).unwrap(),
+            Control::Cpus(mask)
+        );
+        let all = serde_json::to_string(&Control::Cpus(None)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Control>(&all).unwrap(),
+            Control::Cpus(None)
+        );
+    }
+
+    /// Settings' `stream_encoder` names Auto, the processor, or an adapter
+    /// by its key; anything else is Auto.
+    #[test]
+    fn reads_where_streams_encode() {
+        assert_eq!(EncodeOn::parse("auto"), EncodeOn::Auto);
+        assert_eq!(EncodeOn::parse("software"), EncodeOn::Software);
+        assert_eq!(
+            EncodeOn::parse("pci:0000:01:00.0"),
+            EncodeOn::Adapter("pci:0000:01:00.0".into())
+        );
+        assert_eq!(EncodeOn::parse("gpu"), EncodeOn::Auto);
+        // A job from before the choice encodes as Auto.
+        let job: Job = serde_json::from_str(
+            r#"{"share":{"source":"test_pattern","frames":"/x","width":2,"height":2,"fps":30}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            job,
+            Job::Share {
+                encode_on: EncodeOn::Auto,
+                max_kbps: None,
+                ..
+            }
+        ));
+    }
+
+    /// The dock hears once how the stream's encoding isn't what Settings
+    /// asked for: a chosen card that's missing, or one that didn't open.
+    /// The processor chosen says nothing.
+    #[test]
+    fn says_where_the_stream_encodes_when_it_had_to_fall_back() {
+        let frames = Frames::create(PREVIEW_WIDTH, PREVIEW_HEIGHT).unwrap();
+        let (_controls, received) = channel::channel();
+        let mut sink = sink_writing(&frames, received, EncodeOn::Software);
+        let card = |name: &str| Candidate {
+            device: Device::Vaapi {
+                node: PathBuf::from("/dev/dri/renderD128"),
+                kernel: "amdgpu".into(),
+            },
+            name: Some(name.into()),
+        };
+        let notices = |sink: &mut Sink| {
+            let mut said = vec![];
+            sink.check(&mut |report| said.push(report)).unwrap();
+            said
+        };
+        sink.place(Placed::On(card("Radeon")), None);
+        assert!(notices(&mut sink).is_empty());
+        sink.place(Placed::On(card("RTX 3080")), Some(&card("Radeon")));
+        let said = notices(&mut sink);
+        assert!(
+            matches!(&said[..], [Report::Notice(notice)] if notice.contains("Radeon") && notice.contains("RTX 3080")),
+            "{said:?}"
+        );
+        sink.missing = true;
+        sink.place(Placed::On(card("RTX 3080")), None);
+        assert!(matches!(&notices(&mut sink)[..], [Report::Notice(_)]));
+        assert!(!sink.missing, "said once");
+        // Whichever encoder opened where none could be listed has no name
+        // to give.
+        let anywhere = Candidate {
+            device: Device::AnyGpu,
+            name: None,
+        };
+        sink.place(Placed::Processor, Some(&anywhere));
+        let said = notices(&mut sink);
+        assert!(
+            said.iter().all(
+                |report| !matches!(report, Report::Notice(notice) if notice.contains("couldn't"))
+            ),
+            "{said:?}"
         );
     }
 
@@ -2352,9 +2909,19 @@ mod tests {
     /// frame goes out.
     #[test]
     fn aims_within_the_cap_of_a_new_size() {
-        assert_eq!(aim(6_000_000, 720), 3_500);
-        assert_eq!(aim(6_000_000, 1080), 6_000);
-        assert_eq!(aim(2_000_000, 720), 2_000);
+        assert_eq!(aim(6_000_000, 720, None), 3_500);
+        assert_eq!(aim(6_000_000, 1080, None), 6_000);
+        assert_eq!(aim(2_000_000, 720, None), 2_000);
+    }
+
+    /// A bitrate limit is a ceiling: it lowers the aim, never raises it, and
+    /// never past Discord's cap for the size.
+    #[test]
+    fn aims_within_the_bitrate_limit() {
+        assert_eq!(aim(9_000_000, 1440, Some(5_000)), 5_000);
+        assert_eq!(aim(3_000_000, 1440, Some(5_000)), 3_000, "not a floor");
+        assert_eq!(aim(9_000_000, 1440, Some(20_000)), 9_000);
+        assert_eq!(aim(9_000_000, 720, Some(8_000)), 3_500);
     }
 
     /// The test pattern's frames follow a change of quality sent to the
@@ -2370,7 +2937,8 @@ mod tests {
             height: PREVIEW_HEIGHT,
             fps: 60,
             effort: Effort::Light,
-            hardware: false,
+            encode_on: EncodeOn::Software,
+            max_kbps: None,
         };
         let (input, mut feed) = std::io::pipe().unwrap();
         writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -2388,6 +2956,7 @@ mod tests {
             height: 180,
             fps,
             effort: Effort::Light,
+            max_kbps: None,
         };
         writeln!(feed, "{}", serde_json::to_string(&quality(60)).unwrap()).unwrap();
         assert_eq!(reports.recv().unwrap(), sharing(320, 180));
@@ -2433,7 +3002,8 @@ mod tests {
             height: PREVIEW_HEIGHT,
             fps: 60,
             effort: Effort::Light,
-            hardware: false,
+            encode_on: EncodeOn::Software,
+            max_kbps: None,
         };
         let (input, mut feed) = std::io::pipe().unwrap();
         writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -2483,7 +3053,8 @@ mod tests {
             height: PREVIEW_HEIGHT,
             fps: 30,
             effort: Effort::Light,
-            hardware: false,
+            encode_on: EncodeOn::Software,
+            max_kbps: None,
         };
         let (input, mut feed) = std::io::pipe().unwrap();
         writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -2619,7 +3190,8 @@ mod tests {
                 height: PREVIEW_HEIGHT,
                 fps: 30,
                 effort: Effort::Light,
-                hardware: false,
+                encode_on: EncodeOn::Software,
+                max_kbps: None,
             };
             let (input, mut feed) = std::io::pipe().unwrap();
             writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -2673,7 +3245,8 @@ mod tests {
             height: PREVIEW_HEIGHT,
             fps: 30,
             effort: Effort::Light,
-            hardware: false,
+            encode_on: EncodeOn::Software,
+            max_kbps: None,
         };
         let (input, mut feed) = std::io::pipe().unwrap();
         writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
@@ -2709,7 +3282,8 @@ mod tests {
             height: 16,
             fps: 1,
             effort: Effort::Light,
-            hardware: false,
+            encode_on: EncodeOn::Software,
+            max_kbps: None,
         };
         let mut reports = Vec::new();
         let input = format!("{}\n", serde_json::to_string(&gone).unwrap());

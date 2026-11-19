@@ -28,6 +28,14 @@ pub const BAN_HISTORY: [u32; 7] = [
     7 * 24 * 3600,
 ];
 
+/// The boxes that clean someone else's voice here before a Discord call
+/// mixes it, ticked as `volume::cleaning` says and set with
+/// `volume::set_cleaning`: Yapfast mixes Discord calls itself, and the
+/// choices hold across calls, as their volume does. Not offered for this
+/// account, nor in Matrix calls, whose audio LiveKit plays.
+#[cfg(feature = "discord")]
+const CLEANING: [MenuChoice; 2] = [MenuChoice::SuppressTheirNoise, MenuChoice::RemoveMyEcho];
+
 /// A role in a member's roles submenu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoleChoice {
@@ -77,18 +85,40 @@ impl Application {
 
     /// Someone's menu in a voice channel, from a right click on them in its
     /// call or under it in the channel list: their menu as a member of its
-    /// server, with what the call offers, as Discord's has it. Nothing in a
-    /// DM's or a Matrix room's call, where the right click sets only their
-    /// volume.
+    /// server, with what the call offers, as Discord's has it. In a Discord
+    /// DM's call, only how someone else's voice is cleaned here
+    /// (`CLEANING`); nothing in a Matrix room's call, whose audio LiveKit
+    /// plays, where the right click sets only their volume.
     pub fn voice_person_choices(&self, room: &str, user: &str) -> Vec<MenuChoice> {
         #[cfg(feature = "discord")]
-        if self.is_member_place(room, user) {
-            let mut choices = self.member_choices(room, user);
-            self.offer_invite(user, &mut choices);
-            return choices;
+        {
+            if self.is_member_place(room, user) {
+                let mut choices = self.member_choices(room, user);
+                self.offer_invite(user, &mut choices);
+                return choices;
+            }
+            if self.in_dm_call(room, user) {
+                return CLEANING.to_vec();
+            }
         }
         let _ = (room, user);
         vec![]
+    }
+
+    /// Whether `user` is someone other than this account in the call of
+    /// the Discord DM or group DM `room`.
+    #[cfg(feature = "discord")]
+    fn in_dm_call(&self, room: &str, user: &str) -> bool {
+        let state = &self.state;
+        !state.preview
+            && state.discord_user.is_some()
+            && state.relation(user) != Relation::Me
+            && state.rooms.iter().any(|found| {
+                found.id == room
+                    && found.direct
+                    && found.network == Network::Discord
+                    && found.people.iter().any(|person| person.id == user)
+            })
     }
 
     /// Where someone's menu is a Discord server member's: the server whose
@@ -231,11 +261,12 @@ impl Application {
             }
         }
         // In a voice channel they're in: muting them or their soundboard
-        // for this account, or its own mute and deafen in the call it's in
-        // there.
+        // for this account, and cleaning their voice here, or its own mute
+        // and deafen in the call it's in there.
         let in_voice = self.voice_person(place, user).is_some();
         if in_voice && !me {
             choices.extend([MenuChoice::LocalMute, MenuChoice::SoundboardMute]);
+            choices.extend(CLEANING);
         } else if in_voice && state.voice.active() && state.voice.room.as_deref() == Some(place) {
             choices.extend([MenuChoice::SelfMute, MenuChoice::SelfDeafen]);
         }

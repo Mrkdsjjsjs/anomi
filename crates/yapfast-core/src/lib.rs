@@ -11,6 +11,7 @@ use anyhow::Context;
 #[cfg(feature = "discord")]
 pub use yapfast_discord;
 
+pub mod adapters;
 pub mod application;
 mod audio_io;
 pub use audio_io::{set_windows_effects, silence_audio};
@@ -25,6 +26,7 @@ pub mod cli;
 #[cfg(feature = "discord")]
 pub mod clip;
 pub mod clock;
+pub mod cpu;
 #[cfg(feature = "discord")]
 mod declick;
 #[cfg(feature = "discord")]
@@ -43,6 +45,8 @@ mod discord_video;
 #[cfg(feature = "discord")]
 mod discord_voice;
 pub mod dominant_colour;
+#[cfg(feature = "discord")]
+pub mod echo_gate;
 pub mod emoji;
 #[cfg(feature = "discord")]
 pub mod encode;

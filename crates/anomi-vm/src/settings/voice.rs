@@ -46,6 +46,8 @@ pub struct Voice {
     pub noise_suppression: usize,
     pub noise_strength: usize,
     pub dereverb: bool,
+    /// Discord calls cancel the echo of what the speakers play.
+    pub echo_cancellation: bool,
     /// Windows runs its microphone effects in Discord calls; the switch shows
     /// where there are any (`windows_effects_choice`).
     pub windows_effects: bool,
@@ -109,6 +111,7 @@ impl Default for Voice {
             noise_suppression: 0,
             noise_strength: 0,
             dereverb: false,
+            echo_cancellation: true,
             windows_effects: false,
             windows_effects_choice: false,
             sensitivity: -60,
@@ -160,6 +163,7 @@ pub enum Intent {
     NoiseSuppression(usize),
     NoiseStrength(usize),
     Dereverb(bool),
+    EchoCancellation(bool),
     /// An input profile, by its place in [`Profile::ALL`]: a preset sets
     /// its switches, and Custom changes nothing.
     Profile(usize),
@@ -266,6 +270,7 @@ impl Voice {
             Intent::NoiseSuppression(at) => self.noise_suppression = (*at).min(2),
             Intent::NoiseStrength(at) => self.noise_strength = (*at).min(2),
             Intent::Dereverb(on) => self.dereverb = *on,
+            Intent::EchoCancellation(on) => self.echo_cancellation = *on,
             Intent::Profile(at) => {
                 let profile = Profile::ALL[(*at).min(Profile::ALL.len() - 1)];
                 for switch in profile.switches() {

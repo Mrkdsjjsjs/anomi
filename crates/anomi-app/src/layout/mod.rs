@@ -33,7 +33,10 @@ use serde::Deserialize as _;
 use serde_json::{Map, Value};
 use yapfast_core::layout_file::LAYOUT as FILE;
 
-pub use saved::{Animate, InputMode, KeptSticker, KeptStickerUse, Saved};
+pub use saved::{
+    Animate, CpuChoice, ENCODE_AUTO, ENCODE_SOFTWARE, Encoder, InputMode, KeptSticker,
+    KeptStickerUse, Saved,
+};
 
 /// How long a change waits for the next before the file is written.
 pub const WRITE_AFTER: Duration = Duration::from_secs(1);

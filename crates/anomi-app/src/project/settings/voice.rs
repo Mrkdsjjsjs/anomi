@@ -117,6 +117,7 @@ pub fn show(
         noise_suppression: place(&SUPPRESSORS, &layout.noise_suppression),
         noise_strength: place(&STRENGTHS, &layout.noise_strength),
         dereverb: layout.reduce_room_echo,
+        echo_cancellation: layout.echo_cancellation.unwrap_or(true),
         windows_effects: layout.windows_microphone_effects,
         windows_effects_choice: cfg!(windows),
         sensitivity: sensitivity(layout),

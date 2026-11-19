@@ -66,6 +66,40 @@ fn a_places_menu_opens_chooses_and_goes() {
     assert!(!app.vm.menu.shown());
 }
 
+/// Someone's menu in a call: noise suppression on their voice and taking
+/// out this account's echo tick, reach the call's audio and are kept, each
+/// alone, and untick.
+#[test]
+fn a_persons_voice_is_cleaned_from_their_menu_in_a_call() {
+    use yapfast_core::volume;
+    let folder = Folder::new("menus-cleaning");
+    let mut app = discord_app(&folder);
+    // A person of this test alone: the registry is the process's.
+    let person = "discord:u-cleaned";
+    let target = format!("in-voice:discord:g1:c1/{person}");
+    let row =
+        |id: &str| menu::Row::new(id, Choice::person(target.clone(), id).into()).checkbox(false);
+    app.vm.menu = menu::Menu::new(
+        1,
+        AT,
+        vec![row("suppress-their-noise"), row("remove-my-echo")],
+    );
+    drop(app.update(ask(Choice::person(target.clone(), "suppress-their-noise"))));
+    assert!(app.vm.menu.rows[0].checked, "ticked at once");
+    assert!(volume::cleaning(person).noise && !volume::cleaning(person).own_echo);
+    assert!(app.layout.denoised_people.contains(person));
+    assert!(app.layout.echo_removed_people.is_empty());
+    drop(app.update(ask(Choice::person(target.clone(), "remove-my-echo"))));
+    assert!(volume::cleaning(person).noise && volume::cleaning(person).own_echo);
+    assert!(app.layout.echo_removed_people.contains(person));
+    drop(app.update(ask(Choice::person(target.clone(), "suppress-their-noise"))));
+    assert!(!volume::cleaning(person).noise && volume::cleaning(person).own_echo);
+    assert!(app.layout.denoised_people.is_empty());
+    drop(app.update(ask(Choice::person(target, "remove-my-echo"))));
+    assert!(!volume::cleaning(person).own_echo);
+    assert!(app.layout.echo_removed_people.is_empty());
+}
+
 /// The core's lists were made again: the test's core lists its servers
 /// without a Discord index, so a server list it took and showed empties
 /// them, while one it left alone keeps them.

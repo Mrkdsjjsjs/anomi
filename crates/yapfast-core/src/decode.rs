@@ -90,10 +90,12 @@ pub struct Picture<'a> {
 }
 
 impl Decoder {
-    /// A decoder on up to four threads, for a stream shown large.
+    /// A decoder on up to four threads, for a stream shown large: one for
+    /// each logical CPU Yapfast runs on (`crate::cpu::threads`), which its
+    /// threads take as they start.
     pub fn new(codec: Codec) -> Result<Self> {
-        let threads = std::thread::available_parallelism().map_or(1, |cores| cores.get().min(4));
-        Self::with_threads(codec, threads as u32)
+        let threads = u32::try_from(crate::cpu::threads()).unwrap_or(1);
+        Self::with_threads(codec, threads)
     }
 
     /// A decoder on `threads` threads; each keeps frames of its own.

@@ -177,6 +177,41 @@ fn keybinds_are_added_on_the_keybinds_own() {
     assert!(app.layout.keybinds.is_empty() && app.vm.settings.keybinds.rows.is_empty());
 }
 
+/// Optimization: where streams encode is kept with the old switch beside
+/// it for the Slint app, and all cores is kept as the mode. Auto and the
+/// cores chosen by hand would move the test's own threads, so they are
+/// left to the layout's tests.
+#[test]
+fn optimization_keeps_where_streams_encode_and_the_cores_mode() {
+    use anomi_vm::settings::advanced::{CpuMode, Intent as Advanced};
+    let mut window = opened("settings-optimization", Page::Advanced);
+    let app = &mut window.app;
+    let page = &app.vm.settings.advanced;
+    assert_eq!(page.encoders.first().map(String::as_str), Some("Auto"));
+    assert_eq!(page.encoders.last().map(String::as_str), Some("Processor"));
+    assert_eq!(page.encoders.len(), page.encoder_keys.len());
+    assert_eq!((page.encoder, page.cpu_mode), (0, CpuMode::Auto.index()));
+    assert!(!page.cpu_line.is_empty() && !page.encoder_line.is_empty());
+    send(app, Intent::Advanced(Advanced::Encoder("software".into())));
+    assert_eq!(
+        app.vm.settings.advanced.encoder,
+        app.vm.settings.advanced.encoders.len() - 1,
+        "shown at once"
+    );
+    send(app, Intent::Advanced(Advanced::Encoder(String::new())));
+    send(
+        app,
+        Intent::Advanced(Advanced::CpuMode(CpuMode::All.index())),
+    );
+    assert_eq!(app.vm.settings.advanced.cpu_mode, CpuMode::All.index());
+    // A core ticked while the cores aren't chosen by hand changes nothing.
+    send(app, Intent::Advanced(Advanced::Core(3)));
+    let file = written(app);
+    assert_eq!(file["stream_encoder"], "software");
+    assert_eq!(file["gpu_encoding"], false, "what the Slint app reads");
+    assert_eq!(file["cpu_mode"], "all");
+}
+
 #[test]
 fn the_sections_search_and_a_copy_change_the_frame_alone() {
     let mut window = opened("settings-frame", Page::About);

@@ -1,44 +1,48 @@
-//! The Advanced settings page: switches for how the program runs, with the
-//! restart a changed GPU setting waits for. The Slint side:
-//! `AdvancedSettings` (`ui/settings.slint:1881`), a column 16 px apart; the
-//! page's title is the frame's bar's.
+//! The Advanced settings page: switches for how the program runs. The Slint
+//! side: `AdvancedSettings` (`ui/settings.slint:1881`), a column 16 px
+//! apart; the page's title is the frame's bar's.
+//!
+//! Under the switches, Anomi's Optimization: which of the processor's
+//! cores the program runs on, with a line saying what the processor is and
+//! which cores it got, the physical cores to tick by chiplet while they are
+//! chosen by hand; where streams encode, with what that choice does now;
+//! and that the interface draws on the processor, which leaves nothing to
+//! choose for it (the Slint app's "Render with the GPU" changes nothing
+//! here).
 
 use iced::Length::Fill;
-use iced::widget::{column, row, text};
+use iced::widget::{column, container, row, text};
 
 use anomi_theme::prelude::*;
 use anomi_theme::{catalog, typography};
-use anomi_vm::icon::Icon;
-use anomi_vm::settings::advanced::{Advanced, Intent};
+use anomi_vm::settings::advanced::{Advanced, CoreGroup, Intent};
 use anomi_widgets::button::{Kind, action_button};
 use yapfast_lang::tr;
 
-use crate::kit::switch;
+use crate::kit::{choices, heading, switch, words};
 
 /// Between the switches (`spacing: 16px`).
 const SPACING: f32 = 16.0;
-/// Between the restart line's words and its button (`spacing: 12px`).
-const RESTART_GAP: f32 = 12.0;
+/// Between a heading and its control, and the lines under it.
+const GROUP: f32 = 8.0;
+/// Between the cores' buttons.
+const CORE_GAP: f32 = 4.0;
 
-/// The line and button that appear while the GPU choice differs from what runs.
-fn restart(page: &Advanced, motion: Motion) -> Element<'_, Intent> {
-    let words = if page.gpu_rendering {
-        tr!("Yapfast switches to the GPU when it restarts. Restarting leaves any call.")
-    } else {
-        tr!("Yapfast switches to the processor when it restarts. Restarting leaves any call.")
-    };
-    row![
-        text(words)
-            .size(typography::size::LABEL)
-            .style(catalog::text::muted)
-            .width(Fill),
-        action_button(tr!("Restart Yapfast"), Kind::Secondary, motion)
-            .leading(Icon::RefreshCw)
-            .on_press(Intent::Restart),
-    ]
-    .spacing(RESTART_GAP)
-    .align_y(iced::Center)
-    .boxed()
+/// Small grey text under a control.
+fn note<'a>(words: &'a str) -> Element<'a, Intent> {
+    typography::label(words).width(Fill).boxed()
+}
+
+/// A line the width of the page, in the theme's rule colour.
+fn rule<'a>() -> Element<'a, Intent> {
+    container("")
+        .width(Fill)
+        .height(1)
+        .style(|theme: &Theme| container::Style {
+            background: Some(theme.palette().line.into()),
+            ..container::Style::default()
+        })
+        .boxed()
 }
 
 pub fn view(page: &Advanced, motion: Motion) -> impl View<Intent> + '_ {
@@ -85,25 +89,6 @@ pub fn view(page: &Advanced, motion: Motion) -> impl View<Intent> + '_ {
             .view(),
     );
     parts.push(
-        switch(tr!("Render with the GPU"), page.gpu_rendering, motion)
-            .description(tr!(
-                "Hardware acceleration. Off, Yapfast draws on the processor, which uses about half the memory."
-            ))
-            .on_toggle(Intent::GpuRendering)
-            .view(),
-    );
-    if page.gpu_rendering != page.gpu_running {
-        parts.push(restart(page, motion));
-    }
-    parts.push(
-        switch(tr!("Encode streams with the GPU"), page.gpu_encoding, motion)
-            .description(tr!(
-                "Screen sharing uses the graphics card's video encoder, which takes almost no processor time and looks better at low bitrates. Off, or without one, Yapfast encodes on the processor."
-            ))
-            .on_toggle(Intent::GpuEncoding)
-            .view(),
-    );
-    parts.push(
         switch(tr!("Developer Mode"), page.developer_mode, motion)
             .description(tr!(
                 "Menus offer Copy ID for servers, channels and people, which helps when you write apps that use the Discord API."
@@ -111,6 +96,13 @@ pub fn view(page: &Advanced, motion: Motion) -> impl View<Intent> + '_ {
             .on_toggle(Intent::DeveloperMode)
             .view(),
     );
+    parts.push(rule());
+    parts.push(heading(tr!("OPTIMIZATION")).boxed());
+    parts.push(cores(page, motion));
+    parts.push(encoders(page, motion));
+    parts.push(note(tr!(
+        "The interface draws on the processor and leaves the graphics cards free."
+    )));
     parts.push(
         text(tr!(
             "Icons from Solar by 480 Design (CC BY 4.0), many of them adapted, and from Lucide (ISC)."
@@ -122,24 +114,96 @@ pub fn view(page: &Advanced, motion: Motion) -> impl View<Intent> + '_ {
     column(parts).spacing(SPACING).width(Fill)
 }
 
+/// A control's name over it, as a switch's.
+fn name<'a>(words: &'a str) -> Element<'a, Intent> {
+    text(words)
+        .size(typography::size::BODY)
+        .style(catalog::text::primary)
+        .boxed()
+}
+
+/// Which cores the program runs on: Auto, all of them or those ticked, and
+/// what that gives on this processor.
+fn cores(page: &Advanced, motion: Motion) -> Element<'_, Intent> {
+    let modes = words(&[tr!("Auto"), tr!("All cores"), tr!("Choose cores")]);
+    let mut parts = vec![
+        name(tr!("CPU load distribution")),
+        choices(modes, page.cpu_mode, motion)
+            .wrap(true)
+            .on_pick(Intent::CpuMode)
+            .view(),
+        note(&page.cpu_line),
+    ];
+    if page.choosing() {
+        parts.extend(page.core_groups.iter().map(|group| chips(group, motion)));
+        parts.push(note(tr!(
+            "Yapfast and its streams run only on the cores ticked, each with its second thread. The rest stay free for games."
+        )));
+    }
+    column(parts).spacing(GROUP).width(Fill).boxed()
+}
+
+/// A chiplet's cores as buttons to tick, under its name.
+fn chips(group: &CoreGroup, motion: Motion) -> Element<'_, Intent> {
+    let buttons = group.cores.iter().map(|core| {
+        let kind = if core.chosen {
+            Kind::Primary
+        } else {
+            Kind::Secondary
+        };
+        action_button(&core.label, kind, motion)
+            .small()
+            .on_press(Intent::Core(core.id))
+            .boxed()
+    });
+    column![
+        typography::label(&group.title),
+        row(buttons)
+            .spacing(CORE_GAP)
+            .wrap()
+            .vertical_spacing(CORE_GAP),
+    ]
+    .spacing(CORE_GAP)
+    .width(Fill)
+    .boxed()
+}
+
+/// Where streams encode: Auto, a graphics card, or the processor.
+fn encoders(page: &Advanced, motion: Motion) -> Element<'_, Intent> {
+    let keys = &page.encoder_keys;
+    let mut parts = vec![
+        name(tr!("Encode streams on")),
+        choices(&page.encoders, page.encoder, motion)
+            .wrap(true)
+            .on_pick(move |at| Intent::Encoder(keys.get(at).cloned().unwrap_or_default()))
+            .view(),
+    ];
+    if !page.encoder_line.is_empty() {
+        parts.push(note(&page.encoder_line));
+    }
+    column(parts).spacing(GROUP).width(Fill).boxed()
+}
+
 /// Its shots for `anomi-shots`: `settings/advanced.png` as the Slint app
-/// showed it, with the restart line and without the system's extras.
+/// showed it, with Optimization under it, and without the system's extras;
+/// the cores chosen by hand, also in the small window.
 #[cfg(feature = "shots")]
 pub fn shots() -> Vec<crate::shots::Shot> {
-    use anomi_vm::fixtures::settings::advanced::{bare, page, restart};
+    use anomi_vm::fixtures::settings::advanced::{bare, cores, page};
 
-    use crate::shots::{GOLDEN, Shot};
+    use crate::shots::{GOLDEN, SMALL, Shot};
 
     [
-        ("advanced", page as fn() -> anomi_vm::Vm),
-        ("advanced_restart", restart),
-        ("advanced_bare", bare),
+        ("advanced", page as fn() -> anomi_vm::Vm, GOLDEN),
+        ("advanced_bare", bare, GOLDEN),
+        ("advanced_cores", cores, GOLDEN),
+        ("advanced_cores_small", cores, SMALL),
     ]
     .into_iter()
-    .map(|(name, vm)| Shot {
+    .map(|(name, vm, size)| Shot {
         area: "settings",
         name,
-        size: GOLDEN,
+        size,
         theme: "bonfire",
         vm,
     })

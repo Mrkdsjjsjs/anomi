@@ -70,6 +70,13 @@ pub enum MenuChoice {
     /// Mute the soundboard sounds someone plays, for this account alone,
     /// as a box to tick.
     SoundboardMute,
+    /// Take the noise out of someone else's voice here before it's mixed,
+    /// as a box to tick, in a Discord call; `volume::Cleaning::noise`.
+    SuppressTheirNoise,
+    /// Turn someone else down here while what comes from them is only this
+    /// account's own voice, back from their speakers, as a box to tick, in
+    /// a Discord call; `volume::Cleaning::own_echo`.
+    RemoveMyEcho,
     /// This account's own mute and deafen in the call it's in here.
     SelfMute,
     SelfDeafen,

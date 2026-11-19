@@ -486,6 +486,8 @@ fn in_a_voice_channel_the_menu_adds_what_the_call_offers_in_discords_order() {
             AddNickname,
             LocalMute,
             SoundboardMute,
+            SuppressTheirNoise,
+            RemoveMyEcho,
             ServerNickname,
             Unfriend,
             Ignore,
@@ -520,11 +522,61 @@ fn in_a_voice_channel_the_menu_adds_what_the_call_offers_in_discords_order() {
     let dave = crew.voice_person_choices(LOUNGE, "4");
     assert!(!dave.contains(&ServerMute) && !dave.contains(&Disconnect) && !dave.contains(&MoveTo));
     assert!(dave.contains(&LocalMute));
+    assert!(dave.contains(&SuppressTheirNoise) && dave.contains(&RemoveMyEcho));
     assert!(!app.voice_person_choices(LOUNGE, "3").contains(&LocalMute));
-    // Elsewhere than a server's channel, only the volume.
+    assert!(
+        !app.voice_person_choices(LOUNGE, "3")
+            .contains(&SuppressTheirNoise),
+        "Cara isn't in the call"
+    );
+    // In a Matrix room's call, only the volume.
     assert!(
         app.voice_person_choices("!room:test", "@bob:test")
             .is_empty()
+    );
+}
+
+#[test]
+fn in_a_dm_call_someone_elses_voice_can_be_cleaned_and_nothing_more() {
+    use yapfast_discord::service::{Conversation, Snapshot, Status, VoiceMember};
+    let person = |id: &str, name: &str| VoiceMember {
+        user_id: id.into(),
+        name: name.into(),
+        avatar: String::new(),
+        muted: false,
+        deafened: false,
+        server_muted: false,
+        server_deafened: false,
+        streaming: false,
+        video: false,
+        elsewhere: false,
+    };
+    let mut app = Application::default();
+    app.apply(Event::Discord(Arc::new(Snapshot {
+        status: Status::Online,
+        user_id: Some("1".into()),
+        conversations: vec![Arc::new(Conversation {
+            id: "30".into(),
+            name: "Ann".into(),
+            people: 2,
+            person: Some("2".into()),
+            ..Default::default()
+        })],
+        voice: [("30".to_owned(), vec![person("1", "Me"), person("2", "Ann")])].into(),
+        ..Default::default()
+    })));
+    let dm = "discord:@me:30";
+    assert_eq!(
+        app.voice_person_choices(dm, "2"),
+        [SuppressTheirNoise, RemoveMyEcho]
+    );
+    assert!(
+        app.voice_person_choices(dm, "1").is_empty(),
+        "nothing for one's own voice"
+    );
+    assert!(
+        app.voice_person_choices(dm, "5").is_empty(),
+        "nor for someone not in the call"
     );
 }
 

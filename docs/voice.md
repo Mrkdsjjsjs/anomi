@@ -267,8 +267,13 @@ A linear slider had a music bot at 4% to sound as Discord's 40% did. A
 stream's sound plays at Discord's default gain of 0.18, about 54% on the
 slider, and voices at 1.0. Yapfast remembers the gains by Discord or Matrix
 user id in `layout.json`, so they hold in every call and after a restart. Discord
-voice scales each person as it mixes the call, and a watched stream's worker
-scales its sound. Yapfast calls play remote audio inside WebRTC, which LiveKit's
+voice scales each person as it mixes the call, from a copy of the volumes its
+thread takes again only when one changes, and a watched stream's worker
+scales its sound. In a Discord call the same menu can also clean their voice
+before it's mixed, suppressing their noise or turning down our own echo from
+their speakers, two boxes `layout.json` keeps by user id too
+(`denoised_people`, `echo_removed_people`); see [Cleaning someone's
+voice](discord/voice.md#cleaning-someones-voice). Yapfast calls play remote audio inside WebRTC, which LiveKit's
 Rust API can't adjust per track, so Yapfast's patch to `webrtc-sys` sets each
 track's volume through WebRTC's `SetVolume` by track id.
 
@@ -299,7 +304,9 @@ lift noise past it.
 
 Yapfast calls suppress noise with WebRTC's own suppressor, inside LiveKit's
 WebRTC. Discord calls use DeepFilterNet, which also takes out typing; see the
-Microphone section of [Discord](discord/voice.md#microphone). Yapfast calls could share
+Microphone section of [Discord](discord/voice.md#microphone). There, Settings
+can also turn echo cancellation off, for headphones (`echo_cancellation`);
+Yapfast calls keep WebRTC's on. Yapfast calls could share
 it through the capture hook, which now only returns a gain for each block.
 
 The input menu's level meter reads the chosen microphone locally through

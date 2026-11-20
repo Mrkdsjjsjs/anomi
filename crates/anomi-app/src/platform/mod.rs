@@ -5,7 +5,7 @@
 //! what they hear comes back here as [`Heard`], through one channel that
 //! wakes the window only when something is said: the tray, a later start,
 //! a notification clicked, files dragged over the window on Wayland, a
-//! keybind.
+//! keybind, a signal to quit.
 
 pub mod drop;
 pub mod forget;
@@ -49,6 +49,9 @@ pub enum Heard {
     Drag(Drag),
     /// The keybinds' watcher, by its watch's number (`keybinds`).
     Keybind(u64, keybinds::Told),
+    /// SIGTERM, SIGINT or SIGHUP, as when the desktop session ends: quit,
+    /// as the tray's Quit does (`yapfast_core::backend::quit_on_signals`).
+    Quit,
 }
 
 /// The desktop's parts the app holds while it runs.
@@ -82,6 +85,8 @@ pub struct Desktop {
     pub(crate) pasted: Option<tempfile::TempDir>,
     /// Keybinds in any app, and recording them.
     pub(crate) keybinds: keybinds::Keybinds,
+    /// Listens for the signals that ask Anomi to quit, where there are any.
+    pub(crate) signals: Option<yapfast_core::runtime::BackgroundTask<()>>,
 }
 
 impl Desktop {
@@ -125,6 +130,10 @@ fn listen(app: &mut App) -> Task<Message> {
     app.desktop.instance.listen(move |launch| {
         let _ = told.send(Heard::Launched(launch));
     });
+    let told = tell.clone();
+    app.desktop.signals = yapfast_core::backend::quit_on_signals(&app.runtime, move || {
+        let _ = told.send(Heard::Quit);
+    });
     app.desktop.tell = Some(tell);
     show(app);
     let heard = stream::unfold(heard, |mut heard| async move {
@@ -157,6 +166,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Desktop(Heard::Notification(clicked)) => notified(app, clicked),
         Message::Desktop(Heard::Drag(drag)) => drop::dragged(app, drag),
         Message::Desktop(Heard::Keybind(count, told)) => keybinds::told(app, count, told),
+        Message::Desktop(Heard::Quit) => app.quit(),
         Message::Recorded(input) => {
             keybinds::record::key(app, input);
             Task::none()

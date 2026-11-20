@@ -1101,6 +1101,15 @@ impl Tracker {
             .is_some_and(|entry| !self.elsewhere(entry))
     }
 
+    /// Where this session is in voice: a server, or [`PRIVATE`] for a DM's
+    /// call; not where this account is on another client.
+    pub(super) fn voice_here(&self) -> Option<&str> {
+        self.voice
+            .iter()
+            .find(|((_, user), entry)| *user == self.me && !self.elsewhere(entry))
+            .map(|((guild, _), _)| guild.as_str())
+    }
+
     /// Notes when a voice channel's session started, or with none that it
     /// ended; returns whether that changed.
     fn voice_start(&mut self, channel: &str, started: Option<u64>) -> bool {

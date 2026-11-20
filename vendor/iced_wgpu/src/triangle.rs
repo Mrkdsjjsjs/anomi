@@ -208,6 +208,11 @@ impl State {
         }
     }
 
+    /// Anomi: `clips`, the parts of the layer being drawn (physical,
+    /// disjoint, within `bounds`), take the meshes' scissors and the
+    /// anti-aliased blit's: a frame drawn only where it changed
+    /// (`Renderer::render`) lays the same pixels there as one drawn whole.
+    /// A frame drawn whole passes the layer's own scissor.
     pub fn render(
         &mut self,
         pipeline: &Pipeline,
@@ -217,6 +222,7 @@ impl State {
         batch: &Batch,
         bounds: Rectangle,
         screen_transformation: Transformation,
+        clips: &[Rectangle<u32>],
     ) -> usize {
         let mut layer_count = 0;
 
@@ -256,6 +262,7 @@ impl State {
             &pipeline.gradient,
             bounds,
             items,
+            clips,
         );
 
         layer_count
@@ -290,6 +297,7 @@ fn render<'a>(
     gradient: &gradient::Pipeline,
     bounds: Rectangle,
     group: impl Iterator<Item = (&'a Layer, &'a [Mesh], Transformation)>,
+    clips: &[Rectangle<u32>],
 ) {
     {
         let mut render_pass = if let Some((_state, pipeline)) = &mut msaa {
@@ -320,13 +328,14 @@ fn render<'a>(
                 meshes,
                 bounds,
                 transformation,
+                clips,
                 &mut render_pass,
             );
         }
     }
 
     if let Some((state, pipeline)) = msaa {
-        state.render(pipeline, encoder, target);
+        state.render(pipeline, encoder, target, clips);
     }
 }
 
@@ -455,6 +464,7 @@ impl Layer {
         meshes: &[Mesh],
         bounds: Rectangle,
         transformation: Transformation,
+        clips: &[Rectangle<u32>],
         render_pass: &mut wgpu::RenderPass<'a>,
     ) {
         let mut num_solids = 0;
@@ -482,13 +492,6 @@ impl Layer {
                 index_offset += mesh.indices().len();
                 continue;
             };
-
-            render_pass.set_scissor_rect(
-                clip_bounds.x,
-                clip_bounds.y,
-                clip_bounds.width,
-                clip_bounds.height,
-            );
 
             match mesh {
                 Mesh::Solid { buffers, .. } => {
@@ -545,7 +548,16 @@ impl Layer {
                 wgpu::IndexFormat::Uint32,
             );
 
-            render_pass.draw_indexed(0..mesh.indices().len() as u32, 0, 0..1);
+            // Anomi: drawn once within each clip it reaches; the clips are
+            // disjoint, so no pixel is drawn twice (`State::render`).
+            for clip in clips {
+                let Some(scissor) = crate::damage::within(clip_bounds, *clip) else {
+                    continue;
+                };
+
+                render_pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+                render_pass.draw_indexed(0..mesh.indices().len() as u32, 0, 0..1);
+            }
 
             index_offset += mesh.indices().len();
         }

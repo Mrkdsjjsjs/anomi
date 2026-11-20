@@ -101,10 +101,9 @@ fn apply(saved: &Saved) {
         volume::set_cleaning(person, cleaning);
     }
     #[cfg(feature = "discord")]
-    {
-        yapfast_core::stream_worker::set_encode_on(saved.encoder().key());
-        yapfast_core::discord::set_custom_games(&saved.game_executables);
-    }
+    yapfast_core::stream_worker::set_encode_on(saved.encoder().key());
+    // The games named by hand, and those added from Discord's list.
+    super::games::source::detect(saved);
     let moving = crate::layout::carry::cosmetics(saved).moving;
     crate::pictures::set_moving_collectibles(moving);
 }

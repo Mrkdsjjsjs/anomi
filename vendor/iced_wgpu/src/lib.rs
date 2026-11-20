@@ -37,6 +37,8 @@ pub mod geometry;
 
 mod buffer;
 mod color;
+// Anomi: what a frame changed, for a frame read back (window/shared.rs).
+mod damage;
 mod engine;
 mod nudge;
 mod quad;
@@ -81,6 +83,8 @@ pub struct Renderer {
     settings: renderer::Settings,
 
     layers: layer::Stack,
+    // Anomi: the layers were merged since the frame began (`settle`).
+    settled: bool,
     scale: Option<renderer::Scale>,
 
     quad: quad::State,
@@ -103,6 +107,7 @@ impl Renderer {
         Self {
             settings,
             layers: layer::Stack::new(),
+            settled: false,
             scale: None,
 
             quad: quad::State::new(),
@@ -138,6 +143,25 @@ impl Renderer {
         target: &wgpu::TextureView,
         viewport: &Viewport,
     ) -> wgpu::CommandEncoder {
+        let whole = Rectangle::with_size(viewport.physical_size());
+
+        self.draw_within(clear_color, target, viewport, &[whole])
+    }
+
+    /// Anomi: [`draw`](Self::draw), its pixels laid only within `regions`
+    /// (physical, disjoint, within the viewport): there they are the
+    /// pixels the frame drawn whole lays, each primitive scissored to them
+    /// as to its layer; elsewhere the target keeps the clear colour, or
+    /// what it held. Every layer is prepared as for the whole frame, so the
+    /// caches see the frame as drawn (`PATCHES.md`, "Only what changed,
+    /// read back and shown").
+    pub(crate) fn draw_within(
+        &mut self,
+        clear_color: Option<Color>,
+        target: &wgpu::TextureView,
+        viewport: &Viewport,
+        regions: &[Rectangle<u32>],
+    ) -> wgpu::CommandEncoder {
         let mut encoder =
             self.engine
                 .device
@@ -146,7 +170,7 @@ impl Renderer {
                 });
 
         self.prepare(&mut encoder, viewport);
-        self.render(&mut encoder, target, clear_color, viewport);
+        self.render(&mut encoder, target, clear_color, viewport, regions);
 
         self.quad.trim();
         self.triangle.trim();
@@ -316,7 +340,7 @@ impl Renderer {
         let physical_bounds =
             Rectangle::<f32>::from(Rectangle::with_size(viewport.physical_size()));
 
-        self.layers.merge();
+        self.settle();
 
         for layer in self.layers.iter() {
             if physical_bounds
@@ -419,12 +443,28 @@ impl Renderer {
         }
     }
 
+    /// Anomi: merges the frame's layers, once a frame (`reset` begins one):
+    /// a window whose frame is read back holds them against the frame
+    /// before's before drawing them (window/shared.rs). A merge again would
+    /// merge nothing more, but costs a pass over the layers.
+    pub(crate) fn settle(&mut self) {
+        if !self.settled {
+            self.layers.merge();
+            self.settled = true;
+        }
+    }
+
+    /// Anomi: each layer is drawn within `regions` only (`draw_within`),
+    /// once in each region its scissor reaches, cut to it; a layer that
+    /// reaches none is passed over as drawn. Drawn whole, the one region is
+    /// the viewport, and each layer's scissor is its own, as stock's.
     fn render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         frame: &wgpu::TextureView,
         clear_color: Option<Color>,
         viewport: &Viewport,
+        regions: &[Rectangle<u32>],
     ) {
         use std::mem::ManuallyDrop;
 
@@ -472,6 +512,9 @@ impl Renderer {
 
         let scale = Transformation::scale(scale_factor);
 
+        // Anomi: the layer's scissor cut to each region it reaches.
+        let mut clips: Vec<Rectangle<u32>> = Vec::with_capacity(regions.len());
+
         for layer in self.layers.iter() {
             let Some(physical_bounds) =
                 physical_bounds.intersection(&(layer.bounds * scale_factor))
@@ -483,15 +526,51 @@ impl Renderer {
                 continue;
             };
 
+            clips.clear();
+            clips.extend(
+                regions
+                    .iter()
+                    .filter_map(|region| damage::within(scissor_rect, *region)),
+            );
+
+            // Anomi: a layer outside every region was prepared as drawn, so
+            // its prepared data is passed over as `render` would use it.
+            if clips.is_empty() {
+                if !layer.quads.is_empty() {
+                    quad_layer += 1;
+                }
+
+                mesh_layer += layer
+                    .triangles
+                    .iter()
+                    .filter(|item| matches!(item, triangle::Item::Group { .. }))
+                    .count();
+
+                #[cfg(any(feature = "svg", feature = "image"))]
+                if !layer.images.is_empty() {
+                    image_layer += 1;
+                }
+
+                text_layer += layer
+                    .text
+                    .iter()
+                    .filter(|item| matches!(item, text::Item::Group { .. }))
+                    .count();
+
+                continue;
+            }
+
             if !layer.quads.is_empty() {
                 let render_span = debug::render(debug::Primitive::Quad);
-                self.quad.render(
-                    &self.engine.quad_pipeline,
-                    quad_layer,
-                    scissor_rect,
-                    &layer.quads,
-                    &mut render_pass,
-                );
+                for clip in &clips {
+                    self.quad.render(
+                        &self.engine.quad_pipeline,
+                        quad_layer,
+                        *clip,
+                        &layer.quads,
+                        &mut render_pass,
+                    );
+                }
                 render_span.finish();
 
                 quad_layer += 1;
@@ -509,6 +588,7 @@ impl Renderer {
                     &layer.triangles,
                     physical_bounds,
                     scale,
+                    &clips,
                 );
                 render_span.finish();
 
@@ -545,10 +625,20 @@ impl Renderer {
                 for instance in &layer.primitives {
                     let bounds = instance.bounds * scale;
 
-                    if let Some(clip_bounds) = (instance.bounds * scale)
+                    let Some(clip_bounds) = (instance.bounds * scale)
                         .intersection(&physical_bounds)
                         .and_then(nudge::snap)
-                    {
+                    else {
+                        continue;
+                    };
+
+                    // Anomi: once within each region; drawn whole, the one
+                    // clip holds `clip_bounds` whole.
+                    for clip in &clips {
+                        let Some(clip_bounds) = damage::within(clip_bounds, *clip) else {
+                            continue;
+                        };
+
                         render_pass.set_viewport(
                             bounds.x,
                             bounds.y,
@@ -625,12 +715,14 @@ impl Renderer {
             #[cfg(any(feature = "svg", feature = "image"))]
             if !layer.images.is_empty() {
                 let render_span = debug::render(debug::Primitive::Image);
-                self.image.render(
-                    &self.engine.image_pipeline,
-                    image_layer,
-                    scissor_rect,
-                    &mut render_pass,
-                );
+                for clip in &clips {
+                    self.image.render(
+                        &self.engine.image_pipeline,
+                        image_layer,
+                        *clip,
+                        &mut render_pass,
+                    );
+                }
                 render_span.finish();
 
                 image_layer += 1;
@@ -638,14 +730,18 @@ impl Renderer {
 
             if !layer.text.is_empty() {
                 let render_span = debug::render(debug::Primitive::Text);
-                text_layer += self.text.render(
-                    &self.engine.text_pipeline,
-                    &self.text_viewport,
-                    text_layer,
-                    &layer.text,
-                    scissor_rect,
-                    &mut render_pass,
-                );
+                let mut groups = 0;
+                for clip in &clips {
+                    groups = self.text.render(
+                        &self.engine.text_pipeline,
+                        &self.text_viewport,
+                        text_layer,
+                        &layer.text,
+                        *clip,
+                        &mut render_pass,
+                    );
+                }
+                text_layer += groups;
                 render_span.finish();
             }
         }
@@ -741,6 +837,7 @@ impl core::Renderer for Renderer {
 
     fn reset(&mut self, new_bounds: Rectangle) {
         self.layers.reset(new_bounds);
+        self.settled = false;
     }
 
     fn settings(&self) -> renderer::Settings {

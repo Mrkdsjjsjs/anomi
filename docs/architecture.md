@@ -210,7 +210,10 @@ The actor owns one Matrix session and its sync service. The voice controller
 leases that same client and encrypted store. Encryption and device trust checks
 remain authoritative in the backend. Explicit logout stops voice and sync before
 revoking the session; failed logout retains the account. Dropping the backend on
-the client thread cancels its work without revoking saved credentials.
+the client thread ends its work without revoking saved credentials: it waits up
+to half a second for the actor to leave a call and close Discord's gateway,
+then cancels what's left ([Quitting during a
+call](discord/voice.md#quitting-during-a-call)).
 
 The core has no UI-framework dependency. Its native services still
 depend on Tokio, SQLite, OS credential storage and libwebrtc. A browser client

@@ -80,7 +80,9 @@ x264-src = { path = "../../vendor/x264-src", optional = true }
 # Go Live's hardware encoders, FFmpeg's, built from source; see native/hwenc.c.
 ffmpeg-src = { path = "../../vendor/ffmpeg-src", optional = true }
 tempfile.workspace = true
-tokio.workspace = true
+# Signals ask the program to quit (`backend::quit_on_signals`); already on
+# for yapfast-discord, so Cargo.lock doesn't change.
+tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 # CPU rendering of Discord's Lottie stickers, without file access or expressions.

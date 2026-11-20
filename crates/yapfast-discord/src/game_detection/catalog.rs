@@ -1,7 +1,9 @@
 //! The games Discord detects, from its /games/detectable, kept on disk as a
-//! compact list of this platform's executables and Steam ids. Memory holds
-//! only a hash of each executable's file name: a process whose name has one
-//! has the list read again for that name's rules, which are kept after.
+//! compact list of this platform's executables and Steam ids, with every
+//! game's name, id and other names for Settings' picker (`directory.rs`).
+//! Memory holds only a hash of each executable's file name: a process whose
+//! name has one has the list read again for that name's rules, which are
+//! kept after.
 
 use crate::api::{Api, GameList};
 use anyhow::{Context, Result, ensure};
@@ -30,10 +32,24 @@ struct Game {
     #[serde(default)]
     id: Option<String>,
     name: Box<str>,
-    #[serde(default)]
+    /// Other names Discord knows the game by, which the picker searches; a
+    /// `null` reads as none rather than refusing the whole list.
+    #[serde(
+        default,
+        deserialize_with = "none_if_null",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    aliases: Vec<Box<str>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     executables: Vec<Executable>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     third_party_skus: Vec<Sku>,
+}
+
+fn none_if_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<Box<str>>, D::Error> {
+    Option::<Vec<Box<str>>>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -105,6 +121,10 @@ pub(super) struct Catalog {
     names: Vec<u64>,
     with_arguments: Vec<u64>,
     rules: usize,
+    /// The games the list holds, and how many have other names: a list
+    /// kept before Yapfast kept those has none.
+    games: usize,
+    aliased: usize,
     /// The rules read for a file name, by its hash: none if it has none.
     kept: RefCell<HashMap<u64, Box<[Rule]>>>,
 }
@@ -147,13 +167,17 @@ fn read_games(reader: impl Read, visit: impl FnMut(Game) -> Result<()>) -> Resul
                 });
                 game.third_party_skus
                     .retain(|sku| sku.distributor == "steam" && sku.id.is_some());
+                // A game Discord names by id stays even with nothing to
+                // detect it by here: the picker ties it to a program.
                 if !game.name.trim().is_empty()
                     && game.name.chars().count() <= 128
                     && game
                         .id
                         .as_deref()
                         .is_none_or(|id| id.parse::<u64>().is_ok_and(|n| n > 0))
-                    && (!game.executables.is_empty() || !game.third_party_skus.is_empty())
+                    && (game.id.is_some()
+                        || !game.executables.is_empty()
+                        || !game.third_party_skus.is_empty())
                 {
                     (self.0)(game).map_err(serde::de::Error::custom)?;
                     count += 1;
@@ -170,7 +194,7 @@ fn read_games(reader: impl Read, visit: impl FnMut(Game) -> Result<()>) -> Resul
 }
 
 /// Opens a list, refusing one too big to be Discord's.
-fn open(path: &Path) -> Result<File> {
+pub(super) fn open(path: &Path) -> Result<File> {
     let file = File::open(path)?;
     ensure!(
         file.metadata()?.len() <= MAX_FILE,
@@ -192,6 +216,8 @@ impl Catalog {
     }
 
     fn learn(&mut self, game: &Game) {
+        self.games += 1;
+        self.aliased += usize::from(!game.aliases.is_empty());
         for exe in &game.executables {
             let Some((_, file)) = exe.rule() else {
                 continue;
@@ -359,6 +385,13 @@ impl Catalog {
 
     pub(super) fn rule_count(&self) -> usize {
         self.rules
+    }
+
+    /// The list was kept before Yapfast kept games' other names and those
+    /// it can't detect here, which the picker searches: Discord's own has
+    /// hundreds of games with other names, so one with none is that old.
+    pub(super) fn old_shape(&self) -> bool {
+        self.games > 0 && self.aliased == 0
     }
 }
 
@@ -601,6 +634,36 @@ mod tests {
                 .matches("/opt/game", &[], cfg!(target_os = "windows"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn keeps_every_game_with_an_id_and_its_other_names_for_the_picker() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("download.json");
+        let cache = directory.path().join("cache.json");
+        let games = json!([
+            {"id":"42", "name":"Game", "aliases":["Other Name"],
+                "executables":[{"os":host_os(), "name":"game"}]},
+            {"id":"43", "name":"Console Only",
+                "third_party_skus":[{"distributor":"xbox", "id":"X"}]},
+            {"name":"Neither an id nor an executable"}
+        ]);
+        std::fs::write(&source, serde_json::to_vec(&games).unwrap()).unwrap();
+        let compacted = compact(&source, Some(&cache)).unwrap();
+        assert!(!compacted.old_shape());
+        let kept: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
+        assert_eq!(kept.as_array().map(Vec::len), Some(2));
+        assert_eq!(kept[0]["aliases"], json!(["Other Name"]));
+        assert_eq!(
+            kept[1],
+            json!({"id":"43", "name":"Console Only"}),
+            "nothing it can't be detected by"
+        );
+        // A list kept before games' other names were has none at all.
+        let (_file, old) = catalog(json!([{"id":"42", "name":"Game",
+            "executables":[{"os":host_os(), "name":"game"}]}]));
+        assert!(old.old_shape());
     }
 
     #[test]

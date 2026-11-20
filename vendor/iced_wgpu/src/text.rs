@@ -69,6 +69,22 @@ impl Cache {
         self.text = Arc::from(text);
         self.version += 1;
     }
+
+    /// Anomi: what tells this text apart from any other cache's, or from
+    /// its own before an update: its id, its version and where its text
+    /// lies (`damage.rs`). The address is only compared, never followed.
+    pub(crate) fn key(&self) -> (Id, usize, usize) {
+        (
+            self.id,
+            self.version,
+            Arc::as_ptr(&self.text).cast::<Text>().addr(),
+        )
+    }
+
+    /// Anomi: the text it holds.
+    pub(crate) fn text(&self) -> &[Text] {
+        &self.text
+    }
 }
 
 struct Upload {

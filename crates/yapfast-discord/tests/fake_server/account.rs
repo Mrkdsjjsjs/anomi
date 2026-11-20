@@ -56,6 +56,18 @@ async fn plays_through_rpc(discord: &Discord, server: &str, directory: &std::pat
             r#"W/"fixture-games""#,
             "the CDN's version, to ask with tomorrow"
         );
+        // Settings' picker downloads the list itself, and searches every
+        // game Discord names, by its other names too.
+        use yapfast_discord::game_detection::{download_list, read_directory};
+        download_list().await.unwrap();
+        let listed = read_directory().expect("the list was downloaded");
+        let found = listed.search("FIXTURE ALIAS", 5);
+        assert_eq!(found.games[0].name, "Detected Fixture");
+        assert_eq!(found.games[0].alias.as_deref(), Some("Fixture Alias"));
+        assert!(
+            (listed.search("", 50).games.iter()).any(|game| game.name == "Blockhead"),
+            "a game with nothing to detect it by here"
+        );
         Some(process)
     } else {
         None
@@ -185,6 +197,7 @@ async fn plays_through_rpc(discord: &Discord, server: &str, directory: &std::pat
         custom_games::set(vec![CustomGame {
             executable: "yapfast_detected_game".into(),
             name: "My custom game".into(),
+            ..CustomGame::default()
         }]);
         presence_where(server, |p| {
             p["activities"]

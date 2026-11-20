@@ -7,7 +7,9 @@ mod clip;
 mod engine;
 mod layer;
 mod primitive;
-mod reach;
+// Anomi: public for `vendor/iced_wgpu`'s damage, which reaches text as this
+// renderer does.
+pub mod reach;
 mod text;
 
 pub mod premultiplied;

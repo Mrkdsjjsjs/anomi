@@ -136,11 +136,18 @@ pub struct Call {
     /// Everyone else's camera frames, until taken.
     video: Option<channel::Receiver<VideoFrame>>,
     stats: Arc<CallStats>,
+    /// Disconnects once the call's thread has ended.
+    ended: channel::Receiver<()>,
 }
 
 /// Cameras' frames waiting to be decoded; beyond this many, decoding is
 /// behind and the call waits for a keyframe.
 const VIDEO_BACKLOG: usize = 8;
+
+/// How long a call that goes waits for its thread to close the voice
+/// connection, with a close frame, so a program quitting doesn't cut it
+/// off; it takes a few milliseconds on a working network.
+pub const CLOSE_WAIT: Duration = Duration::from_millis(250);
 
 impl Call {
     /// Connects to the voice server for a channel in `guild_id`, or with
@@ -161,7 +168,7 @@ impl Call {
         let identity = identity(server, server_id, channel_id)?;
         let (frames, video) = channel::sync_channel(VIDEO_BACKLOG);
         let stats = Arc::new(CallStats::default());
-        let (orders, connected) =
+        let (orders, connected, ended) =
             call_connection::start(identity, listener, sending.clone(), frames, stats.clone())?;
         // Errors say the step that failed; the caller says it was joining.
         connected
@@ -173,6 +180,7 @@ impl Call {
             server_id: server_id.to_owned(),
             video: Some(video),
             stats,
+            ended,
         })
     }
 
@@ -238,8 +246,11 @@ impl Call {
 }
 
 impl Drop for Call {
+    /// Leaves, and waits up to [`CLOSE_WAIT`] for the thread to close the
+    /// voice connection: after the call the program may end, as it quits.
     fn drop(&mut self) {
         self.leave();
+        let _ = self.ended.recv_timeout(CLOSE_WAIT);
     }
 }
 

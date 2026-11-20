@@ -1,8 +1,9 @@
-//! The switches of Messages, Notifications, Sounds, Discord, Game activity,
-//! Advanced and About: each kept in the layout as the Slint app keeps it
-//! (`on_preferences_changed`, `src/ui/callbacks.rs:2303`; `games.rs`;
-//! `updates.rs`) and handed on at once where the Slint app hands it on: to
-//! the core, the clocks, the call's audio or the desktop. A switch the rest
+//! The switches of Messages, Notifications, Sounds, Discord, Advanced and
+//! About (Game activity's are `super::games`'): each kept in the layout as
+//! the Slint app keeps it (`on_preferences_changed`,
+//! `src/ui/callbacks.rs:2303`; `updates.rs`) and handed on at once where the
+//! Slint app hands it on: to the core, the clocks, the call's audio or the
+//! desktop. A switch the rest
 //! of the window shows (the clock, compact messages, the text's size) shows
 //! there at once. Advanced's Optimization moves the program onto the cores
 //! chosen, switches what draws the interface (`crate::gpu::choose`) and
@@ -14,7 +15,7 @@ use yapfast_core::chat::RelationshipChange;
 use yapfast_core::sounds::{Sound, SoundSet};
 
 use anomi_vm::settings::advanced::CpuMode;
-use anomi_vm::settings::{about, advanced, discord, games, messages, notifications, sounds};
+use anomi_vm::settings::{about, advanced, discord, messages, notifications, sounds};
 
 use crate::app::App;
 use crate::layout::{Animate, CpuChoice, Encoder, Saved};
@@ -211,88 +212,6 @@ pub(super) fn discord(app: &mut App, intent: discord::Intent) -> Task<Message> {
             Task::none()
         }
     }
-}
-
-pub(super) fn games(app: &mut App, intent: games::Intent) -> Task<Message> {
-    use games::Intent as I;
-    let page = &mut app.vm.settings.games;
-    match intent {
-        I::Share(on) => return app.dispatch(Action::ShowGame(on)),
-        I::Executable(text) => page.executable_draft = text,
-        I::Text(text) => page.text_draft = text,
-        I::Edit(index) => {
-            if let Some(game) = page.games.get(index) {
-                page.executable_draft.clone_from(&game.executable);
-                page.text_draft.clone_from(&game.text);
-                (page.editing, page.invalid) = (Some(index), false);
-            }
-        }
-        I::Cancel => clear(page),
-        I::Remove(index) => {
-            clear(page);
-            if index < app.layout.game_executables.len() {
-                app.layout.edit(|saved| {
-                    saved.game_executables.remove(index);
-                });
-                games_changed(app);
-            }
-        }
-        I::Save => save_game(app),
-        intent => tracing::debug!(?intent, "not handled by the iced interface yet"),
-    }
-    Task::none()
-}
-
-/// The form empties and edits nothing.
-fn clear(page: &mut games::Games) {
-    page.editing = None;
-    page.executable_draft.clear();
-    page.text_draft.clear();
-}
-
-/// Adds the game the form holds, or saves the one it edits; another entry
-/// for the same executable gives way to it (`on_save_game_executable`).
-fn save_game(app: &mut App) {
-    let page = &mut app.vm.settings.games;
-    let (executable, text) = (page.executable_draft.trim(), page.text_draft.trim());
-    if executable.is_empty()
-        || text.is_empty()
-        || executable.len() > 4096
-        || text.chars().count() > games::TEXT_LIMIT
-        || executable.chars().any(char::is_control)
-        || text.chars().any(char::is_control)
-    {
-        page.invalid = true;
-        return;
-    }
-    let entry = (executable.to_owned(), text.to_owned());
-    let games = &app.layout.game_executables;
-    let editing = page.editing.filter(|&at| at < games.len());
-    let same = (games.iter().position(|(other, _)| *other == entry.0))
-        .filter(|&same| Some(same) != editing);
-    page.invalid = false;
-    clear(page);
-    app.layout.edit(|saved| {
-        let games = &mut saved.game_executables;
-        match (editing, same) {
-            (Some(at), same) => {
-                games[at] = entry;
-                if let Some(same) = same {
-                    games.remove(same);
-                }
-            }
-            (None, Some(same)) => games[same] = entry,
-            (None, None) => games.push(entry),
-        }
-    });
-    games_changed(app);
-}
-
-/// The games named here changed: detection takes them, the page shows them.
-fn games_changed(app: &mut App) {
-    #[cfg(feature = "discord")]
-    yapfast_core::discord::set_custom_games(&app.layout.game_executables);
-    app.show(Reach::SETTINGS);
 }
 
 pub(super) fn advanced(app: &mut App, intent: advanced::Intent) -> Task<Message> {

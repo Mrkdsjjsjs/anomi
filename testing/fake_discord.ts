@@ -103,7 +103,12 @@
 // Lounge on another client, whose session her voice state then names, and
 // ends her calls here; ?leave leaves it there. Op 4 with no channel takes
 // her out of voice whichever session sent it, as Discord may, so a client
-// must not send it for another's call. Joining "Create Room" has a bot move Alice to
+// must not send it for another's call. Her voice state stays when her
+// gateway connection ends without op 4, whatever its close code, so a test
+// sees whether a client that quits left its call. GET
+// /_control/voice-states lists who is in voice where, by user id, the
+// streams with their viewers, and the close code of each of her gateway
+// connections that ended, as everyone else sees them. Joining "Create Room" has a bot move Alice to
 // "Alice's room", made the first time, on another voice server; POST /_control/stream-move with a stream key
 // moves that stream to another server, and POST
 // /_control/stream-viewer?user=bob has Bob watch Alice's stream (&of=carol
@@ -2304,6 +2309,9 @@ let generalTopic: string | null =
 let listRequests = 0;
 /** How often clients identified and resumed, for GET /_control/sessions. */
 const sessionCounts = { identifies: 0, resumes: 0 };
+/** The close code of each identified gateway connection that ended, oldest
+ *  first, for GET /_control/voice-states: 1000 or 1001 ends the session. */
+const gatewayCloses: number[] = [];
 
 function send(ws: Socket, op: number, d: unknown, t: string | null = null) {
   const s = op === 0 ? ++ws.data.sequence : null;
@@ -3102,6 +3110,11 @@ function readySupplemental() {
 const FACTORIO = "1400000000000000900";
 const applications: Record<string, { id: string; name: string; icon: string | null }> = {
   [FACTORIO]: { id: FACTORIO, name: "Factorio", icon: "factorioicon" },
+  // The other games of the detectable list (DETECTABLE_GAMES), whose icons
+  // Settings' game picker shows.
+  "123456789012345680": { id: "123456789012345680", name: "Detected Fixture", icon: "fixtureicon" },
+  "1400000000000000901": { id: "1400000000000000901", name: "Blockhead", icon: "blockheadicon" },
+  "1400000000000000902": { id: "1400000000000000902", name: "Deep Dwarves", icon: "dwarvesicon" },
 };
 // Bob has played for 42 minutes when the fake starts, and Carol is 80 seconds
 // into an eight-minute song, its cover on /spotify/.
@@ -5870,13 +5883,26 @@ function mergeProto(kept: string, patch: string): string {
   return Buffer.concat(merged.map((field) => field.bytes)).toString("base64");
 }
 
+// Discord's detectable games, in /detectables/games-v1.json's shape: the
+// game detection finds, and three more for Settings' picker, which searches
+// names and `aliases` and offers a game with nothing to detect it by on this
+// platform (Blockhead, on Xbox alone). Their icons come from
+// /applications/public, as `applications` above lists them.
 const DETECTABLE_GAMES = [{ id: "123456789012345680", name: "Detected Fixture",
   description: "Discard this unrelated catalogue metadata when caching",
+  aliases: ["Fixture Alias"],
   executables: [
     { os: "linux", name: "yapfast_detected_game", is_launcher: false },
     { os: "darwin", name: "yapfast_detected_game", is_launcher: false },
     { os: "win32", name: "yapfast_detected_game.exe", is_launcher: false }
-  ], third_party_skus: [] }];
+  ], third_party_skus: [] },
+  { id: FACTORIO, name: "Factorio", aliases: ["Factorio: Space Age"],
+    executables: [{ os: "win32", name: "bin/x64/factorio.exe", is_launcher: false }],
+    third_party_skus: [{ distributor: "steam", id: "427520" }] },
+  { id: "1400000000000000901", name: "Blockhead",
+    third_party_skus: [{ distributor: "xbox", id: "9BLOCKHEAD" }] },
+  { id: "1400000000000000902", name: "Deep Dwarves", aliases: ["Dwarves: The Deep"],
+    executables: [{ os: "win32", name: "dwarves.exe", is_launcher: false }] }];
 
 async function api(req: Request, path: string, origin: string): Promise<Response> {
   // A Rich Presence application and its images. Games leave out their name
@@ -8608,7 +8634,7 @@ const ENV_IDS = 1_450_000_000_000_000_000n;
  *  and channels. */
 const GENERIC_CONTROLS = new Set([
   "media-requests", "history", "forwards", "gif-selects", "nitro", "profile", "profile-reset", "server-profile", "health", "presence", "logouts",
-  "voice-identifies", "voice-resumes", "voice-changes", "call-audio", "call-video", "voice-link", "voice-drop", "voice-move", "voice-kick",
+  "voice-identifies", "voice-resumes", "voice-changes", "voice-states", "call-audio", "call-video", "voice-link", "voice-drop", "voice-move", "voice-kick",
   "stream-move", "sessions", "other-session", "cookies", "list-requests", "audit-log", "slow", "gateway-reconnect", "qr-scan",
   "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
   "reactor-removals", "thread-searches", "thread-creates", "thread-members", "typed", "acks", "invites",
@@ -9276,6 +9302,15 @@ const server = Bun.serve<SocketData>({
     if (path === "/_control/voice-identifies") return Response.json(voiceIdentifies);
     if (path === "/_control/voice-resumes") return Response.json(voiceResumes);
     if (path === "/_control/voice-changes") return Response.json(voiceChanges);
+    if (path === "/_control/voice-states") {
+      return Response.json({
+        voice: Object.fromEntries(
+          [...voice].map(([user, state]) => [user, { guild: state.guild, channel: state.channel, session: state.session }]),
+        ),
+        streams: Object.fromEntries([...streams].map(([key, stream]) => [key, [...stream.viewers]])),
+        gatewayCloses,
+      });
+    }
     if (path === "/_control/channel-info") return Response.json(channelInfoRequests);
     if (req.method === "POST" && path === "/_control/voice-reset") {
       // Bob, Carol and Dave back in the Lounge as they started, after a
@@ -10226,6 +10261,7 @@ const server = Bun.serve<SocketData>({
       if (ws.data.voice && ws.data.ssrc && ws.data.callKey) resumedKeys.set(ws.data.ssrc, ws.data.callKey);
       voiceSockets.delete(ws);
       sockets.delete(ws);
+      if (!ws.data.voice && !ws.data.stream && ws.data.identified) gatewayCloses.push(code);
       if (!ws.data.voice && !ws.data.stream && ws.data.identified && code !== 1000 && code !== 1001) {
         parked.set(ws.data.session, { sequence: ws.data.sequence, missed: [] });
       }

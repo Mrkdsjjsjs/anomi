@@ -31,7 +31,7 @@ use tokio_tungstenite::{
         Message,
         client::IntoClientRequest,
         http::{HeaderValue, header},
-        protocol::frame::coding::CloseCode,
+        protocol::{CloseFrame, frame::coding::CloseCode},
     },
 };
 
@@ -147,6 +147,10 @@ const RESUME_WAIT: Duration = Duration::from_millis(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long closing waits for the gateway's own close frame, which comes
+/// back in a round trip; Yapfast quitting bounds the whole quit anyway
+/// (`yapfast_core::backend::QUIT_WAIT`).
+const CLOSE_REPLY: Duration = Duration::from_millis(300);
 
 /// The first wait before connecting again, which doubles with each session
 /// that fails, up to [`LAST_RETRY`].
@@ -695,8 +699,12 @@ impl Connection {
                         }
                         *held = Some((op, data));
                     }
+                    // With 1000, which ends the session at once, as
+                    // Discord's client does as it quits: its voice state
+                    // goes with it, rather than after the session times
+                    // out. Queued commands went before.
                     Some(Command::Close) | None => {
-                        let _ = timeout(IO_TIMEOUT, self.socket.close(None)).await;
+                        self.close().await;
                         return Ok(());
                     }
                 },
@@ -707,6 +715,33 @@ impl Connection {
                 }
             }
         }
+    }
+
+    /// Ends the connection with the closing handshake: a close frame with
+    /// 1000, then what the gateway still sends, read until its own close
+    /// frame, for at most [`CLOSE_REPLY`]. A socket closed over bytes it
+    /// hasn't read is reset rather than closed, and the reset can lose the
+    /// close frame: Discord then sees 1006, and the session, with its voice
+    /// state, lingers until it times out.
+    async fn close(&mut self) {
+        let frame = CloseFrame {
+            code: CloseCode::Normal,
+            reason: "".into(),
+        };
+        if timeout(IO_TIMEOUT, self.socket.close(Some(frame)))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let _ = timeout(CLOSE_REPLY, async {
+            while let Some(Ok(message)) = self.socket.next().await {
+                if matches!(message, Message::Close(_)) {
+                    break;
+                }
+            }
+        })
+        .await;
     }
 
     /// Acts on a message from the gateway, returning it if it's an event.
@@ -976,7 +1011,6 @@ fn secure(url: &str) -> bool {
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
-    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
     /// Discord's gateway, played in the test.
     struct Discord {
@@ -1211,6 +1245,62 @@ mod tests {
         peer.close(4004).await;
         let error = next(&mut gateway).await.err().unwrap();
         assert!(error.downcast_ref::<Closed>().is_some_and(Closed::is_final));
+    }
+
+    /// As Yapfast quits: a command queued goes first, then a close frame
+    /// with 1000, which ends the session on Discord's side; closing returns
+    /// once both went out.
+    #[tokio::test]
+    async fn closing_sends_what_waits_then_ends_the_session() {
+        let discord = Discord::new().await;
+        let (mut gateway, mut peer) = discord.session(SLOW_HEARTBEAT, limiter()).await;
+        gateway
+            .update_voice_state(Some("guild"), None, false, false, false)
+            .await
+            .unwrap();
+        // Discord's side, as Yapfast closes: unread events wait for it,
+        // then it reads the command and the close frame, and answers that.
+        peer.dispatch("TYPING_START", json!({})).await;
+        peer.dispatch("TYPING_START", json!({})).await;
+        let discord = async {
+            let left = peer.command().await;
+            let closed = timeout(Duration::from_secs(5), peer.socket.next())
+                .await
+                .expect("no close frame came")
+                .expect("the connection ended without one")
+                .unwrap();
+            // Sends the close frame tungstenite queued in answer.
+            let _ = peer.socket.flush().await;
+            (left, closed)
+        };
+        let started = Instant::now();
+        let ((), (left, closed)) = tokio::join!(gateway.close(), discord);
+        assert!(
+            started.elapsed() < CLOSE_REPLY,
+            "closing waited out the reply"
+        );
+        assert_eq!(left["op"], VOICE_STATE_UPDATE);
+        assert!(left["d"]["channel_id"].is_null(), "{left}");
+        let Message::Close(Some(frame)) = closed else {
+            panic!("not a close frame with a code: {closed:?}");
+        };
+        assert_eq!(frame.code, CloseCode::Normal);
+    }
+
+    /// A gateway that never answers the close frame holds closing up for
+    /// [`CLOSE_REPLY`] at most.
+    #[tokio::test]
+    async fn closing_doesnt_wait_long_for_an_answer() {
+        let discord = Discord::new().await;
+        let (gateway, _peer) = discord.session(SLOW_HEARTBEAT, limiter()).await;
+        let started = Instant::now();
+        gateway.close().await;
+        let waited = started.elapsed();
+        assert!(waited >= CLOSE_REPLY, "{waited:?}");
+        assert!(
+            waited < CLOSE_REPLY + Duration::from_millis(500),
+            "{waited:?}"
+        );
     }
 
     #[tokio::test]

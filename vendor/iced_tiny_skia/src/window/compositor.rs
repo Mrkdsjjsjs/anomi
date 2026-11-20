@@ -304,8 +304,9 @@ fn physical(regions: &[Rectangle], viewport: &Viewport) -> Vec<softbuffer::Rect>
 /// before it, in order of distance from the window's corner, so in a
 /// scrolled list the regions of neighbouring rows stayed apart and
 /// overlapped; each region is drawn whole, its background and all, so the
-/// overlaps were drawn twice or more.
-pub(super) fn merged(mut regions: Vec<Rectangle>) -> Vec<Rectangle> {
+/// overlaps were drawn twice or more. Public for `vendor/iced_wgpu`'s
+/// damage, which groups its regions as this renderer does.
+pub fn merged(mut regions: Vec<Rectangle>) -> Vec<Rectangle> {
     const AREA_THRESHOLD: f32 = 20_000.0;
 
     let mut index = 0;

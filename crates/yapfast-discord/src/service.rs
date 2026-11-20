@@ -730,6 +730,8 @@ enum Request {
         placements: Vec<ready::Placement>,
         reply: Option<oneshot::Sender<Vec<ready::Placement>>>,
     },
+    /// Yapfast quits; see [`Discord::shut_down`]. Dropped once done.
+    ShutDown(oneshot::Sender<()>),
 }
 
 /// What a channel's dialog edits; see [`Discord::channel_settings`].
@@ -4058,6 +4060,19 @@ impl Discord {
         let _ = self.requests.send(Request::Leave {
             guild: guild.into(),
         });
+    }
+
+    /// As Yapfast quits: stops the streams this session shares or watches
+    /// (op 19) and leaves its call (op 4 with no channel), as Discord's
+    /// client does, then closes the gateway with 1000, which ends the
+    /// session; returns once that went out. What was asked before goes
+    /// first, and nothing after: the session stops. Not connected, it
+    /// stops at once; connecting, once it has. Callers bound the wait.
+    pub async fn shut_down(&self) {
+        let (done, gone) = oneshot::channel();
+        if self.requests.send(Request::ShutDown(done)).is_ok() {
+            let _ = gone.await;
+        }
     }
 
     /// Shows others whether this account is muted or deafened, and whether

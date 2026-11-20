@@ -473,6 +473,14 @@ the strip it uncovers and what changed drawn): 1.28 ms a scrolled frame,
 picture's edge, and moved on wrong until something redrew it. Taking only
 rows on whole pixels left little to move.
 
+### Two helpers public for the GPU's read-back
+
+`lib.rs` `reach`, `window/compositor.rs` `merged`. `vendor/iced_wgpu`
+damages a frame it reads back from the adapter as this renderer damages
+its frames (its `PATCHES.md`, "Only what changed, read back and shown"):
+text by `reach::text_reach`, regions grouped and then `merged`. Both are
+public for it; nothing here changes.
+
 ## Examined, not ported here
 
 - 15 (a quad's damage takes in its shadow's reach): master's

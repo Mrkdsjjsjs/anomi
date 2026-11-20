@@ -51,6 +51,7 @@ pub fn set_custom_games(games: &[(String, String)]) {
                 |(executable, name)| yapfast_discord::game_detection::custom_games::CustomGame {
                     executable: executable.clone(),
                     name: name.clone(),
+                    ..Default::default()
                 },
             )
             .collect(),

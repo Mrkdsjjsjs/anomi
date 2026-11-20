@@ -113,20 +113,31 @@ pub(crate) enum Order {
     Leave,
 }
 
-/// Starts a call on a thread of its own. The receiver says whether the
-/// first connection succeeded.
+/// A call's thread, as [`start`] hands it over: where its orders go, whether
+/// the first connection succeeded, and a receiver that disconnects once the
+/// thread has ended, its voice connection closed.
+pub(crate) type Started = (
+    mpsc::UnboundedSender<Order>,
+    oneshot::Receiver<Result<()>>,
+    channel::Receiver<()>,
+);
+
+/// Starts a call on a thread of its own ([`Started`]).
 pub(crate) fn start(
     identity: Identity,
     listener: Arc<dyn Listener>,
     sending: Arc<Mutex<Option<Sending>>>,
     video: channel::SyncSender<VideoFrame>,
     stats: Arc<CallStats>,
-) -> Result<(mpsc::UnboundedSender<Order>, oneshot::Receiver<Result<()>>)> {
+) -> Result<Started> {
     let (orders, ordered) = mpsc::unbounded_channel();
     let (ready, connected) = oneshot::channel();
+    let (running, ended) = channel::channel::<()>();
     std::thread::Builder::new()
         .name("yapfast-discord-call".into())
         .spawn(move || {
+            // Dropped last, once the runtime and the connection are gone.
+            let _running = running;
             listener.on_call_thread();
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -142,7 +153,7 @@ pub(crate) fn start(
                 identity, listener, sending, video, stats, ordered, ready,
             ));
         })?;
-    Ok((orders, connected))
+    Ok((orders, connected, ended))
 }
 
 /// Why the media loop stopped, and what the call does next.

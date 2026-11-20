@@ -1,7 +1,10 @@
 //! Streams being started or watched: each waits for Discord to name its
 //! server, or gives up after a while.
 
-use std::{collections::HashMap, pin::Pin};
+use std::{
+    collections::{HashMap, HashSet},
+    pin::Pin,
+};
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
@@ -25,6 +28,9 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) struct StreamOpenings {
     waiting: HashMap<String, PendingStream>,
     deadline: Pin<Box<Sleep>>,
+    /// The streams this session started or watches, until it ends them,
+    /// for quitting to end them.
+    open: HashSet<String>,
 }
 
 /// A stream started or watched, waiting for its server.
@@ -39,11 +45,18 @@ impl StreamOpenings {
         Self {
             waiting: HashMap::new(),
             deadline: Box::pin(tokio::time::sleep(OPEN_TIMEOUT)),
+            open: HashSet::new(),
         }
     }
 
     pub(super) fn waiting(&self) -> bool {
         !self.waiting.is_empty()
+    }
+
+    /// The streams this session started or watches and hasn't ended, as
+    /// it quits.
+    pub(super) fn take_open(&mut self) -> HashSet<String> {
+        std::mem::take(&mut self.open)
     }
 
     /// Starts sharing to the voice channel this account is in.
@@ -63,6 +76,7 @@ impl StreamOpenings {
             return Ok(());
         }
         let key = stream::key(&guild, &channel, &tracker.me);
+        self.open.insert(key.clone());
         self.wait(
             key.clone(),
             guild.clone(),
@@ -88,6 +102,7 @@ impl StreamOpenings {
         match stream::parse(&stream_key) {
             Some((guild, channel, _)) if tracker.voice_channel(guild) == Some(channel) => {
                 let guild = guild.to_owned();
+                self.open.insert(stream_key.clone());
                 self.wait(
                     stream_key.clone(),
                     guild,
@@ -129,6 +144,7 @@ impl StreamOpenings {
 
     /// Ends this account's stream, or stops watching someone else's.
     pub(super) async fn end(&mut self, gateway: &mut Gateway, stream_key: &str) -> Result<()> {
+        self.open.remove(stream_key);
         if let Some(waiting) = self.waiting.remove(stream_key) {
             let _ = waiting.reply.send(Err(anyhow!(tr!(
                 "The stream was stopped before it started."

@@ -1142,7 +1142,8 @@ services don't count. The game started last shows and stays while it runs.
 One that ended clears after two scans without it, up to 30 s. Only the
 game's name, its application id and when it started go to Discord.
 
-Rich Presence comes first, then the custom games, Discord's list and Steam.
+Rich Presence comes first, then the custom games, the games [added from
+Discord's list](#adding-a-game-from-discords-list), Discord's list and Steam.
 A custom game is an executable and the name to show after Playing: a file
 name matches the executable in any folder, a full path only there, and
 Windows and Wine paths ignore case. Custom games are this device's, kept in
@@ -1151,10 +1152,13 @@ Windows and Wine paths ignore case. Custom games are this device's, kept in
 Discord's list comes from
 `https://cdn.discordapp.com/detectables/games-v1.json`, about 4 MB, as
 Discord's desktop client fetches it. Yapfast keeps this platform's executables
-and the Steam ids in `discord-games.json` beside the account cache, which
+and the Steam ids, and every game's name, id and other names (`aliases`) for
+the picker, in `discord-games.json` beside the account cache, which
 accounts share, and the CDN's ETag in `discord-games.etag`. It asks again a day
 later with the ETag, so an unchanged list costs a 304; a failed download keeps
-the old list and tries again an hour later. Memory holds only a hash of each
+the old list and tries again an hour later. A list kept before Yapfast kept
+the other names has none at all, where Discord's has hundreds, so it's
+downloaded again, whole, at the start. Memory holds only a hash of each
 executable's file name. A process whose name has one has the file read again
 for that name's rules, once per scan for all such processes, and the rules are
 kept for the next scans.
@@ -1197,9 +1201,11 @@ A list of your own takes Discord's shape. Use `win32` for a Wine game and
 `shows_status_and_games` in `crates/yapfast-discord/tests/fake_server.rs` gives
 the socket, the list and its cache private paths, and plays a handshake,
 activities, images, clearing, several clients, the share setting and a detected
-process through to the fake gateway. Other runs against the fake leave Rich
-Presence and detection off unless those paths are set, so they never take the
-desktop's socket.
+process through to the fake gateway, and downloads the list as the picker does
+and searches it. Other runs against the fake leave Rich Presence and detection
+off unless those paths are set, so they never take the desktop's socket. The
+fake's list has four games: the one detected, Factorio and Deep Dwarves with
+other names, and Blockhead, which nothing detects on a computer.
 
 `yapfast-game-detection-probe` measures the detector alone, without Discord,
 and prints counts, times and heap, never process names or paths:
@@ -1208,6 +1214,64 @@ and prints counts, times and heap, never process names or paths:
 nix develop path:./nix --command cargo build --profile measure -p yapfast-discord --bin yapfast-game-detection-probe
 target/measure/yapfast-game-detection-probe /path/to/discord-games.json 30
 ```
+
+### Adding a game from Discord's list
+
+Settings → Game activity lists the games added from Discord's list, each
+with its icon, a switch for its activity and Remove, and Add game opens a
+picker in their place, as Registered Games in Discord's desktop client opens
+"Add it!" in place. Discord's client lists the programs running and adds the
+one chosen under its window's title; Yapfast has the game chosen from
+Discord's list first, then the program:
+
+- Opening the picker reads `discord-games.json` on the core's blocking pool
+  into one block of names and other names, the same lowercase beside it, and
+  each game's id (`game_detection/directory.rs`): about 1.5 MiB for Discord's
+  25,000 games, held only while the picker is open. Closing it, leaving the
+  page or closing Settings drops it, and nothing runs while it waits. With no
+  list yet, or one in the old shape, the picker downloads it as detection
+  does, whether or not the account shares its game, and detection running
+  reads the new one at once; a download that fails says so, with Retry.
+- Typing searches the names and the other names, whatever their case, and
+  shows the best 20: those matching at a name's start, then at a word's, then
+  inside a word, the shortest name first among equals, a game's own name
+  above its other names. A game found by another name says which. An empty
+  search shows the list's first games, Discord's oldest. Only the rows shown
+  have their icons asked for, through `GET /applications/public` once per
+  game and `/app-icons/`, as an activity's are.
+- Choosing a game lists this user's programs running, once, the newest first,
+  at most 40, as detection sees them: a Windows program under Wine by the
+  path in its command line, and none of the system's own (`/usr/lib`,
+  `/usr/libexec`, `/sbin`, `C:\Windows`) nor Yapfast. Choosing one ties the
+  game to its full path: from then on that program is the game, under the
+  game's application id, so others see its name and icon as when Discord's
+  list detects it. A program tied to a game is tied to the new one instead.
+- Without a program, the game is the activity from the moment it's turned on
+  until its switch turns it off, while the account shares its game: it counts
+  as a game started then, so one started later shows over it while it runs.
+  Discord's client has no such choice.
+
+Switching a game's activity off keeps its program tied to it, as Discord's
+client keeps a game whose detection is off: nothing shows for that program,
+not even what Discord's list knows of it. The games are this device's, kept
+in `layout.json` beside the custom games under `discord_games`, a key written
+only once there's a game, which the Slint app keeps as it came and doesn't
+show:
+
+```json
+"discord_games": [
+  { "id": "356875221078245376", "name": "Overwatch",
+    "executable": "C:\\Games\\Overwatch\\Overwatch.exe" },
+  { "id": "1402418491272986635", "name": "Minecraft", "hidden": true,
+    "since": 1763600000 }
+]
+```
+
+`executable` is left out for a game without a program, `hidden` while the
+activity shows, and `since`, in Unix seconds, for a game tied to a program.
+Against the fake, `scripts/ui-session` shows the picker over the fake's four
+games, their icons included; the activity itself reaches the fake's gateway
+only with `YAPFAST_DISCORD_GAMES_CACHE` set, as detection needs.
 
 ## Role icons
 

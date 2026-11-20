@@ -15,6 +15,7 @@ mod appearance;
 pub(crate) mod camera;
 mod editor;
 mod frame;
+pub(crate) mod games;
 #[cfg(feature = "discord")]
 pub(crate) mod gate;
 mod prefs;
@@ -57,6 +58,9 @@ pub enum Due {
     /// What the voice gate's meter heard that the page says in words.
     #[cfg(feature = "discord")]
     Gate(gate::Heard),
+    /// Game activity's picker: Discord's list read or downloaded, the
+    /// programs running listed.
+    Games(games::Due),
 }
 
 /// The person's settings' intents.
@@ -72,7 +76,7 @@ pub fn handle(app: &mut App, intent: settings::Intent) -> Task<Message> {
         I::Appearance(intent) => appearance::handle(app, intent),
         I::ThemeEditor(intent) => editor::handle(app, intent),
         I::Discord(intent) => prefs::discord(app, intent),
-        I::Games(intent) => prefs::games(app, intent),
+        I::Games(intent) => games::handle(app, intent),
         I::Keybinds(intent) => keybinds(app, intent),
         I::Advanced(intent) => prefs::advanced(app, intent),
         I::About(intent) => prefs::about(app, intent),
@@ -110,6 +114,7 @@ pub fn due(app: &mut App, due: Due) -> Task<Message> {
             gate::heard(app, heard);
             Task::none()
         }
+        Due::Games(due) => games::due(app, due),
     }
 }
 
@@ -153,6 +158,7 @@ pub fn close(app: &mut App) -> Task<Message> {
 
 /// Settings played its way out: its pages hold nothing until it opens.
 pub fn gone(app: &mut App) {
+    games::left(app);
     crate::project::settings_gone(&mut app.vm, &mut app.shown);
 }
 
@@ -171,6 +177,9 @@ fn left(app: &mut App, page: Page) {
     }
     app.vm.settings.voice.microphone_testing = false;
     app.vm.settings.voice.entrance_open = false;
+    if page == Page::Games {
+        games::left(app);
+    }
     if page == Page::About {
         let seen = &app.layout.seen_new;
         let mut after = seen.clone();

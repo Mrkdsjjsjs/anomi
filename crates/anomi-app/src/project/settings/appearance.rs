@@ -47,6 +47,8 @@ pub struct Kept {
     /// The server an entrance sound is chosen for, by guild id; `None` for
     /// all.
     pub(crate) entrance: Option<String>,
+    /// Game activity's picker of Discord's games, while it's open.
+    pub(crate) games: super::games::Picking,
 }
 
 impl Kept {

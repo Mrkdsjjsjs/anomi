@@ -1,12 +1,13 @@
 //! The frame and the pages about the account: who is signed in above the
-//! sections, My Account (`show_account`, `src/ui/refresh.rs:1627`), Discord
-//! with those it blocked (`:1241`), and Game activity (`src/ui/games.rs`).
+//! sections, My Account (`show_account`, `src/ui/refresh.rs:1627`) and
+//! Discord with those it blocked (`:1241`). Game activity has its own
+//! module (`super::games`).
 
 use yapfast_core::application::AppState;
 use yapfast_core::new_tags;
 
 use anomi_vm::Vm;
-use anomi_vm::settings::{account, discord, frame::Page, games};
+use anomi_vm::settings::{account, discord, frame::Page};
 
 use crate::layout::Layout;
 use crate::pictures::Requests;
@@ -100,24 +101,5 @@ pub(super) fn discord(
     };
     if *page != built {
         *page = built;
-    }
-}
-
-/// The games named on this device, and the switch; the form's drafts are
-/// the window's own and stay.
-pub(super) fn games(state: &AppState, layout: &Layout, page: &mut games::Games) {
-    page.shown = state.discord_show_game;
-    page.linked = linked(state);
-    let same = page.games.len() == layout.game_executables.len()
-        && (page.games.iter().zip(&layout.game_executables)).all(|(shown, (executable, text))| {
-            shown.executable == *executable && shown.text == *text
-        });
-    if !same {
-        page.games = (layout.game_executables.iter())
-            .map(|(executable, text)| games::Executable {
-                executable: executable.clone(),
-                text: text.clone(),
-            })
-            .collect();
     }
 }

@@ -72,7 +72,9 @@ Yapfast follows the rules Discord documents for every client:
   seconds first, or longer when sessions keep ending. Opening a connection,
   Discord's HELLO and each send give up after 10 seconds, so a dead connection
   fails rather than hangs. Yapfast drops a connection without a close frame,
-  because a close with 1000 or 1001 ends the session.
+  because a close with 1000 or 1001 ends the session. Quitting closes it
+  with 1000 for that reason, after leaving a call
+  ([Quitting during a call](voice.md#quitting-during-a-call)).
 - **Gateway send limit.** A connection may send 120 commands a minute and is
   closed with 4008 past that. Yapfast holds commands back at 110, so heartbeats
   always fit. The connection runs in a task of its own, so heartbeats go on

@@ -132,8 +132,11 @@ pub(super) async fn run(
                 snapshot.status = Status::Offline(reason.into());
                 snapshot.voice.clear();
             });
-            // Keep answering until Yapfast drops the handles.
+            // Keep answering until Yapfast drops the handles, or quits.
             while let Some(request) = requests.recv().await {
+                if matches!(request, Request::ShutDown(_)) {
+                    return;
+                }
                 refuse(request, &mut shared);
             }
             return;
@@ -149,8 +152,9 @@ pub(super) async fn run(
             tokio::select! {
                 () = &mut wait => break,
                 request = requests.recv() => match request {
+                    // Nothing to leave or close while disconnected.
+                    Some(Request::ShutDown(_)) | None => return,
                     Some(request) => refuse(request, &mut shared),
-                    None => return,
                 },
             }
         }
@@ -226,7 +230,7 @@ fn refuse(request: Request, shared: &mut Shared) {
 }
 
 enum Ended {
-    /// Every handle was dropped.
+    /// Every handle was dropped, or Yapfast quit.
     Dropped,
     Failed(anyhow::Error),
 }
@@ -359,6 +363,11 @@ impl Session<'_> {
                     Ok(())
                 }
                 request = requests.recv() => match request {
+                    Some(Request::ShutDown(done)) => {
+                        self.shut_down().await;
+                        drop(done);
+                        return Ended::Dropped;
+                    }
                     Some(request) => self.request(request).await,
                     None => {
                         self.gateway.close().await;
@@ -412,6 +421,34 @@ impl Session<'_> {
                 return Ended::Failed(error);
             }
         }
+    }
+
+    /// Yapfast quits: stops the streams this session started or watches,
+    /// and leaves its call, or the one it's joining, as Discord's client
+    /// does as it quits; then closes the gateway with 1000, which ends the
+    /// session. Returns once that went out, or the connection was gone.
+    async fn shut_down(mut self) {
+        let streams = self.streams.take_open();
+        let voice = self
+            .join
+            .guild()
+            .or_else(|| self.tracker.voice_here())
+            .map(str::to_owned);
+        tracing::info!(
+            streams = streams.len(),
+            call = voice.is_some(),
+            "closing the Discord gateway as Yapfast quits"
+        );
+        for key in streams {
+            let _ = self.gateway.delete_stream(&key).await;
+        }
+        if let Some(guild) = voice {
+            let _ = self
+                .gateway
+                .update_voice_state(server(&guild), None, false, false, false)
+                .await;
+        }
+        self.gateway.close().await;
     }
 
     /// Acts on a request from the handle; an error ends the session.
@@ -609,6 +646,8 @@ impl Session<'_> {
                 }
                 Ok(())
             }
+            // `run` takes it, as it ends the session.
+            Request::ShutDown(_) => Ok(()),
         }
     }
 

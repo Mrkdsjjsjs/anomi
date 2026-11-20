@@ -67,6 +67,9 @@ pub struct Saved {
     /// Games this device names itself: an executable, by file name or full
     /// path, and the game to show for it.
     pub game_executables: Vec<(String, String)>,
+    /// Games added from Discord's list (`super::games`), Anomi's own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub discord_games: Vec<super::games::DiscordGame>,
     /// Messages from people this account blocked don't show at all.
     pub hide_blocked: bool,
     /// A call from someone's menu starts without asking first.

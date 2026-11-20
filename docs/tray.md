@@ -156,7 +156,9 @@ everything else from the application's state. The adapter remembers what it
 last set for a few properties, such as the sidebar's title and the topic, to
 set them only on a change; attaching a window forgets that, so the first
 refresh fills them in. Yapfast's event loop runs until quit, so Quit, the
-renderer restart and closing without a tray end it.
+renderer restart, closing without a tray, and SIGTERM, SIGINT or SIGHUP end
+it; a call is then left for everyone
+([Quitting during a call](discord/voice.md#quitting-during-a-call)).
 
 Without a window, backend events still apply. After each burst Yapfast rings for
 an incoming DM call, or stops, and updates the tray icon. A notification

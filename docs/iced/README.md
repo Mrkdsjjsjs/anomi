@@ -131,10 +131,20 @@ decides nothing here. `--renderer auto|gpu|software` and
   buffers ends a Wayland connection with a protocol error, which nothing
   survives, and Vulkan can't tell beforehand. On the owner's desktop
   (mutter and the monitor on the RTX 3080) Automatic draws on the Radeon
-  610M that way, a copy a frame: 5 ms of the window's thread a frame at
-  1400 by 868 and 11 ms maximised at 3440 by 1408, measured
-  (`docs/measurements/README.md`, "Drawn on the Radeon, shown through
-  shared memory"). The log says which: "the window draws
+  610M that way. Only what changed is drawn there, read back and shown
+  (`vendor/iced_wgpu/PATCHES.md`, "Only what changed, read back and
+  shown"): a frame's layers are held against the frame before's as
+  tiny-skia's are, the window's buffer gets what it lacks of the frame
+  (two frames' changes on Wayland), and the compositor is told the frame's
+  own change, so it uploads only that; a frame that changes nothing reads
+  back nothing. It costs the window's thread 3.6 ms a frame at 1400 by 868
+  and 8.5 ms maximised at 3440 by 1408 while a channel scrolls, and 2.1
+  and 3.5 ms for a key typed (drawn and read back whole: 4.7 and 10.8 ms,
+  4.4 and 10.8 ms); with gnome-shell, it takes less CPU than the processor
+  scrolling and about as much for a small change (`docs/measurements/README.md`,
+  "Drawn on the Radeon, shown through shared memory"). `ANOMI_SHARED_VERIFY=1` holds
+  each frame shown against the frame drawn whole and logs the pixels that
+  differ, for a review. The log says which: "the window draws
   on …, shown through shared memory" or "…, presented to the window
   directly".
 - **The adapters Settings lists** come from `anomi --list-adapters`, a
@@ -171,8 +181,9 @@ decides nothing here. `--renderer auto|gpu|software` and
   it, and the app's drop, which runs as a dead Wayland connection ends the
   event loop, would write a reset made then. Automatic finding no
   integrated graphics in Vulkan is the rule, not a failure.
-- **Idle.** wgpu draws only when iced asks, as tiny-skia does, but the
-  whole window each time. A surface with no image for a second counts as
+- **Idle.** wgpu draws only when iced asks, as tiny-skia does: into a
+  Vulkan surface the whole window each time, read back only what changed.
+  A surface with no image for a second counts as
   occluded and isn't redrawn in a loop (`vendor/iced_wgpu/PATCHES.md`).
   `gpu` asks for no frame: its subscription waits on that channel and on
   windows opening, follows frames only from a window opening on the GPU

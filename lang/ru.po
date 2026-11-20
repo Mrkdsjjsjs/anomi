@@ -725,6 +725,57 @@ msgstr "Добавить друзей в группу"
 msgid "Add game"
 msgstr "Добавить игру"
 
+msgid "Add custom game"
+msgstr "Добавить свою игру"
+
+msgid "GAMES FROM DISCORD'S LIST"
+msgstr "ИГРЫ ИЗ СПИСКА DISCORD"
+
+msgid "Choose a game from Discord's list and the program that runs it. While the program runs, your status shows that game with its icon, as in Discord's app."
+msgstr "Выберите игру из списка Discord и программу, которая её запускает. Пока программа работает, в статусе будет эта игра с её значком, как в приложении Discord."
+
+msgid "Without a program: shows until you turn it off"
+msgstr "Без программы: видна в статусе, пока вы её не выключите"
+
+msgid "Search Discord's games"
+msgstr "Поиск по играм Discord"
+
+msgid "Opening Discord's list of games..."
+msgstr "Открываем список игр Discord..."
+
+msgid "Discord's list of games isn't downloaded yet. Downloading it..."
+msgstr "Список игр Discord ещё не скачан. Скачиваем его..."
+
+msgid "Couldn't download Discord's list of games."
+msgstr "Не удалось скачать список игр Discord."
+
+msgid "No game in Discord's list is called that."
+msgstr "В списке Discord нет игры с таким названием."
+
+msgid "These are the best matches. Type more of the name to find others."
+msgstr "Это лучшие совпадения. Чтобы найти другие, уточните название."
+
+msgid "Also known as {}"
+msgstr "Другое название: {}"
+
+msgid "Which program is this game? While it runs, your status shows the game."
+msgstr "Какая программа запускает эту игру? Пока она работает, в статусе будет эта игра."
+
+msgid "Looking at the programs running..."
+msgstr "Ищем запущенные программы..."
+
+msgid "None of your programs is running. Start the game, then look again."
+msgstr "Запущенных программ не нашлось. Запустите игру и обновите список."
+
+msgid "Look again"
+msgstr "Обновить список"
+
+msgid "Without a program"
+msgstr "Без программы"
+
+msgid "Without a program, the game shows in your status until you turn it off."
+msgstr "Без программы игра будет в статусе, пока вы её не выключите."
+
 msgid "add it to the channel list"
 msgstr "добавить в список каналов"
 

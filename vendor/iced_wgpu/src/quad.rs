@@ -233,7 +233,10 @@ impl Layer {
 }
 
 /// A group of [`Quad`]s rendered together.
-#[derive(Default, Debug)]
+///
+/// Anomi: `Clone`, for the frame a window's damage is worked out against
+/// (`damage.rs`).
+#[derive(Default, Debug, Clone)]
 pub struct Batch {
     /// The solid quads of the [`Layer`].
     solids: Vec<Solid>,
@@ -299,6 +302,65 @@ impl Batch {
         self.gradients.append(&mut batch.gradients);
         self.order.append(&mut batch.order);
     }
+
+    /// Anomi: where each quad may lay pixels, in logical pixels (`damage.rs`).
+    pub(crate) fn reach(&self) -> impl Iterator<Item = Rectangle> + '_ {
+        self.solids
+            .iter()
+            .map(|solid| reach(&solid.quad))
+            .chain(self.gradients.iter().map(|gradient| reach(&gradient.quad)))
+    }
+
+    /// Anomi: where `current` may lay other pixels than `previous`
+    /// (`damage.rs`): each kind of quad held against the other batch's by
+    /// place, byte for byte, and each that differs damaging where it reaches
+    /// in either. Solid and gradient quads are drawn in runs (`order`), so
+    /// when either batch has gradients and the runs differ, every quad of
+    /// both is damaged.
+    pub(crate) fn damage(previous: &Self, current: &Self) -> Vec<Rectangle> {
+        let runs_alike = (previous.gradients.is_empty() && current.gradients.is_empty())
+            || previous.order == current.order;
+
+        if !runs_alike {
+            return previous.reach().chain(current.reach()).collect();
+        }
+
+        let mut damage = graphics::damage::list(
+            &previous.solids,
+            &current.solids,
+            |solid| vec![reach(&solid.quad)],
+            |a, b| bytemuck::bytes_of(a) == bytemuck::bytes_of(b),
+        );
+
+        damage.extend(graphics::damage::list(
+            &previous.gradients,
+            &current.gradients,
+            |gradient| vec![reach(&gradient.quad)],
+            |a, b| bytemuck::bytes_of(a) == bytemuck::bytes_of(b),
+        ));
+
+        damage
+    }
+}
+
+/// Anomi: where a quad may lay pixels, in logical pixels: the bounds its
+/// vertex shader draws, grown by its shadow's offset and blur whether the
+/// shadow shows or not (`shader/quad/shadow.wgsl`,
+/// `shadow_expanded_bounds`), and a pixel round them for its anti-aliased
+/// edge and its snapping to the pixel grid (half a pixel each way).
+fn reach(quad: &Quad) -> Rectangle {
+    let [x, y] = quad.position;
+    let [width, height] = quad.size;
+    let [offset_x, offset_y] = quad.shadow_offset;
+    let blur = quad.shadow_blur_radius;
+
+    Rectangle {
+        x: x + offset_x.min(0.0) - blur,
+        y: y + offset_y.min(0.0) - blur,
+        width: width + offset_x.abs() + blur * 2.0,
+        height: height + offset_y.abs() + blur * 2.0,
+    }
+    .expand(1.0)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

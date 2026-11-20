@@ -239,6 +239,13 @@ pub fn run(
     instance.listen(|launch| {
         let _ = slint::invoke_from_event_loop(move || shell::launched(launch));
     });
+    // The desktop session ending, or Ctrl+C, quits as the tray's Quit does,
+    // and `stop_backend` below leaves a call for everyone.
+    let _signals = yapfast_core::backend::quit_on_signals(&adapter.borrow().runtime, || {
+        let _ = slint::invoke_from_event_loop(|| {
+            let _ = slint::quit_event_loop();
+        });
+    });
     tracing::info!(renderer, hidden, "starting the Slint desktop window");
     let _control = test_control().map(|path| control(path, shell.clone()));
     // Until quit: closing the window to the tray doesn't end Yapfast.

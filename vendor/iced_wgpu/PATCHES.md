@@ -138,29 +138,128 @@ system's connection), and each window gets softbuffer's shared memory, the
 path tiny-skia's frames take, which a compositor takes from any client.
 Each frame iced presents is drawn into a texture of the window's size on
 the adapter, copied there into a buffer the processor maps, and its rows
-copied once into softbuffer's buffer: `Bgra8Unorm` (sRGB where iced
-corrects gamma, as the surface's format would be) is softbuffer's 0RGB
-pixel byte for byte on a little-endian machine, so nothing converts a
-pixel. The window's thread waits once a frame, for that frame's drawing and
-copy and nothing else, at most a second: on the Radeon 610M under GNOME
-Shell on the 3080, 4.4 ms a frame at 1400 by 868 and 10.4 ms maximised at
-3440 by 1408 while a channel scrolls (`docs/measurements/README.md`, "Drawn
-on the Radeon, shown through shared memory"). The frame is submitted
-before softbuffer's buffer is asked for, so its wait for the compositor
-overlaps the adapter's. Texture and buffer
-are made at the first frame and again when the size changes (no wait: the
-old ones go when the adapter is done with them), and freed with the window.
-Nothing runs between frames. A frame that can't be read back counts toward
-`MISSED`; a lost device answers "occluded", as on the direct path. On the
-desktop's own adapter, a window Vulkan can't present to is read back too.
-Tests: the path on the owner's desktop and a laptop's, when unknown, a
-driver that doesn't say its bus; rows copied without their padding;
+copied once into softbuffer's buffer, where they changed (next section):
+`Bgra8Unorm` (sRGB where iced corrects gamma, as the surface's format
+would be) is softbuffer's 0RGB pixel byte for byte on a little-endian
+machine, so nothing converts a pixel. The window's thread waits once a
+frame, for that frame's drawing and copies and nothing else, at most a
+second. While a channel scrolls on the Radeon 610M under GNOME Shell on the
+3080, that is 3.0 ms a frame at 1400 by 868 and 7.8 ms maximised at 3440 by
+1408, read back where it changed (next section); drawn and read back whole,
+4.1 and 10.1 ms
+(`docs/measurements/README.md`, "Drawn on the Radeon, shown through shared
+memory"). The texture is made at the first frame drawn and again when the
+size changes (no wait: the old one goes when the adapter is done with it),
+and freed with the window. Nothing runs between frames. A frame that can't
+be read back counts toward `MISSED`; a lost device answers "occluded", as on
+the direct path. On the desktop's own adapter, a window Vulkan can't
+present to is read back too. Tests: the path on the owner's desktop and a
+laptop's, when unknown, a driver that doesn't say its bus; rows copied
+without their padding, at their place;
 `a_frame_read_back_equals_the_one_drawn_in_place` (GPU, opt-in): a frame
-read back equals, byte for byte (on the Radeon 610M and the RTX 3080), the
-same frame read out by `Renderer::screenshot`, red staying red.
+read back whole equals, byte for byte (on the Radeon 610M and the RTX
+3080), the same frame read out by `Renderer::screenshot`, red staying red.
 
 To carry over: `shared.rs`, `Shows` and the surface's `shared`, the path
 chosen in `start` before any surface is made, `surface_format`.
+
+## Only what changed, read back and shown
+
+`damage.rs` (new), `window/shared.rs` `Window::present`, `Frame::read`,
+`lib.rs` `Renderer::draw_within`, `settle`, `render`, `triangle.rs`
+`State::render`, `Layer::render`, `triangle/msaa.rs` `State::render`,
+`quad.rs` `Batch::damage`, `reach`, `text.rs` `Cache::key`, `text`; in
+`vendor/iced_tiny_skia`, `reach` and `window::compositor::merged` made
+public. A frame read back (previous section) was drawn, read back and
+uploaded by the compositor whole: 19.8 MB a frame maximised on the owner's
+monitor, for a blinking caret as for a scrolled channel, and gnome-shell
+copied it all into its texture on each commit. Now:
+
+- **What changed.** `damage::Scene` keeps what a frame's merged layers
+  draw: quads by value (byte for byte), live meshes and text by value as
+  iced holds them (a paragraph weakly, compared as the same allocation as
+  well as equal: iced's equality takes two live paragraphs of one font,
+  size and bounds for equal whatever they say), pictures by their handle's
+  id, caches of meshes and text by id, version and address, custom
+  primitives by their bounds alone. Nothing it holds keeps a picture's or
+  a cache's memory alive (a video frame's slot is its writer's once the
+  next frame is drawn, as before). The next frame's layers are held
+  against it as tiny-skia holds its frames' (`Scene::between`): layers that
+  end both frames with the same bounds paired from the end, the rest by
+  place; in a pair of the same bounds each kind of primitive by place, and
+  what differs damages where it may lay pixels in either frame (a quad its
+  shadow-grown bounds and a pixel, text tiny-skia's `text_reach`, 8 px round
+  its lines, a picture its turned bounds and a pixel, a mesh its scissor);
+  a layer unpaired, or of other bounds, where its primitives reach, as one
+  rectangle; custom primitives always. Empty layers draw nothing and are
+  left out. A pixel no damage covers is drawn by the same primitives in the
+  same order in both frames. The damage is grouped as tiny-skia's
+  (`damage::group`, then its `merged`) and taken as the window's pixels it
+  touches, a pixel more round each (`damage::regions`). A frame of another
+  size, scale, background or font set (`Key`), the first, and the first
+  after the window was sized or a frame failed, change the whole window.
+- **What the buffer lacks.** softbuffer's buffer holds the frame presented
+  `age` frames ago (two on Wayland, one on X11, unknown after a resize,
+  whose buffers keep their age): it lacks the frame's change and those of
+  the `age - 1` frames presented since its own (`damage::History`, three
+  kept), made disjoint and at most eight (`damage::settled`). None of them
+  known, the whole window.
+- **Drawn there alone.** `Renderer::draw_within` prepares every layer as
+  for the whole frame (the caches see the frame as drawn) and draws each
+  layer once in each region its scissor reaches, the scissor cut to it:
+  quads, pictures, text and custom primitives in the pass, meshes in theirs
+  and the anti-aliased meshes' blit, which stock spread over the whole
+  target, within the same clips. A layer outside every region is passed over
+  as drawn. Scissoring keeps or drops each fragment, so within a region the
+  pixels are the whole frame's; the regions being disjoint, none blends
+  twice. Drawn whole (the direct path, screenshots), the one region is the
+  viewport and every scissor stock's; the blit, now cut to its layer's
+  scissor, left every pixel outside it as it was before as well.
+- **Read back there alone.** Each region is copied from the texture into
+  the read-back buffer one after another, its rows padded to 256 bytes,
+  mapped as far as used, and copied into softbuffer's buffer at its place.
+  The read-back buffer is made at the size of the largest regions read
+  back (twice as large as before when it grows, as far as the whole frame)
+  and smaller again after 30 frames in a row that read back a quarter of it
+  or less. softbuffer's buffer is taken before drawing, as the regions
+  depend on its age; the compositor gives it back long before (it was
+  committed two frames before).
+- **Shown there alone.** The buffer is presented with the frame's own
+  change as its damage (`present_with_damage`), against the frame the
+  compositor shows: gnome-shell uploads those rectangles alone, as from
+  tiny-skia.
+- **Nothing changed.** A frame that changes nothing into a buffer that lacks
+  nothing draws, waits for and reads back nothing; the buffer is presented
+  with no damage, as tiny-skia's is.
+- **Measured** (`docs/measurements/README.md`, "Drawn on the Radeon, shown
+  through shared memory"): a frame of a channel scrolling reads back 2.1 of
+  4.7 MiB at 1400 by 868 and 13.5 of 18.6 MiB maximised at 3440 by 1408, a
+  key typed 139 and 573 KiB, the caret blinking 74 and 330 KiB; with
+  gnome-shell's upload, scrolling now takes less CPU than the processor's
+  frames, and a small change about as much.
+
+`Renderer::settle` merges the layers once a frame (`reset` begins one), as
+the window holds them against the frame before's before drawing them.
+`ANOMI_SHARED_VERIFY=1` holds each frame presented against the frame drawn
+whole and read back (`Renderer::screenshot`, a second draw and wait a
+frame: for a review only) and logs the pixels that differ. Tests:
+`damage.rs`, the same frame changes nothing, a quad changed damages where
+it was and is and not its neighbour, its shadow and edge; a layer more
+damages what it draws, layers after it paired from the end, empty layers
+left out, a picture with another handle; damage in the window's pixels; a
+buffer lacks the changes since its own frame (ages 0 to 5, a frame of
+unknown change, history forgotten); regions overlapping merged, apart kept,
+at most eight and disjoint; `shared.rs`, damage told within the buffer;
+`a_change_alone_is_read_back_and_the_window_shows_the_frame_drawn_whole`
+(GPU, opt-in): a small quad under a see-through anti-aliased triangle
+changes colour, only its 14 by 12 pixels are drawn and read back (3 KiB,
+where the whole frame reads back 325 KiB) into the window holding the frame
+before, which then equals the frame drawn whole byte for byte.
+
+To carry over: `damage.rs`; in `shared.rs`, `present` from the scene to
+the history and `Frame::read` with its regions; `draw_within` and the
+clips in `render`, `triangle::State::render` and the blit; the quad and
+text accessors; tiny-skia's two exports.
 
 ## A failing GPU reported, never a panic
 
@@ -247,13 +346,55 @@ To carry over: the two `invalidate_all` calls.
 
 ## Not done here
 
-- Damage. Each frame wgpu draws the whole window (every layer prepared,
-  every paragraph's glyphs), where tiny-skia draws only what changed and
-  presents only that (its patches 9 and 23): a blinking caret costs a whole
-  frame's preparation on the CPU, though not the GPU's time to speak of.
-  A frame read back is copied and presented whole too; with damage, both
-  copies and the compositor's upload could take only the union of the
-  damage since softbuffer's buffer was last shown (its age).
+- Damage on the direct path, and in the preparation. A frame read back is
+  drawn, read back and shown where it changed ("Only what changed"); one
+  drawn into a Vulkan surface is drawn whole, and every frame on either
+  path prepares every layer (every paragraph's glyphs) on the CPU, where
+  tiny-skia draws only what changed: a blinking caret costs a whole frame's
+  preparation. Preparing only the layers in the damage would change what
+  the atlases and the picture cache see as drawn (a picture outside it,
+  trimmed, uploaded again when next drawn).
+- Pixels that only moved. A channel scrolled damages its whole list, read
+  back and uploaded whole. Keeping the frame in memory and moving its rows
+  would read back only the strip scrolled in, but it isn't sound simply:
+  the layers don't say a region scrolled (a scrollable's offset is in every
+  primitive's place, beside what stays: the date over the list, the bar of
+  new messages, the scrollbar), a row's content lies on half pixels and f32
+  layout sums round the same line a row apart from one frame to the next,
+  so a row moved isn't the row drawn there (tiny-skia tried it and dropped
+  it: 5 frames of 200 wrong, and moved on wrong; its `PATCHES.md`,
+  "Measuring"), and softbuffer's buffer is two frames old on Wayland. And
+  it would save only the adapter's copy: moving the rows in memory costs
+  the processor what copying them from the read-back buffer does, and the
+  compositor uploads every moved pixel (`wl_shm` has no "move"), as for
+  tiny-skia.
+- Not waiting for the adapter. The window's thread waits for the frame's
+  drawing and copies on the adapter (a kernel wait on its fence, no CPU),
+  now only for the regions that changed. Presenting each frame one late
+  (collecting it at the next `present`) would take that off the thread
+  while frames come at the display's pace, but the last frame of a change
+  must still be shown with nothing else coming: iced calls the compositor
+  only to draw, so only a redraw request (`Shell::request_redraw`, every
+  window's whole UI drawn again) or a thread waiting on the fence could;
+  the buffer's age, which the regions depend on, is known only when the
+  buffer is taken, so a late frame drawn for one age must be thrown away
+  and drawn whole when it comes back another; and the processor's use and
+  the compositor's upload stay what they are. Measure the wait while
+  scrolling first.
+- Handing the compositor the adapter's frame without the processor's
+  memory. A dmabuf it can import is safe to try only with
+  `zwp_linux_dmabuf_v1` version 4's surface feedback (the tranches of
+  formats and modifiers, per target device, it can take for the window)
+  and `zwp_linux_buffer_params_v1.create`, which answers `created` or
+  `failed`; `create_immed`, which Mesa's Vulkan swapchain uses, answers a
+  failure with the protocol error that ended the connection here. A frame
+  would be drawn into a linear buffer in system memory exported as a dmabuf
+  (Vulkan's external memory, beneath wgpu), offered as XRGB8888 with the
+  linear modifier only when a tranche of the compositor's main device
+  lists it, tried once with `create` and shown only once `created` came,
+  else read back as now; the window would still wait for the adapter
+  before each commit, as NVIDIA's driver may not wait on the buffer's
+  implicit fence.
 - Upstream Yapfast's other changes to its copy (the image shader's corners
   and edge, pictures up to 4K uploaded in the frame) belong to the image
   pipeline, below.

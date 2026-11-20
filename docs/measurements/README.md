@@ -261,62 +261,86 @@ only the adapter the desktop composites on.
 ### Drawn on the Radeon, shown through shared memory
 
 The owner's desktop composites on the RTX 3080, so Automatic draws on the
-Radeon 610M into a texture whose frame is read back and shown through
-shared memory (`vendor/iced_wgpu/PATCHES.md`, "Drawn on one adapter, shown
-through another"). Against the processor (tiny-skia) and the 3080 drawing
+Radeon 610M into a texture, and only the regions that changed are drawn,
+read back and shown through shared memory (`vendor/iced_wgpu/PATCHES.md`,
+"Drawn on one adapter, shown through another" and "Only what changed, read
+back and shown"). Against the processor (tiny-skia) and the 3080 drawing
 straight into its Vulkan surface, in #general of the fake Discord, under
-GNOME Shell 51 on the 3080. Frame: the time `present` takes on the window's
-thread while the channel scrolls, mean of every frame, and in brackets the
-read-back's wait and copy. CPU: one core as 100%, `anomi` and in brackets
-gnome-shell, while the channel scrolls. Wakeups a second: the main thread's
-and all threads', 4 of which are the test control's and a blocking pool
-thread's in every column.
+GNOME Shell 51 on the 3080, the window maximised. Frame: the time `present`
+takes on the window's thread, mean of every frame, and in brackets the
+read-back's wait and copy. Read back: the bytes a frame reads back, mean of
+every frame (the whole frame is 4.7 MiB at 1400×868, 18.6 MiB at
+3440×1408). CPU: one core as 100%, `anomi` and in brackets gnome-shell.
+Wakeups a second: the main thread's and all threads', 4 of which are the
+test control's and a blocking pool thread's in every column.
 
 | | Processor | Radeon 610M, shared memory | RTX 3080, direct |
 | --- | --- | --- | --- |
-| Frame, 1400×868 | 1.5 ms | 5.0 ms (4.4 ms) | 0.7 ms |
-| Frame, 3440×1408 | 2.7 ms | 11.3 ms (10.4 ms) | 1.0 ms |
-| CPU scrolling, 1400×868 | 16.0% (+5.5%) | 13.2% (+7.2%) | 11.3% (+3.1%) |
-| CPU scrolling, 3440×1408 | 25.2% (+9.3%) | 23.9% (+19.5%) | 16.3% (+4.2%) |
-| At rest in front: wakeups | 0.2 / 4.9 | 0.2 / 5.0 | 0.1 / 12.5–25.9 |
-| Behind another window: wakeups | 0.0 / 4.6 | 0.0 / 4.6 | 0.0 / 9.1 |
-| In the tray: wakeups | 0.0 / 4.3 | 0.0 / 4.3 | 0.0 / 4.3 |
-| At rest in front: anonymous memory, 1400×868 | 27 MiB | 30 MiB | 51–71 MiB |
-| At rest in front: anonymous memory, 3440×1408 | 35 MiB | 34 MiB | 74 MiB |
-| In the tray: anonymous memory | 23 MiB | 26 MiB | 29 MiB |
+| Scrolling, 1400×868: frame | 1.3 ms | 3.6 ms (3.0 ms) | 0.5 ms |
+| Scrolling, 1400×868: read back | | 2.1 MiB | |
+| Scrolling, 1400×868: CPU | 13.8% (+4.8%) | 10.0% (+5.1%) | 9.0% (+2.6%) |
+| Scrolling, 3440×1408: frame | 2.7 ms | 8.5 ms (7.8 ms) | 0.6 ms |
+| Scrolling, 3440×1408: read back | | 13.5 MiB | |
+| Scrolling, 3440×1408: CPU | 25.0% (+9.0%) | 16.7% (+9.9%) | 10.9% (+2.7%) |
+| Hover, 1400×868: frame | 1.3 ms | 3.6 ms (2.9 ms) | 0.7 ms |
+| Hover, 1400×868: CPU | 3.9% (+2.5%) | 3.3% (+2.6%) | 3.4% (+2.1%) |
+| Hover, 3440×1408: CPU | 3.1% (+2.5%) | 2.8% (+2.3%) | 2.7% (+2.2%) |
+| Typing, 1400×868: frame | 0.3 ms | 2.1 ms (1.6 ms) | 0.7 ms |
+| Typing, 1400×868: read back | | 139 KiB | |
+| Typing, 1400×868: CPU | 1.9% (+0.9%) | 2.6% (+0.9%) | 1.3% (+0.6%) |
+| Typing, 3440×1408: frame | 0.3 ms | 3.5 ms (2.9 ms) | 0.7 ms |
+| Typing, 3440×1408: read back | | 573 KiB | |
+| Typing, 3440×1408: CPU | 2.4% (+0.9%) | 3.0% (+1.0%) | 3.1% (+1.0%) |
+| The caret blinking: read back, 1400×868 / 3440×1408 | | 74 KiB / 330 KiB | |
+| At rest in front: wakeups | 0.2 / 4.9 | 0.2 / 5.1 | 0.2 / 9.7 |
+| Behind another window: wakeups | 0.0 / 4.3 | 0.0 / 4.1 | 0.0 / 8.9 |
+| In the tray: wakeups | 0.0 / 4.1 | 0.0 / 4.3 | 0.0 / 4.3 |
+| At rest in front: anonymous memory, 1400×868 | 28 MiB | 30 MiB | 69 MiB |
+| At rest in front: anonymous memory, 3440×1408 | 32 MiB | 35 MiB | 72 MiB |
+| In the tray: anonymous memory, 1400×868 | 24 MiB | 25 MiB | 28 MiB |
 
-- The read-back costs nothing between frames: at rest, behind a window and
-  in the tray the Radeon's numbers are the processor's.
-- Scrolling, it takes `anomi` a little less CPU than the processor, but
-  the window's thread waits on the Radeon 4 to 10 ms a frame, and
-  gnome-shell uploads the whole frame each time (tiny-skia sends only what
-  changed): maximised on the owner's monitor the two together take 43% of
-  a core against the processor's 35%.
-- The read-back frame on screen is the 3080's direct one: of 1.2 million
-  pixels, a handful differ, around the caret and an icon's edge; against
-  the processor's, only edges tiny-skia anti-aliases differently. Red
-  stays red and blue blue.
-- The old build, its Radeon presenting straight to the window, died in
-  71 to 119 ms under headless mutter 51.1 on the 3080 ("error 7: failed
-  to import supplied dmabufs: Could not bind the given EGLImage to a
-  CoglTexture2D"); the new one draws on.
+- Scrolling reads back the message list alone, not the sidebars, and
+  gnome-shell uploads the same regions as from the processor: together
+  `anomi` and gnome-shell take less than with the processor, 15% of a core
+  against 19% at 1400×868 and 27% against 34% maximised on the owner's
+  monitor. The window's thread still waits on the Radeon 3 to 8 ms a frame,
+  where the processor draws in 1.3 to 2.7 ms.
+- A small change, the pointer over the list or a key typed, costs about
+  what it costs the processor, within a point of a core: the read-back's
+  fixed wait, 1.5 to 3 ms, outweighs its few bytes. The caret blinking
+  costs no measurable CPU on either.
+- Hover reads back as much as the rows under the pointer change: a row's
+  background lies under its pictures, so a tall message is read back whole.
+  The composer's text is read back whenever the window lays out, as for the
+  processor (iced makes its editor anew at each layout).
+- Between frames nothing runs: at rest, behind a window and in the tray the
+  Radeon's numbers are the processor's.
+- Drawing every frame whole, as before damage, the Radeon took 4.7 ms a
+  frame scrolling at 1400×868 and 10.8 ms at 3440×1408, reading back 4.7
+  and 18.6 MiB, with gnome-shell at 6.4% and 16.7% of a core.
 
 <details>
 <summary>How these were measured</summary>
 
 On 20 November 2026, a `fast` build of `anomi` with each frame's
-`present` timed (left out of the tree), on `gnome-shell --headless
---wayland --virtual-monitor` (mutter 51.1, "Boot VGA GPU renderD129
-selected as primary": the 3080), with private session and system buses,
-input through mutter's RemoteDesktop and screenshots through
+`present` and read-back timed (left out of the tree), on `gnome-shell
+--headless --wayland --virtual-monitor` (mutter 51.1, "Boot VGA GPU
+renderD129 selected as primary": the 3080), with private session and
+system buses, input through mutter's RemoteDesktop and screenshots through
 `org.gnome.Shell.Screenshot`, against `testing/fake_discord.ts --extra 400
 --images 6 --members 30 --member-looks --dms 6 --servers 3`. Each renderer
-a fresh start (`--renderer software`, none, `--adapter 0000:01:00.0`),
-the window maximised; 10 s settling, 20 s at rest, then 10 s of a
-touchpad's scrolling, 60 events a second, up and down in turns of 2 s, by
-`scripts/measure-process`, and gnome-shell's CPU from `/proc/PID/stat`.
-Behind: `weston-terminal` maximised over it. Tray: the window control's
-`destroy`.
+a fresh start (`--renderer software`, none, `--adapter 0000:01:00.0`), the
+window maximised; 10 s settling, 20 s at rest, then by
+`scripts/measure-process`, with gnome-shell's CPU from `/proc/PID/stat`:
+10 s of a touchpad's scrolling, 60 events a second, up and down in turns
+of 2 s; 10 s of the pointer moving up and down over the list, 480 px a
+second; 10 s of typing into the composer, six keys a second; 20 s of the
+caret blinking. Behind: `weston-terminal` maximised over it. Tray: the
+window control's `destroy`. `ANOMI_SHARED_VERIFY=1` held every frame
+shown against the frame drawn whole through scrolling, hover, typing, new
+messages, menus, the emoji and GIF pickers, Settings, a theme changed,
+resizing, maximising, the tray and back and the renderer switched: no
+pixel differed.
 
 </details>
 

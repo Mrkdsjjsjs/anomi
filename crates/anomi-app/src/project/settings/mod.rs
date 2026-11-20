@@ -10,10 +10,12 @@
 //! and a stamp of the core's state the page reads, made without copying it
 //! (on Advanced, of what draws the interface).
 //! Typing in a field (the sections' search, a game's, the theme editor's)
-//! changes the view-model alone and builds nothing.
+//! changes the view-model alone and builds nothing; the game picker's
+//! search builds Game activity again with what it found.
 
 pub(crate) mod appearance;
 mod drawing;
+pub(crate) mod games;
 pub(crate) mod pages;
 mod people;
 pub(crate) mod voice;
@@ -101,7 +103,7 @@ pub fn show(
         Page::Sounds => pages::sounds(layout, &mut settings.sounds),
         Page::Appearance => appearance::show(layout, kept, &mut settings.appearance),
         Page::Discord => people::discord(state, layout, &mut settings.discord, requests),
-        Page::Games => people::games(state, layout, &mut settings.games),
+        Page::Games => games::show(state, layout, &kept.games, &mut settings.games, requests),
         Page::Keybinds => {}
         Page::Advanced => pages::advanced(layout, kept, &mut settings.advanced),
         Page::About => pages::about(layout, &mut settings.about),
@@ -140,6 +142,8 @@ fn stamp(core: &Application, page: Page) -> u64 {
             )
                 .hash(&mut hasher);
             state.discord_show_game.hash(&mut hasher);
+            // The games' icons, as they come.
+            state.picture_changes.hash(&mut hasher);
         }
         // What draws the interface changes without the layout: a switch
         // that finished, a fallback to the processor, the adapters listed

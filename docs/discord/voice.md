@@ -115,6 +115,68 @@ Opus comes from the libopus inside Yapfast's libwebrtc archive, called directly
 libopus of its own: two copies of the same symbols risk a clash when
 linking, particularly with MSVC on Windows.
 
+## Quitting during a call
+
+Quitting in a call leaves it for everyone at once, as Discord's client
+does as it quits, in a server's voice channel and in a DM's or group DM's
+call alike. A gateway connection that ends without a close frame leaves
+Discord keeping the session to be resumed, and the voice state with it, so
+the others would see the account in the call until Discord timed it out.
+
+Every way of quitting drops the backend (`yapfast_core::backend::Backend`)
+before the process ends: the tray's Quit; the window's close button, where
+it doesn't close to the tray; the test control's `quit`; in the Slint app,
+restarting for an update or another renderer; and SIGTERM, SIGINT or
+SIGHUP, as when the desktop session ends, Ctrl+C in a terminal, or the
+terminal closing, which `backend::quit_on_signals` turns into the tray's
+Quit. A second signal ends the process at once, for a quit that doesn't
+come. Neither app has a key that quits, and a second start hands itself to
+the running one rather than quitting it. Closing the window to the tray
+isn't quitting: the call goes on.
+
+Dropping the backend closes its commands, which ends the chat actor's loop
+(`chat::run`). Then:
+
+1. Discord's gateway session shuts down (`Discord::shut_down`). It stops
+   the streams it shares or watches with op 19, as stopping them does,
+   leaves the call, or the one it's joining, with op 4 and no channel, and
+   closes the gateway with a close frame with 1000. docs.discord.food says a
+   close with 1000 or 1001 ends the session at once, where any other keeps
+   it a few minutes to be resumed. The gateway sends in order, so the close
+   frame follows the rest. It then reads what Discord still sends until
+   Discord's own close frame, at most 300 ms (`gateway::CLOSE_REPLY`): a
+   socket closed over bytes it hasn't read is reset rather than closed, and
+   the reset can lose the close frame. Sharing a screen in a DM call, the
+   fake Discord saw 1006 that way, as Discord would, and the session
+   lingered. A session that isn't connected stops at once; one connecting,
+   once it has.
+2. The call ends as leaving ends it (`voice::Controller::stop`): its
+   microphone, speakers, camera and stream workers go, and its voice
+   connection closes with a close frame, which the call waits up to 250 ms
+   for (`yapfast_discord::voice::CLOSE_WAIT`).
+
+The backend waits up to 500 ms for all that (`backend::QUIT_WAIT`), then
+cancels what's left. On a working network Discord's part takes a few
+milliseconds, which is why it goes first: the call's teardown may take
+longer, a stream worker up to 2 s to stop, and the runtime, stopping, still
+waits for the call's thread to let its devices go (`voice::Controller`'s
+drop). With the network down, or the gateway still connecting, Discord
+isn't told, and times the voice state out.
+
+A crash, `kill -9` or the power going can't be covered: nothing runs to
+leave the call, and Discord times the voice state out. Signing out of
+Windows isn't covered yet either: it sends no signal.
+
+`quitting_in_a_call_leaves_it_at_once` checks it against the fake Discord,
+whose `GET /_control/voice-states` shows the voice states, the streams'
+viewers and the close codes of Alice's gateway connections as the others
+see them: watching Bob's stream in the Lounge, then sharing a screen in a
+DM call. The fake keeps her voice state when her connection ends without
+op 4, whatever its close code, so the test sees op 4 went. `backend`'s
+`quitting` tests check the wait,
+`closing_sends_what_waits_then_ends_the_session` the close frame and
+Discord's answer, and `closing_doesnt_wait_long_for_an_answer` the bound.
+
 ## How long a channel's call has gone on
 
 As in Discord's client, a voice channel with people in it says in the

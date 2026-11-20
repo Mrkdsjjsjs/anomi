@@ -1652,3 +1652,105 @@ async fn calls_in_dms() {
     post_control(server, "/_control/hang-up", "");
     snapshot_where(&discord, |snapshot| !snapshot.voice.contains_key(&dm)).await;
 }
+
+/// How long Yapfast waits for its backend as it quits
+/// (`yapfast_core::backend::QUIT_WAIT`); leaving takes far less.
+const QUIT_WAIT: Duration = Duration::from_millis(500);
+
+/// Who is in voice where on the fake, as everyone else sees it, the
+/// streams with their viewers, and the close codes of Alice's gateway
+/// connections that ended.
+fn voice_states(server: &str) -> serde_json::Value {
+    serde_json::from_str(&control(server, "GET", "/_control/voice-states", "")).unwrap()
+}
+
+/// Quits as Yapfast does, within its bound, and waits for the fake to show
+/// `check` within that bound again: at once, where Discord would take until
+/// it timed the voice state out.
+async fn quit_until(discord: &Discord, server: &str, check: impl Fn(&serde_json::Value) -> bool) {
+    timeout(QUIT_WAIT, discord.shut_down())
+        .await
+        .expect("quitting waited past Yapfast's bound");
+    let started = std::time::Instant::now();
+    loop {
+        let states = voice_states(server);
+        if check(&states) {
+            return;
+        }
+        assert!(
+            started.elapsed() < QUIT_WAIT,
+            "not at once; the fake has {states}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Quitting in a call leaves it for everyone at once: the stream watched
+/// and the one shared stop (op 19), the call is left (op 4 with no
+/// channel), and the gateway closes with 1000, ending the session. Without
+/// these the voice state stayed until Discord timed it out (issue 1). In
+/// the Lounge, watching Bob's stream, then in a DM call, sharing a screen.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn quitting_in_a_call_leaves_it_at_once() {
+    let fixture = Fixture::start("quitting_in_a_call_leaves_it_at_once").await;
+    let (server, discord) = (fixture.server, &fixture.discord);
+    let me = fixture.snapshot.user_id.clone().unwrap();
+    let (_, call) = join_lounge(&fixture, Arc::new(Dropping::default())).await;
+    let bobs = stream::key(&fixture.guild, &fixture.lounge, &fixture.bob);
+    discord.watch(&bobs).await.unwrap();
+    let states = voice_states(server);
+    assert_eq!(states["voice"][&me]["channel"], fixture.lounge.as_str());
+    assert!(
+        states["streams"][&bobs]
+            .as_array()
+            .unwrap()
+            .contains(&me.as_str().into())
+    );
+    quit_until(discord, server, |states| {
+        states["voice"][&me].is_null()
+            && !states["streams"][&bobs]
+                .as_array()
+                .unwrap()
+                .contains(&me.as_str().into())
+            && states["gatewayCloses"] == serde_json::json!([1000])
+    })
+    .await;
+    // Bob, Carol and Dave stay.
+    assert_eq!(voice_states(server)["voice"].as_object().unwrap().len(), 3);
+    // The call goes after, as the program's teardown has it.
+    drop(call);
+
+    // Another start, in a DM call with Bob, going live.
+    let discord = Discord::start(token::load().unwrap()).unwrap();
+    snapshot_where(&discord, |snapshot| snapshot.status == Status::Online).await;
+    let dm = discord
+        .snapshots()
+        .borrow()
+        .conversations
+        .iter()
+        .find(|conversation| conversation.person.as_deref() == Some(fixture.bob.as_str()))
+        .unwrap()
+        .id
+        .clone();
+    let assigned = discord.join(PRIVATE, &dm).await.unwrap();
+    let call = timeout(
+        WAIT,
+        Call::connect(&assigned, PRIVATE, &dm, Arc::new(Dropping::default())),
+    )
+    .await
+    .expect("timed out connecting to the DM call")
+    .unwrap();
+    let mine = discord.go_live(PRIVATE, &dm).await.unwrap();
+    let states = voice_states(server);
+    assert_eq!(states["voice"][&me]["channel"], dm.as_str());
+    assert!(states["voice"][&me]["guild"].is_null());
+    assert!(states["streams"].get(&mine.stream_key).is_some());
+    quit_until(&discord, server, |states| {
+        states["voice"][&me].is_null()
+            && states["streams"].get(&mine.stream_key).is_none()
+            && states["gatewayCloses"] == serde_json::json!([1000, 1000])
+    })
+    .await;
+    drop(call);
+}

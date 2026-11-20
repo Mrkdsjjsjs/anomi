@@ -1,4 +1,4 @@
-use crate::core::{Size, Transformation};
+use crate::core::{Rectangle, Size, Transformation};
 use crate::graphics;
 
 use std::num::NonZeroU64;
@@ -305,11 +305,16 @@ impl State {
         Transformation::orthographic(targets.size.width, targets.size.height)
     }
 
+    /// Blends the resolved meshes over `target` within `clips` (Anomi:
+    /// stock blended the whole target, which outside the meshes' layer
+    /// leaves every pixel as it was; the layer's clips are where they can
+    /// lay pixels, disjoint, so none is blended twice).
     pub fn render(
         &self,
         pipeline: &Pipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
+        clips: &[Rectangle<u32>],
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("iced_wgpu::triangle::msaa render pass"),
@@ -341,6 +346,10 @@ impl State {
                 .bind_group,
             &[],
         );
-        render_pass.draw(0..6, 0..1);
+
+        for clip in clips {
+            render_pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+            render_pass.draw(0..6, 0..1);
+        }
     }
 }

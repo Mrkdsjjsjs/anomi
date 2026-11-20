@@ -5538,6 +5538,14 @@ pub async fn run(
             }
         }
     }
+    // Discord first: its gateway leaves the call and its streams and ends
+    // the session in a few milliseconds, while the call's own teardown,
+    // its devices and stream workers, can take seconds; see "Quitting
+    // during a call" in docs/discord/voice.md.
+    #[cfg(feature = "discord")]
+    if let Some(discord) = &discord {
+        discord.service().shut_down().await;
+    }
     voice.stop().await;
     #[cfg(feature = "matrix")]
     matrix.stop().await;

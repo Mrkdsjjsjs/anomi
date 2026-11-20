@@ -1,5 +1,8 @@
 //! Lightweight game detection on Linux, Windows and macOS. Only executable
 //! identity is refreshed; no CPU, memory, I/O, environment or thread metrics.
+//! Settings' picker of Discord's games searches the list detection keeps
+//! (`directory`) and ties a game to a program running (`programs`), which
+//! then reaches detection as one of the device's own games (`custom_games`).
 
 use crate::api::Api;
 use anyhow::Result;
@@ -17,10 +20,63 @@ use tokio::sync::watch;
 
 mod catalog;
 pub mod custom_games;
+pub mod directory;
+pub mod programs;
 mod steam;
 use catalog::{Catalog, GameInfo};
+pub use directory::{Directory, Found, Search};
+pub use programs::Program;
 
 const STEAM_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Where Discord's list is kept: `YAPFAST_DISCORD_GAMES_CACHE`, or beside
+/// the account cache, which accounts share.
+fn cache_path() -> Option<PathBuf> {
+    std::env::var_os("YAPFAST_DISCORD_GAMES_CACHE")
+        .map(PathBuf::from)
+        .or_else(crate::cache::games_file)
+}
+
+/// Counts the lists Settings' picker downloaded, which detection running
+/// reads again rather than wait for its own next ask.
+fn downloaded() -> &'static watch::Sender<u64> {
+    static DOWNLOADED: std::sync::OnceLock<watch::Sender<u64>> = std::sync::OnceLock::new();
+    DOWNLOADED.get_or_init(|| watch::channel(0).0)
+}
+
+/// Discord's list as detection last kept it, for Settings' picker to
+/// search; none until it was downloaded, or if it can't be read. It reads
+/// the disk, so the window calls it off its thread, and holds it only while
+/// the picker is open.
+pub fn read_directory() -> Option<Directory> {
+    let path = cache_path()?;
+    match Directory::read(&path) {
+        Ok(directory) if !directory.is_empty() => Some(directory),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::debug!(%error, "no game list to pick from");
+            None
+        }
+    }
+}
+
+/// Downloads Discord's list now, as detection does a day after the last
+/// time: for the picker, while there's none yet or it's in an old shape.
+/// Detection running takes it up at once.
+pub async fn download_list() -> Result<()> {
+    let api = Api::anonymous()?;
+    catalog::refresh(&api, cache_path(), false).await?;
+    downloaded().send_modify(|count| *count = count.wrapping_add(1));
+    Ok(())
+}
+
+/// The address of the icon of the game Discord knows by `id`, which the
+/// pictures' download asks Discord for once (`activity::application_icon`).
+pub fn icon_address(id: u64) -> String {
+    crate::activity::application_icon(&id.to_string())
+        .map(String::from)
+        .unwrap_or_default()
+}
 
 /// How often the running processes are looked at: every 15 seconds, or
 /// every half second against the test server, where detection runs only
@@ -58,9 +114,7 @@ async fn run(
     shown: &watch::Sender<Option<Arc<Value>>>,
     mut custom_games: watch::Receiver<Vec<custom_games::CustomGame>>,
 ) -> Result<()> {
-    let cache = std::env::var_os("YAPFAST_DISCORD_GAMES_CACHE")
-        .map(PathBuf::from)
-        .or_else(crate::cache::games_file);
+    let cache = cache_path();
     let path = custom.clone().or_else(|| cache.clone());
     let (initial, age) = tokio::task::spawn_blocking(move || {
         let age = path.as_deref().and_then(catalog::age);
@@ -71,10 +125,13 @@ async fn run(
                 None
             }
         });
-        let age = age.filter(|_| catalog.is_some());
+        // A list kept in an old shape is downloaded again at once, whole.
+        let age = age.filter(|_| catalog.as_ref().is_some_and(|c| !c.old_shape()));
         (catalog.unwrap_or_default(), age)
     })
     .await?;
+    let mut picked = downloaded().subscribe();
+    picked.mark_unchanged();
     let mut detector = Detector::new(initial, steam::roots());
     detector.set_executables(&custom_games.borrow_and_update());
     let mut ticks = tokio::time::interval(interval());
@@ -94,6 +151,20 @@ async fn run(
                 if result.is_err() { return Ok(()); }
                 detector.set_executables(&custom_games.borrow_and_update());
                 ticks.reset_immediately();
+            }
+            // The picker downloaded the list: it's read again here.
+            result = picked.changed(), if custom.is_none() => {
+                if result.is_err() { return Ok(()); }
+                picked.mark_unchanged();
+                if let Some(path) = cache.clone()
+                    && let Ok(Ok(catalog)) = tokio::task::spawn_blocking(move || Catalog::read(&path)).await
+                {
+                    detector.replace_catalog(catalog);
+                    cached = true;
+                    if !due {
+                        next_refresh = Instant::now() + catalog::MAX_AGE;
+                    }
+                }
             }
             result = &mut refresh, if due => {
                 let success = result.is_ok();
@@ -139,13 +210,14 @@ struct Known {
     generation: u64,
 }
 
-struct Found {
+/// A game running, by the process it runs in.
+struct Running {
     identity: Identity,
     game: Arc<GameInfo>,
 }
 
 struct Active {
-    found: Found,
+    found: Running,
     missed: u8,
     activity: Arc<Value>,
 }
@@ -158,7 +230,7 @@ struct Selection {
 impl Selection {
     fn update(
         &mut self,
-        candidates: impl IntoIterator<Item = Found>,
+        candidates: impl IntoIterator<Item = Running>,
         now_ms: u64,
     ) -> Option<Arc<Value>> {
         let mut current_found = false;
@@ -211,14 +283,20 @@ struct Detector {
     known: HashMap<u32, Known>,
     selection: Selection,
     generation: u64,
-    executables: Vec<(String, Arc<GameInfo>)>,
+    /// The games this device names by their program: none for one whose
+    /// activity is off.
+    executables: Vec<(String, Option<Arc<GameInfo>>)>,
+    /// The games shown without a program, and since when, in seconds.
+    pinned: Vec<(u64, Arc<GameInfo>)>,
 }
 
-fn custom_match(
-    entries: &[(String, Arc<GameInfo>)],
+/// The game this device names for a program, if it names one: none inside
+/// for one whose activity is off.
+fn custom_match<'a>(
+    entries: &'a [(String, Option<Arc<GameInfo>>)],
     path: &str,
     windows: bool,
-) -> Option<Arc<GameInfo>> {
+) -> Option<&'a Option<Arc<GameInfo>>> {
     if entries.is_empty() {
         return None;
     }
@@ -247,7 +325,7 @@ fn custom_match(
         } else {
             actual.rsplit('/').next() == Some(expected.as_ref())
         };
-        matches.then(|| game.clone())
+        matches.then_some(game)
     })
 }
 
@@ -334,6 +412,7 @@ impl Detector {
             selection: Selection::default(),
             generation: 0,
             executables: Vec::new(),
+            pinned: Vec::new(),
         }
     }
 
@@ -346,18 +425,26 @@ impl Detector {
     }
 
     fn set_executables(&mut self, entries: &[custom_games::CustomGame]) {
-        self.executables = entries
-            .iter()
-            .filter(|game| !game.executable.trim().is_empty() && !game.name.trim().is_empty())
-            .map(|game| {
-                (
-                    game.executable.trim().to_owned(),
-                    Arc::new(GameInfo {
-                        id: None,
-                        name: game.name.trim().into(),
-                    }),
-                )
+        let named = entries.iter().filter(|game| !game.name.trim().is_empty());
+        let info = |game: &custom_games::CustomGame| {
+            Arc::new(GameInfo {
+                id: game.id.filter(|&id| id > 0),
+                name: game.name.trim().into(),
             })
+        };
+        let (with, without): (Vec<_>, Vec<_>) =
+            named.partition(|game| !game.executable.trim().is_empty());
+        self.executables = with
+            .into_iter()
+            .map(|game| {
+                let shown = (!game.hidden).then(|| info(game));
+                (game.executable.trim().to_owned(), shown)
+            })
+            .collect();
+        self.pinned = without
+            .into_iter()
+            .filter(|game| !game.hidden)
+            .map(|game| (game.since.unwrap_or(0), info(game)))
             .collect();
         self.generation = self.generation.wrapping_add(1);
         self.selection = Selection::default();
@@ -482,18 +569,21 @@ impl Detector {
                 continue;
             };
             let game = path.and_then(|path| {
-                custom_match(&self.executables, &path, wine || windows).or_else(|| {
-                    if ignored(&path) {
-                        return None;
-                    }
-                    self.catalog
-                        .matches(&path, process.cmd(), wine || windows)
-                        .or_else(|| self.steam.matches(&path))
-                        .or_else(|| {
-                            let cwd = process.cwd().filter(|_| wine)?;
-                            self.steam.matches(&cwd.to_string_lossy())
-                        })
-                })
+                // A game named here wins, and one whose activity is off
+                // shows nothing, not even what Discord's list knows of it.
+                if let Some(named) = custom_match(&self.executables, &path, wine || windows) {
+                    return named.clone();
+                }
+                if ignored(&path) {
+                    return None;
+                }
+                self.catalog
+                    .matches(&path, process.cmd(), wine || windows)
+                    .or_else(|| self.steam.matches(&path))
+                    .or_else(|| {
+                        let cwd = process.cwd().filter(|_| wine)?;
+                        self.steam.matches(&cwd.to_string_lossy())
+                    })
             });
             self.known.insert(
                 pid.as_u32(),
@@ -505,16 +595,28 @@ impl Detector {
                 },
             );
         }
+        // A game shown without a program counts as one started when it was
+        // turned on, as no process has pid 0: the one started last shows.
+        let pinned = self.pinned.iter().map(|(since, game)| Running {
+            identity: Identity {
+                pid: 0,
+                started: *since,
+            },
+            game: game.clone(),
+        });
         self.selection.update(
-            self.known.iter().filter_map(|(&pid, known)| {
-                known.game.as_ref().map(|game| Found {
-                    identity: Identity {
-                        pid,
-                        started: known.started,
-                    },
-                    game: game.clone(),
+            self.known
+                .iter()
+                .filter_map(|(&pid, known)| {
+                    known.game.as_ref().map(|game| Running {
+                        identity: Identity {
+                            pid,
+                            started: known.started,
+                        },
+                        game: game.clone(),
+                    })
                 })
-            }),
+                .chain(pinned),
             now_ms,
         )
     }
@@ -586,10 +688,10 @@ mod tests {
 
     #[test]
     fn custom_executables_match_names_or_exact_paths() {
-        let title = Arc::new(GameInfo {
+        let title = Some(Arc::new(GameInfo {
             id: None,
             name: "Custom".into(),
-        });
+        }));
         let names = vec![("Game.exe".into(), title.clone())];
         assert!(custom_match(&names, "C:\\Games\\GAME.EXE", true).is_some());
         assert!(custom_match(&names, "/games/game.exe", false).is_none());
@@ -602,10 +704,36 @@ mod tests {
         let unix = vec![("/games/game".into(), title)];
         assert!(custom_match(&unix, "/games/game", false).is_some());
         assert!(custom_match(&unix, "/other/games/game", false).is_none());
+        // One whose activity is off still matches, and shows nothing.
+        let hidden = vec![("game".to_owned(), None)];
+        assert_eq!(custom_match(&hidden, "/games/game", false), Some(&None));
     }
 
-    fn found(pid: u32, started: u64, name: &str) -> Found {
-        Found {
+    #[test]
+    fn a_game_without_a_program_shows_from_when_it_was_turned_on() {
+        let mut detector = Detector::new(Catalog::default(), Vec::new());
+        let pinned = custom_games::CustomGame {
+            name: "Pinned Game".into(),
+            id: Some(42),
+            since: Some(100),
+            ..Default::default()
+        };
+        detector.set_executables(std::slice::from_ref(&pinned));
+        let shown = detector.scan(300_000).unwrap();
+        assert_eq!(shown["name"], "Pinned Game");
+        assert_eq!(shown["application_id"], "42");
+        assert_eq!(shown["timestamps"]["start"], 100_000);
+        // Turned off, it goes at once.
+        let off = custom_games::CustomGame {
+            hidden: true,
+            ..pinned
+        };
+        detector.set_executables(&[off]);
+        assert!(detector.scan(300_000).is_none());
+    }
+
+    fn found(pid: u32, started: u64, name: &str) -> Running {
+        Running {
             identity: Identity { pid, started },
             game: Arc::new(GameInfo {
                 id: Some(42),
@@ -695,6 +823,7 @@ mod tests {
         custom_games::CustomGame {
             executable: executable.into(),
             name: name.into(),
+            ..Default::default()
         }
     }
 
@@ -745,6 +874,21 @@ mod tests {
             detector.scan(crate::service::now_ms()).unwrap()["name"],
             "Renamed live"
         );
+        // Chosen from Discord's list, it names the game's application;
+        // with its activity off, nothing shows, not even the list's game.
+        let chosen = custom_games::CustomGame {
+            id: Some(43),
+            ..custom(&game.to_string_lossy(), "Chosen Game")
+        };
+        detector.set_executables(std::slice::from_ref(&chosen));
+        let shown = detector.scan(crate::service::now_ms()).unwrap();
+        assert_eq!(shown["application_id"], "43");
+        let hidden = custom_games::CustomGame {
+            hidden: true,
+            ..chosen
+        };
+        detector.set_executables(&[hidden]);
+        assert!(detector.scan(crate::service::now_ms()).is_none());
         detector.set_executables(&[]);
         assert_eq!(
             detector.scan(crate::service::now_ms()).unwrap()["name"],

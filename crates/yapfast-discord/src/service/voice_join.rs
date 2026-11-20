@@ -88,6 +88,12 @@ impl VoiceJoin {
         self.pending.is_some()
     }
 
+    /// The server of the join under way, or [`crate::ready::PRIVATE`] for
+    /// a DM's.
+    pub(super) fn guild(&self) -> Option<&str> {
+        self.pending.as_ref().map(|pending| pending.guild.as_str())
+    }
+
     /// Whether a voice server update is the one this join waits for, rather
     /// than one moving a call under way.
     pub(super) fn awaits(&self, data: &Value) -> bool {

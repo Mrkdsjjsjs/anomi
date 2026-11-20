@@ -1,28 +1,36 @@
-//! The share menu: what it shows and what it asks for. Task V10
-//! (docs/iced/tasks/voice.md). The Slint side is `ShareMenu` and `ShareScreen`
-//! (`ui/voice.slint:1414`, `:1359`), the window's `share-menu` popup and its
-//! picks (`ui/yapfast.slint:2115`-`:2180`), and the handlers
-//! `list_share_sources`, `stream_sound_changed` and `go_live`
-//! (`src/ui/callbacks.rs:3108`-`:3302`).
+//! Going live: Discord's Go Live dialog and the stream's own menus, what
+//! they show and what they ask for. Task V10 (docs/iced/tasks/voice.md)
+//! began it after Slint's `ShareMenu` (`ui/voice.slint:1414`); the owner's
+//! screenshots of Discord's dialog (`discord-golive-*.png`) shape it now.
 //!
-//! The menu lists what can be shared, in the order the Slint picks count
-//! them: the screens, then the windows, then (where the system's dialog picks
-//! one) the dialog, then the cameras. The picks themselves (which source, the
-//! resolution, the frame rate, the quality, the bitrate limit, the sound)
-//! live here, so a click changes them in the app and the menu is projected
-//! again; "Go Live" and "Switch" carry them to the core. While live the share button opens the
-//! stream's own menu instead ([`Live`]), whose "Change Windows" lists the
-//! sources to switch to.
+//! The dialog has two tabs. "Applications" shares a screen or a window:
+//! where the system's dialog picks one (Wayland's portal) it offers
+//! Discord's two cards, the whole screen and a window, each asking that
+//! dialog for its kind alone, and "Choose" asks it for either; elsewhere it
+//! lists the screens and the windows to pick from. "Devices" lists the
+//! cameras and capture cards. Under them, the stream's mode and quality
+//! ("Custom Quality", "720p · 60fps · System sound"), the button that starts the
+//! stream, and the gear, whose menu (the window's context menu, built by
+//! `anomi_voice::share::gear`) holds the modes, the resolution, the frame
+//! rate, the sound and, under "Advanced", the preview, the bitrate limit
+//! and the encoding.
+//!
+//! The picks live here, so a click changes them in the app and the dialog
+//! is projected again; "Choose", "Start Streaming" and "Switch" carry them to the
+//! core. While live the share button opens the stream's own menu instead
+//! ([`Live`]); a right click on one's own stream's tile opens Discord's
+//! menu of it (`anomi_voice::share::own_menu`). "Change Windows" opens the
+//! dialog again, to switch.
 
 mod live;
 
 use iced::widget::image;
 
-use crate::menu::{Key, Row};
+use crate::menu::{Key, Row, Spot};
 
 pub use live::{Live, Part};
 
-/// A screen in the menu, and once it's been glanced at, a picture of it
+/// A screen in the dialog, and once it's been glanced at, a picture of it
 /// (`ShareScreen`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Screen {
@@ -37,50 +45,101 @@ pub enum Resolution {
     P720,
     #[default]
     P1080,
+    /// 2560 by 1440, the "Games" mode's.
+    P1440,
     /// As the source is.
     Source,
 }
 
 impl Resolution {
-    pub const ALL: [Self; 3] = [Self::P720, Self::P1080, Self::Source];
+    pub const ALL: [Self; 4] = [Self::P720, Self::P1080, Self::P1440, Self::Source];
 }
 
 /// The frame rates offered.
 pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
 
 /// The bitrate limits offered after Auto, in kbit/s, up to the 9 Mbit/s
-/// Discord takes above 720p. A limit, not a target: the stream still goes
-/// lower as the network asks.
+/// Discord takes above 720p, 1440p's too. A limit, not a target: the stream
+/// still goes lower as the network asks.
 pub const BITRATES: [u32; 6] = [2_000, 3_500, 5_000, 6_000, 8_000, 9_000];
 
 /// The sound shared: a choice changes it at once, live or not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sound {
-    /// Every application's.
+    /// Every application's but the client's own.
     #[default]
     All,
+    /// "Mute stream audio": none.
     None,
-    /// The application whose window `Share::sound_apps` lists at that index.
-    App(usize),
 }
 
-/// The share menu: what its screen draws. The window holds it as
+/// The dialog's tabs, as Discord's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    /// A screen or a window.
+    #[default]
+    Apps,
+    /// A camera or a capture card.
+    Devices,
+}
+
+/// Discord's stream modes, presets over the resolution and the frame rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Smoother video: 1440p at 60 frames, as Discord's.
+    Games,
+    /// Sharper text: the screen's own size at 15 frames, as Discord's.
+    Screen,
+    /// What the person set.
+    Custom,
+}
+
+impl Mode {
+    pub const ALL: [Self; 3] = [Self::Games, Self::Screen, Self::Custom];
+
+    /// The resolution and frame rate a preset sets; none for Custom.
+    pub fn preset(self) -> Option<(Resolution, u32)> {
+        match self {
+            Self::Games => Some((Resolution::P1440, 60)),
+            Self::Screen => Some((Resolution::Source, 15)),
+            Self::Custom => None,
+        }
+    }
+
+    /// The mode a quality is: a preset's own, else Custom.
+    pub fn of(resolution: Resolution, fps: u32) -> Self {
+        (Self::ALL.into_iter())
+            .find(|mode| mode.preset() == Some((resolution, fps)))
+            .unwrap_or(Self::Custom)
+    }
+}
+
+/// What the system's dialog offers when it picks what to share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offer {
+    Screen,
+    Window,
+    /// Screens and windows, as "Choose" asks.
+    Either,
+}
+
+/// The Go Live dialog: what its screen draws. The window holds it as
 /// `vm.voice.share`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Share {
     pub screens: Vec<Screen>,
     pub windows: Vec<String>,
     pub cameras: Vec<String>,
-    /// The system's dialog picks a screen or window: with cameras listed, a
-    /// choice of it comes before them; with nothing listed it is the only
-    /// way.
+    /// The system's dialog picks the screen or window (Wayland's portal):
+    /// "Applications" offers its two kinds rather than a list.
     pub dialog: bool,
-    /// Live: the button switches what's shared, and a choice of sound,
-    /// resolution, frame rate or encoding changes the stream at once.
+    /// Live: the button switches what's shared, and a choice of sound or
+    /// quality changes the stream at once.
     pub switching: bool,
-    /// What's picked to share: an index in screens, windows, the dialog and
-    /// cameras, counted in that order. `None` while live, until something to
-    /// switch to is picked.
+    pub tab: Tab,
+    /// What's picked to share: an index in screens, windows and cameras,
+    /// counted in that order. `None` while live, until something to switch
+    /// to is picked.
     pub source: Option<usize>,
     pub resolution: Resolution,
     pub fps: u32,
@@ -90,40 +149,31 @@ pub struct Share {
     /// allows at the size streamed.
     pub max_kbps: Option<u32>,
     pub sound: Sound,
-    /// On Windows, the windows whose application's sound alone can be
-    /// shared; elsewhere none, and no such choice.
-    pub sound_apps: Vec<String>,
-    /// The list of applications under "One application" is open.
-    pub apps_open: bool,
-    /// The list of bitrate limits under "Bitrate limit" is open.
-    pub bitrates_open: bool,
-    /// The choices as menu rows, made by `anomi_voice::share::built` (the
-    /// text is translated there): a row's view borrows its row, so the rows
-    /// live here, beside what they were made from. The projection and a shot
-    /// call it after setting the other fields.
+    /// "Hide stream preview": one's own stream's tile shows no picture of
+    /// it, and none is made for it.
+    pub preview_hidden: bool,
+    /// "Encode streams on", as Settings offers it: each choice's words
+    /// (Auto, each graphics card, the processor), and the one chosen.
+    pub encoders: Vec<String>,
+    pub encoder: usize,
+    /// Text and rows made from the picks by `anomi_voice::share::built`
+    /// (translated there): a view borrows them. The projection and a shot
+    /// call it after setting the rest.
     pub rows: Rows,
-    /// While live, the stream's own menu, drawn instead of the sources;
+    /// While live, the stream's own menu, drawn instead of the dialog;
     /// `built` makes its rows from the picks above.
     pub live: Option<Live>,
 }
 
-/// The menu's choices as rows (`MenuItem`), each sending its [`Intent`].
+/// What `built` makes for the dialog.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rows {
+    /// Each window to pick, where the system's dialog doesn't.
     pub windows: Vec<Row<Intent>>,
-    /// "Screen or window", picked in the system's dialog.
-    pub dialog: Option<Row<Intent>>,
-    pub cameras: Vec<Row<Intent>>,
-    /// All applications, No sound, and One application where there is one.
-    pub sound: Vec<Row<Intent>>,
-    /// Each application whose sound can be shared alone.
-    pub apps: Vec<Row<Intent>>,
-    pub resolutions: Vec<Row<Intent>>,
-    pub rates: Vec<Row<Intent>>,
-    pub quality: Option<Row<Intent>>,
-    /// "Bitrate limit", which opens the limits under it, and the limits.
-    pub bitrate: Option<Row<Intent>>,
-    pub bitrates: Vec<Row<Intent>>,
+    /// The mode's name at the dialog's bottom left ("Custom Quality").
+    pub mode: String,
+    /// The quality and the sound under it ("720p · 60fps · System sound").
+    pub quality: String,
 }
 
 impl Default for Share {
@@ -134,15 +184,16 @@ impl Default for Share {
             cameras: Vec::new(),
             dialog: false,
             switching: false,
+            tab: Tab::default(),
             source: Some(0),
             resolution: Resolution::default(),
             fps: 30,
             high_quality: false,
             max_kbps: None,
             sound: Sound::default(),
-            sound_apps: Vec::new(),
-            apps_open: false,
-            bitrates_open: false,
+            preview_hidden: false,
+            encoders: Vec::new(),
+            encoder: 0,
             rows: Rows::default(),
             live: None,
         }
@@ -150,36 +201,48 @@ impl Default for Share {
 }
 
 impl Share {
-    /// Where the dialog's choice sits among the sources.
-    pub fn dialog_index(&self) -> usize {
+    /// Where the first camera sits among the sources.
+    pub fn first_camera(&self) -> usize {
         self.screens.len() + self.windows.len()
     }
 
-    /// Where the first camera sits.
-    pub fn first_camera(&self) -> usize {
-        self.dialog_index() + usize::from(self.dialog)
+    /// Whether the source at `at` is one the tab shown lists.
+    pub fn in_tab(&self, at: usize) -> bool {
+        let cameras = self.first_camera();
+        match self.tab {
+            Tab::Apps => at < cameras,
+            Tab::Devices => (cameras..cameras + self.cameras.len()).contains(&at),
+        }
     }
 
-    /// The dialog is a choice of its own, listed before the cameras.
-    pub fn asks_dialog(&self) -> bool {
-        self.dialog && !self.cameras.is_empty()
+    /// The stream's mode, from its resolution and frame rate.
+    pub fn mode(&self) -> Mode {
+        Mode::of(self.resolution, self.fps)
     }
 
-    /// Screens, windows or cameras are listed.
-    pub fn lists(&self) -> bool {
-        self.screens.len() + self.windows.len() + self.cameras.len() > 0
+    /// Shows `tab`, picking the first it lists where the pick was the other
+    /// tab's; while live nothing is picked for a switch until a click.
+    pub fn show(&mut self, tab: Tab) {
+        self.tab = tab;
+        if self.source.is_some_and(|at| self.in_tab(at)) {
+            return;
+        }
+        let first = match tab {
+            Tab::Apps => 0,
+            Tab::Devices => self.first_camera(),
+        };
+        self.source = (!self.switching && self.in_tab(first)).then_some(first);
     }
 
-    /// The menu is the wider one, for the screens' pictures.
-    pub fn wide(&self) -> bool {
-        !self.screens.is_empty()
-    }
-
-    /// What "Go Live" or "Switch" sends, or `None` with nothing to send.
+    /// What the button at the bottom right sends, or `None` while it waits
+    /// for a pick: where the system's dialog picks, "Choose" asks it for a
+    /// screen or a window; else the source picked in the tab shown goes
+    /// live, or replaces what's shared.
     pub fn go(&self) -> Option<Intent> {
-        let source = self
-            .source
-            .or(if self.switching { None } else { Some(0) })?;
+        if self.tab == Tab::Apps && self.dialog {
+            return Some(Intent::Ask(Offer::Either));
+        }
+        let source = self.source.filter(|&at| self.in_tab(at))?;
         Some(if self.switching {
             Intent::Switch(source)
         } else {
@@ -192,42 +255,51 @@ impl Share {
         })
     }
 
-    /// "Go Live" always goes; "Switch" waits for something to switch to.
     pub fn can_go(&self) -> bool {
-        !self.switching || self.source.is_some()
+        self.go().is_some()
     }
 }
 
-/// The share menu: what a click or a key on it asks for. Keep
-/// `#[non_exhaustive]`: the app matches it with a wildcard until its I task
-/// handles every variant.
+/// The dialog and the stream's menus: what a click or a key on them asks
+/// for. Keep `#[non_exhaustive]`: the app matches it with a wildcard until
+/// its I task handles every variant.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Intent {
     /// Pick what to share, by its index among the sources.
     Source(usize),
+    Tab(Tab),
+    /// A stream mode: a preset sets its resolution and frame rate; Custom
+    /// brings back what the person set before.
+    Mode(Mode),
     Resolution(Resolution),
     Fps(u32),
     HighQuality(bool),
-    /// Choose the sound; the app applies it at once, as `stream_sound_changed`
-    /// does, and keeps the choice.
+    /// Choose the sound; the app applies it at once, as
+    /// `stream_sound_changed` does, and keeps the choice.
     Sound(Sound),
-    /// Open or close the list of applications.
-    Apps(bool),
     /// A bitrate limit, in kbit/s, or Auto; while live it changes the
     /// stream at once.
     Bitrate(Option<u32>),
-    /// Open or close the list of bitrate limits.
-    Bitrates(bool),
+    /// Hide one's own stream's preview, or show it again.
+    HidePreview(bool),
+    /// Encode streams on the choice at this index of `Share::encoders`;
+    /// a stream going takes it at once.
+    Encoder(usize),
+    /// The gear: its menu opens there.
+    Gear(Spot),
+    /// Go live, or switch while live, with what the system's dialog picks,
+    /// offering this; the dialog closes.
+    Ask(Offer),
     /// Start the stream: the source, the quality and the encoder's preset
-    /// (`go_live`), with the bitrate limit picked; the menu closes.
+    /// (`go_live`), with the bitrate limit picked; the dialog closes.
     GoLive {
         source: usize,
         resolution: Resolution,
         fps: u32,
         high_quality: bool,
     },
-    /// While live, share what's picked instead (`switch_live`); the menu
+    /// While live, share what's picked instead (`switch_live`); the dialog
     /// closes.
     Switch(usize),
     /// The pointer came onto a row of the stream's menu, or a click on one:
@@ -235,9 +307,11 @@ pub enum Intent {
     Hover(Option<Part>),
     /// A key, while the stream's menu has them.
     Key(Key),
-    /// "Change Windows": the sources are listed to switch to, in the same
-    /// place; where only the system's dialog picks, it opens at once.
+    /// "Change Windows": the dialog opens again to pick what to switch to.
     Change,
     /// "Stop Streaming": the stream ends and the menu closes.
     Stop,
 }
+
+#[cfg(test)]
+mod tests;

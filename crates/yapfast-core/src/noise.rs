@@ -141,7 +141,7 @@ pub fn echo_cancellation() -> bool {
 }
 
 #[cfg(feature = "discord")]
-pub(crate) use denoise::{BLOCK, Denoiser, Rnnoise, Sent};
+pub(crate) use denoise::{BLOCK, Deep, Denoiser, Rnnoise, Sent};
 
 #[cfg(feature = "discord")]
 mod denoise {
@@ -388,6 +388,9 @@ mod denoise {
     /// About 40 µs a block, and 30 KB or so with its network's state.
     pub(crate) struct Rnnoise {
         network: Box<nnnoiseless::DenoiseState<'static>>,
+        /// The attenuation limit in dB, and the share of their voice as it
+        /// came that goes back in to keep to it.
+        limit: f32,
         mix: f32,
         noisy: Vec<f32>,
         previous: Vec<f32>,
@@ -398,9 +401,19 @@ mod denoise {
         pub(crate) fn new(decibels: f32) -> Self {
             Self {
                 network: nnnoiseless::DenoiseState::new(),
+                limit: decibels,
                 mix: mix_back(decibels),
                 noisy: vec![0.0; BLOCK],
                 previous: vec![0.0; BLOCK],
+            }
+        }
+
+        /// Turns noise down at most `decibels` from the next block on, as
+        /// someone's strength slider moves.
+        pub(crate) fn limit(&mut self, decibels: f32) {
+            if decibels != self.limit {
+                self.limit = decibels;
+                self.mix = mix_back(decibels);
             }
         }
 
@@ -425,6 +438,66 @@ mod denoise {
             self.previous.fill(0.0);
             let mut held = [0.0; BLOCK];
             self.network.process_frame(&mut held, &self.noisy);
+        }
+    }
+
+    /// DeepFilterNet alone, for someone else's voice, on the thread that
+    /// cleans others' voices with it (`crate::their_noise`): a copy of the
+    /// model loaded there once. The copy keeps the model's weights, which
+    /// tract holds as shared constants, and has a state of its own. Like the
+    /// model, not Send.
+    pub(crate) struct Deep {
+        network: DfTract,
+        limit: f32,
+        noisy: Vec<f32>,
+        clean: Vec<f32>,
+    }
+
+    impl Deep {
+        /// The model, as the microphone's loads: about 200 ms of a core.
+        pub(crate) fn model() -> anyhow::Result<DfTract> {
+            deep_filter_net()
+        }
+
+        /// A copy of `model` as it loaded, which no block has gone through.
+        /// libDF's `init` isn't run on it again: it would add to buffers the
+        /// copy already has.
+        pub(crate) fn of(model: &DfTract) -> Self {
+            Self {
+                network: model.clone(),
+                limit: f32::NAN,
+                noisy: vec![0.0; BLOCK],
+                clean: vec![0.0; BLOCK],
+            }
+        }
+
+        /// Turns noise down at most `decibels`, which libDF keeps to by
+        /// mixing the voice as it came back into its output spectrum, as
+        /// [`Denoiser::limit`] has it do for the microphone.
+        pub(crate) fn limit(&mut self, decibels: f32) {
+            if decibels != self.limit {
+                self.limit = decibels;
+                // Below 0.01 dB libDF skips the network and passes the
+                // block on at once rather than 30 ms late.
+                self.network.set_atten_lim(decibels.max(1.0));
+            }
+        }
+
+        /// Takes the noise out of 10 ms of mono, in 16-bit range, in place,
+        /// 30 ms late.
+        pub(crate) fn block(&mut self, block: &mut [f32]) {
+            for (value, sample) in self.noisy.iter_mut().zip(block.iter()) {
+                *value = sample / FULL_SCALE;
+            }
+            let noisy = ArrayView2::from_shape((1, BLOCK), &self.noisy).unwrap();
+            let clean = ArrayViewMut2::from_shape((1, BLOCK), &mut self.clean).unwrap();
+            if let Err(error) = self.network.process(noisy, clean) {
+                tracing::warn!(%error, "DeepFilterNet failed on a block of someone's voice");
+                self.clean.copy_from_slice(&self.noisy);
+            }
+            for (sample, value) in block.iter_mut().zip(&self.clean) {
+                *sample = value * FULL_SCALE;
+            }
         }
     }
 
@@ -574,6 +647,40 @@ mod tests {
         }
         let below = 10.0 * (signal / error).log10();
         assert!(below > 40.0, "passed {below} dB above the error");
+    }
+
+    /// Copies of the model share its weights and, through tract's `Rc`, the
+    /// two feature buffers libDF fills afresh before each block's encoder
+    /// reads them: one thread taking turns between two people's copies
+    /// cleans each exactly as a copy alone would.
+    #[test]
+    fn copies_of_deep_filter_net_taking_turns_clean_as_each_alone() {
+        let model = Deep::model().expect("DeepFilterNet loads");
+        let (mut one, mut other, mut alone) =
+            (Deep::of(&model), Deep::of(&model), Deep::of(&model));
+        for deep in [&mut one, &mut other, &mut alone] {
+            deep.limit(30.0);
+        }
+        let mut seed = 11u32;
+        let mut noisy = |gain: f32, index: usize| -> Vec<f32> {
+            (0..BLOCK)
+                .map(|at| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let noise = (seed >> 16) as f32 / 65536.0 * 600.0 - 300.0;
+                    let time = (index * BLOCK + at) as f32 / 48_000.0;
+                    noise + gain * (time * 180.0 * std::f32::consts::TAU).sin()
+                })
+                .collect()
+        };
+        for index in 0..60 {
+            let theirs = noisy(3000.0, index);
+            let mut someone_else = noisy(9000.0, index);
+            let (mut taking_turns, mut by_itself) = (theirs.clone(), theirs);
+            one.block(&mut taking_turns);
+            other.block(&mut someone_else);
+            alone.block(&mut by_itself);
+            assert_eq!(taking_turns, by_itself, "block {index}");
+        }
     }
 
     /// Runs a recording through both suppressors alone, without the rest of

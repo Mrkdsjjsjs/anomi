@@ -625,6 +625,16 @@ pub(super) fn command(
         }
         return None;
     }
+    if let Command::Discord(DiscordCommand::GameStore { application }) = command {
+        // The list of games is read from the disk, off the runtime's threads.
+        let events = events.clone();
+        tokio::task::spawn_blocking(move || {
+            let page = yapfast_discord::game_detection::store_sku(&application)
+                .and_then(|(distributor, id)| crate::chat::StorePage::of(&distributor, &id));
+            let _ = events.send(Event::GameStore { application, page });
+        });
+        return None;
+    }
     if let Command::Discord(DiscordCommand::AnswerRequest { room, accept }) = command {
         match (discord, discord::parse_room(&room)) {
             (Ok(discord), Some((_, channel))) => {

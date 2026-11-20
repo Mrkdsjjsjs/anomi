@@ -182,7 +182,6 @@ pub(super) fn checkbox(choice: MenuChoice) -> bool {
             | C::HideMuted
             | C::LocalMute
             | C::SoundboardMute
-            | C::SuppressTheirNoise
             | C::RemoveMyEcho
             | C::SelfMute
             | C::SelfDeafen

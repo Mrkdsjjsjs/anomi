@@ -11,7 +11,11 @@
 //!   shown on top of the rows each time.
 //! - The pictures the DM rows show are asked for as the list reports the
 //!   rows in view ([`seen`]); the core leaves list pictures to the
-//!   interface. The server's banner is asked for as the header shows it.
+//!   interface. The server's banner is asked for as the header shows it,
+//!   the icons of the games people in its voice channels play as the
+//!   channels are built.
+//! - The card beside someone's row under a voice channel ([`hover`]) is
+//!   built only while it shows, after everything else.
 
 #![allow(clippy::needless_update)]
 
@@ -21,6 +25,7 @@ mod dms;
 pub mod drags;
 mod fold;
 mod header;
+pub(crate) mod hover;
 pub(crate) mod people;
 #[cfg(test)]
 mod tests;
@@ -55,6 +60,8 @@ pub struct Shown {
     /// A busy voice channel's row shows how long its call has gone on, as
     /// the rows were last built: the minute's clock runs (`crate::clocks`).
     pub(crate) timed: bool,
+    /// Whose card shows beside their row under a voice channel.
+    pub(crate) hover: hover::Hover,
 }
 
 /// Everything the rows read but the call's people, which
@@ -190,10 +197,21 @@ pub(super) fn show(
     if let Place::Server(server) = &mut sidebar.place {
         changed |= people::follow(core, &mut server.channels);
         changed |= drags::show(core, &shown.places, &mut shown.drags, &mut server.channels);
+        changed |= hover::show(core, &mut shown.hover, &mut server.channels);
     }
     if changed {
         sidebar.version += 1;
         shown.timed = timed(sidebar);
+    }
+}
+
+/// The card beside someone's row under a voice channel came or went
+/// (`intent::sidebar::hover`): it's built, or taken away, at once.
+pub(crate) fn show_hover(core: &Application, sidebar: &mut Sidebar, shown: &mut Shown) {
+    if let Place::Server(server) = &mut sidebar.place
+        && hover::show(core, &mut shown.hover, &mut server.channels)
+    {
+        sidebar.version += 1;
     }
 }
 
@@ -215,6 +233,7 @@ fn build(
         Navigation::Server(id) => {
             let header = header::build(core, id);
             requests.want(state, header::banner(state, id));
+            requests.want(state, people::game_icons(state));
             let channels = channels::build(core, id, key, &mut shown.places, &mut shown.rights);
             Place::Server(Server { header, channels })
         }

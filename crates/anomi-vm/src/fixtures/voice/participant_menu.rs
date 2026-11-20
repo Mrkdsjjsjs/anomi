@@ -2,7 +2,9 @@
 //! Discord's data: task V11's. The card is `vm.voice.participant_menu`; the
 //! rows under it are the window's context menu for the target
 //! `in-voice:<room>/<user>` (`src/ui/menus.rs`), as `menu/voice_person.png`
-//! has them, each sending the choice its id names.
+//! has them, each sending the choice its id names. A watched stream's tile
+//! has the same card over its own rows, for `in-stream:<room>/<user>`
+//! ([`stream`]).
 
 use iced::{Point, Size};
 use yapfast_lang::tr;
@@ -25,9 +27,10 @@ const WINDOW: Size = Size::new(1400.0, 860.0);
 /// The width the rows give the card in the golden window.
 pub const WIDTH: f32 = 274.0;
 
-/// Lounge's room id and Carol's user id, as the fake has them.
+/// Lounge's room id, and Carol's and Bob's user ids, as the fake has them.
 const ROOM: &str = "discord:c3";
 pub const CAROL: &str = "discord:u3";
+pub const BOB: &str = "discord:u2";
 
 fn target() -> String {
     format!("in-voice:{ROOM}/{CAROL}")
@@ -125,27 +128,55 @@ pub fn carol() -> Vm {
 }
 
 /// Carol's menu in a Discord call with the rows that clean her voice, under
-/// the mutes: her noise taken out, this account's echo not.
+/// the mutes: RNNoise takes out 80% of her noise and this account's echo
+/// comes out of her voice 20 dB, each with its slider on the card.
 pub fn cleaning() -> Vm {
+    let card = ParticipantMenu {
+        noise_strength: Some(80),
+        echo_depth: Some(20),
+        ..card()
+    };
     let mut rows = rows(false);
     let after = rows
         .iter()
         .position(|row| row.text == tr!("Mute Soundboard"))
         .map_or(rows.len(), |at| at + 1);
     let below = rows.split_off(after);
+    let suppressors = vec![
+        row(tr!("Off"), "their-noise:off").radio(false).plain(),
+        row("RNNoise", "their-noise:rnnoise")
+            .subtitle(tr!("Light on the processor"))
+            .radio(true)
+            .plain(),
+        row("DeepFilterNet", "their-noise:deepfilternet")
+            .subtitle(tr!("Stronger, but uses more of the processor"))
+            .wraps()
+            .radio(false)
+            .plain(),
+    ];
     rows.push(
-        row(tr!("Suppress their noise"), "suppress-their-noise")
-            .icon(Icon::NoiseBars)
-            .checkbox(true),
+        Row::opens(tr!("Suppress their noise"), suppressors)
+            .subtitle("RNNoise")
+            .icon(Icon::NoiseBars),
     );
     rows.push(
         row(tr!("Remove my echo"), "remove-my-echo")
             .icon(Icon::Volume)
-            .checkbox(false),
+            .checkbox(true),
     );
     rows.extend(below);
-    // Two rows of 32 px more than Carol's menu.
-    open_over(card(), rows, Size::new(WIDTH, ROWS.height + 64.0))
+    // A row of 44 px with its subtitle and one of 32 more than Carol's
+    // menu, each with the 2 px between rows.
+    open_over(card, rows, Size::new(WIDTH, ROWS.height + 80.0))
+}
+
+/// [`cleaning`] with "Suppress their noise" open: none, the light RNNoise,
+/// chosen, and the strong DeepFilterNet, which says it costs more of the
+/// processor.
+pub fn their_noise() -> Vm {
+    let mut vm = cleaning();
+    vm.menu.submenu = (vm.menu.rows.iter()).position(|row| row.text == tr!("Suppress their noise"));
+    vm
 }
 
 /// Someone sharing their screen: a second slider, for their stream.
@@ -173,3 +204,61 @@ pub fn alone() -> Vm {
     vm.voice.participant_menu = card;
     shell::open_at(vm, Layer::ParticipantMenu, Spot::pointer(top))
 }
+
+/// The menu of Bob's stream's tile while Alice watches it, right-clicked on
+/// the large stream: the stream's volume alone on the card, then how much
+/// of its noise RNNoise takes out and how far Alice's echo comes out of it;
+/// the rows choose them, "Suppress noise" saying what it does to music.
+pub fn stream() -> Vm {
+    let target = format!("in-stream:{ROOM}/{BOB}");
+    let row = |text: &str, id: &str| {
+        Row::new(text, crate::menu::Choice::person(target.clone(), id).into())
+    };
+    let suppressors = vec![
+        row(tr!("Off"), "their-noise:off").radio(false).plain(),
+        row("RNNoise", "their-noise:rnnoise")
+            .subtitle(tr!("Light on the processor"))
+            .radio(true)
+            .plain(),
+        row("DeepFilterNet", "their-noise:deepfilternet")
+            .subtitle(tr!("Stronger, but uses more of the processor"))
+            .wraps()
+            .radio(false)
+            .plain(),
+    ];
+    let rows = vec![
+        Row::opens(tr!("Suppress noise"), suppressors)
+            .subtitle(tr!(
+                "Made for speech: music and game sound come out damaged"
+            ))
+            .wraps()
+            .icon(Icon::NoiseBars),
+        row(tr!("Remove my echo"), "remove-my-echo")
+            .icon(Icon::Volume)
+            .checkbox(true),
+    ];
+    let card = ParticipantMenu {
+        person: BOB.into(),
+        name: tr!("{}'s screen", "Bob"),
+        live: true,
+        stream: true,
+        stream_volume: 54,
+        noise_strength: Some(100),
+        echo_depth: Some(20),
+        joined: true,
+        width: WIDTH,
+        ..ParticipantMenu::default()
+    };
+    let mut vm = stage::window(stage::watching());
+    let (top, below) = card.place(STREAM_AT, Size::new(WIDTH, 110.0), WINDOW);
+    vm.menu = Menu {
+        narrowest: Some(crate::voice::participant_menu::WIDTH),
+        headed: true,
+        ..Menu::new(1, Spot::pointer(below), rows)
+    };
+    vm.voice.participant_menu = card;
+    shell::open_at(vm, Layer::ParticipantMenu, Spot::pointer(top))
+}
+
+/// Where [`stream`] right-clicked Bob's stream, large on the stage.
+const STREAM_AT: Point = Point::new(900.0, 300.0);

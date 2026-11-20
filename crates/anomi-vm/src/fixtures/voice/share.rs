@@ -1,6 +1,7 @@
-//! Samples of the share menu for tests and shots, after the fake Discord's
-//! data: task V10's. The menu's own states, and the Lounge's window with it
-//! open over the call controls' share button.
+//! Samples of the Go Live dialog and the stream's menus for tests and
+//! shots, after the fake Discord's data: task V10's, and the owner's
+//! screenshots of Discord's (`discord-golive-*.png`, `discord-own-stream-*`).
+//! The dialog's states, and the Lounge's window with it open over the call.
 
 use iced::{Point, Rectangle, Size};
 
@@ -9,21 +10,27 @@ use crate::fixtures::pictures;
 use crate::menu::Spot;
 use crate::shell::Layer;
 use crate::voice::controls::MENU_SHIFT;
-use crate::voice::share::{Live, Part, Resolution, Screen, Share, Sound};
+use crate::voice::share::{Live, Part, Resolution, Screen, Share, Tab};
 
 use super::super::shell;
 use super::controls;
 
-/// Where the system's dialog picks, and nothing is listed: sound and quality
-/// only, as `voice/share_menu.png` shows it.
+/// Where the system's dialog picks (Wayland's portal), as Discord's
+/// `discord-golive-1-apps.png` shows it: the two kinds to share, at 720p
+/// and 60 frames ("Custom"), with the system's sound.
 pub fn dialog() -> Share {
     Share {
         dialog: true,
+        source: None,
+        resolution: Resolution::P720,
+        fps: 60,
+        encoders: vec!["Auto".into(), "Radeon 610M".into(), "Processor".into()],
         ..Share::default()
     }
 }
 
-/// Two screens with their pictures, a few windows and a camera.
+/// Where Anomi lists what to share (X11, Windows): two screens with their
+/// pictures, a few windows, and a camera on the other tab.
 pub fn listed() -> Share {
     Share {
         screens: vec![
@@ -38,7 +45,6 @@ pub fn listed() -> Share {
         ],
         windows: vec!["Terminal".into(), "Browser".into(), "Notes".into()],
         cameras: vec!["Webcam".into()],
-        dialog: true,
         ..Share::default()
     }
 }
@@ -54,22 +60,29 @@ pub fn one_screen() -> Share {
     }
 }
 
-/// Windows whose application's sound alone can be shared, the list open.
-pub fn apps() -> Share {
-    Share {
-        windows: vec!["Terminal".into(), "Browser".into()],
-        sound_apps: vec!["Music".into(), "Video".into()],
-        apps_open: true,
-        sound: Sound::App(1),
-        ..Share::default()
-    }
+/// "Devices": a webcam and OBS's virtual camera, the webcam picked.
+pub fn devices() -> Share {
+    let mut share = Share {
+        cameras: vec!["Webcam".into(), "OBS Virtual Camera".into()],
+        ..dialog()
+    };
+    share.show(Tab::Devices);
+    share
 }
 
-/// The bitrate limits listed under their row, 6 Mbit/s chosen.
-pub fn bitrates() -> Share {
+/// "Devices" with no camera, as `discord-golive-4-devices-tab.png`.
+pub fn no_devices() -> Share {
+    let mut share = dialog();
+    share.show(Tab::Devices);
+    share
+}
+
+/// The bitrate limit at 6 Mbit/s and the higher quality on, for the gear's
+/// "Advanced".
+pub fn tuned() -> Share {
     Share {
         max_kbps: Some(6_000),
-        bitrates_open: true,
+        high_quality: true,
         ..dialog()
     }
 }
@@ -118,8 +131,8 @@ pub fn live_starting() -> Share {
     }
 }
 
-/// The Lounge's window with `share` open over the controls' share button, as
-/// the golden `voice/share_menu.png` has it.
+/// The Lounge's window with the stream's menu open over the controls'
+/// share button, as the golden `voice/share_menu.png` has it.
 pub fn window(share: Share) -> Vm {
     let mut vm = shell::open_at(
         controls::window(controls::joined()),
@@ -132,3 +145,12 @@ pub fn window(share: Share) -> Vm {
     vm.voice.share = share;
     vm
 }
+
+/// Where the gear sits in [`window`]'s dialog, at 1400 by 860: the
+/// dialog's bottom right, 24 px in (Discord's 958 by 596 card).
+pub const GEAR: Rectangle = Rectangle {
+    x: 1400.0 / 2.0 + 958.0 / 2.0 - 24.0 - 40.0,
+    y: 860.0 / 2.0 + 596.0 / 2.0 - 24.0 - 40.0,
+    width: 40.0,
+    height: 40.0,
+};

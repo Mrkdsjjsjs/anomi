@@ -1,8 +1,12 @@
 //! A participant's menu: `VolumeMenu` (`ui/voice.slint:1594`), the card over
 //! the context menu's rows with the person's name and their volumes, the
 //! voice's and, while they share their screen, the stream's. Task V11
-//! (docs/iced/tasks/voice.md). The rows under it are the window's menu
-//! (`vm.menu`); the shell draws both, this is the card alone.
+//! (docs/iced/tasks/voice.md). In a Discord call, Anomi's own sliders follow
+//! while each is on: how much of their noise is taken out, and how far
+//! they're turned down while only this account's echo comes from them. A
+//! watched stream's card, over the menu of its tile, has the stream's
+//! volume alone, then the same two for its sound. The rows under it are the
+//! window's menu (`vm.menu`); the shell draws both, this is the card alone.
 
 use iced::border::Radius;
 use iced::widget::text::{Ellipsis, Wrapping};
@@ -12,7 +16,7 @@ use iced::{Border, Color, Length, Shadow, Vector};
 use anomi_theme::prelude::*;
 use anomi_theme::{catalog, metrics, typography};
 use anomi_vm::voice::participant_menu::{
-    Intent, MAXIMUM, NAME_HEIGHT, PADDING, ParticipantMenu, SPACING,
+    DEPTH, Intent, MAXIMUM, NAME_HEIGHT, PADDING, ParticipantMenu, SPACING, STRENGTH,
 };
 use anomi_widgets::slider::{self, Volume};
 use yapfast_lang::tr;
@@ -36,9 +40,16 @@ pub fn view(menu: &ParticipantMenu, _motion: Motion) -> impl View<Intent> + '_ {
         .wrapping(Wrapping::None)
         .ellipsis(Ellipsis::End)
         .style(catalog::text::primary);
-    let mut content = column![name, volume(menu, false)].spacing(SPACING);
-    if menu.live {
+    // A stream's card: its volume alone.
+    let mut content = column![name, volume(menu, menu.stream)].spacing(SPACING);
+    if menu.live && !menu.stream {
         content = content.push(volume(menu, true));
+    }
+    if let Some(strength) = menu.noise_strength {
+        content = content.push(noise_strength(menu, strength));
+    }
+    if let Some(depth) = menu.echo_depth {
+        content = content.push(echo_depth(menu, depth));
     }
     let joined = menu.joined;
     container(content.padding(PADDING))
@@ -64,6 +75,37 @@ fn volume(menu: &ParticipantMenu, stream: bool) -> Element<'_, Intent> {
         Volume::up_to(label, value, MAXIMUM),
         move |volume| say(&menu.person, volume, false),
         move |volume| say(&menu.person, volume, true),
+    )
+}
+
+/// How much of their noise the suppressor chosen takes out, from none to
+/// all it's let to.
+fn noise_strength(menu: &ParticipantMenu, strength: i32) -> Element<'_, Intent> {
+    let say = move |strength, last| Intent::NoiseStrength {
+        person: menu.person.clone(),
+        strength,
+        last,
+    };
+    slider::volume(
+        Volume::up_to(tr!("Noise suppression strength"), strength, STRENGTH).step(10),
+        move |strength| say(strength, false),
+        move |strength| say(strength, true),
+    )
+}
+
+/// How far they're turned down while only our echo comes from them, in dB.
+fn echo_depth(menu: &ParticipantMenu, depth: i32) -> Element<'_, Intent> {
+    let say = move |depth, last| Intent::EchoDepth {
+        person: menu.person.clone(),
+        depth,
+        last,
+    };
+    slider::volume(
+        Volume::up_to(tr!("Echo removal strength"), depth, DEPTH)
+            .shown(tr!("{} dB", depth))
+            .step(5),
+        move |depth| say(depth, false),
+        move |depth| say(depth, true),
     )
 }
 
@@ -122,6 +164,20 @@ pub fn shots() -> Vec<crate::shots::Shot> {
             size: GOLDEN,
             theme: "bonfire",
             vm: fixture::cleaning,
+        },
+        Shot {
+            area: "voice",
+            name: "participant_menu_their_noise",
+            size: GOLDEN,
+            theme: "bonfire",
+            vm: fixture::their_noise,
+        },
+        Shot {
+            area: "voice",
+            name: "stream_menu",
+            size: GOLDEN,
+            theme: "bonfire",
+            vm: fixture::stream,
         },
     ]
 }

@@ -1,8 +1,9 @@
 //! What a tile says over its picture, 10 px in from its edges: at its top
 //! left "Starting camera..." while this account's camera is on its way
-//! (`ui/voice.slint:1094`), at its top right the pill offering a stream
-//! that a click watches (`:1100`), and at its bottom left its chip
-//! (`TileChip`, `:819`).
+//! (`ui/voice.slint:1094`), and at its bottom left its chip (`TileChip`,
+//! `:819`). The pill offering a stream that a click watches (`:1100`) is in
+//! the middle of the stream's own tile (`fill`), whose top right has its
+//! LIVE badge (`controls`).
 
 use iced::widget::{Row, Space, column, container, text};
 use iced::{Background, Border, Color, Fill, Padding};
@@ -10,7 +11,7 @@ use yapfast_lang::{text_in, tr};
 
 use anomi_theme::prelude::*;
 use anomi_theme::typography;
-use anomi_vm::voice::tiles::{Fill as Filling, Intent, Tile};
+use anomi_vm::voice::tiles::{Intent, Tile};
 
 use super::pulse::pulse;
 use super::{INSET, PILL, PILL_SIDE, PILL_TEXT, SCRIM, chip};
@@ -21,9 +22,6 @@ pub fn view(tile: &Tile, motion: Motion) -> Element<'_, Intent> {
         top = top.push(starting_pill(motion));
     }
     top = top.push(Space::new().width(Fill).boxed());
-    if tile.watch && !matches!(tile.fill, Filling::Offer { .. }) {
-        top = top.push(watch_pill());
-    }
     column![top, Space::new().height(Fill), chip::view(&tile.chip)]
         .padding(INSET)
         .width(Fill)

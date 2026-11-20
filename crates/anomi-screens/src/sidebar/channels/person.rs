@@ -4,21 +4,27 @@
 //! voice channel (`PersonTouch`, `:799`, through the list). This account in
 //! the call on another client is half as strong until pointed at, without
 //! its marks, and says so in a tooltip. In this account's own call each
-//! shows whether they speak and are connected yet (`:1553`).
+//! shows whether they speak and are connected yet (`:1553`). As in
+//! Discord's client, the game they play shows at the end of the row while
+//! they don't stream, and the pointer resting on the row of one who plays
+//! or streams shows their card beside it (`hover`).
 
 use iced::widget::{Row, container, svg, text};
 use iced::{Alignment, Fill, Padding};
 
 use anomi_theme::prelude::*;
 use anomi_theme::{metrics, typography};
+use anomi_vm::kind::Expected;
 use anomi_vm::menu::Spot;
 use anomi_vm::sidebar::channels::{Channels, Intent, VoicePerson};
 use anomi_widgets::avatar::portrait;
 use anomi_widgets::icon::{Icon, icon};
+use anomi_widgets::picture::{Fit, picture};
 use anomi_widgets::tip::{Side, tip};
 use yapfast_lang::tr;
 
 use super::card::muted;
+use super::hover;
 use super::items::{self, Room};
 use super::live::live;
 use super::pointed::{Fill as Ground, Ink, Look, pointed};
@@ -34,6 +40,10 @@ const NAME: f32 = 15.0;
 const MARK: f32 = 16.0;
 /// This account on another client at rest (`:1497`).
 const ELSEWHERE: f32 = 0.5;
+/// The game's picture at the end of the row: 16 px with 4 px corners, as
+/// Discord's client draws a voice user's activity.
+const GAME: f32 = 16.0;
+const GAME_RADIUS: f32 = 4.0;
 
 pub fn view<'a>(
     channels: &'a Channels,
@@ -56,7 +66,29 @@ pub fn view<'a>(
     };
     let channel = row_vm.id.as_str();
     let user = person.user.as_str();
-    let mut row = pointed(body(channel, person, in_call), items::PERSON, look, motion);
+    let mut row = pointed(
+        body(channel, person, in_call, motion),
+        items::PERSON,
+        look,
+        motion,
+    );
+    // Their card, asked for once the pointer rests on the row and shown
+    // while the app gives it; each intent is made only as it's sent.
+    if person.has_card() {
+        row = row.holding(
+            move || Intent::Hover {
+                channel: channel.to_owned(),
+                user: user.to_owned(),
+            },
+            move || Intent::Unhover {
+                channel: channel.to_owned(),
+                user: user.to_owned(),
+            },
+        );
+        if let Some(card) = (channels.hover.as_deref()).filter(|card| card.beside(channel, user)) {
+            row = row.card(hover::view(card, motion));
+        }
+    }
     // Someone without a user id opens neither (`open-voice-menu`,
     // `ui/yapfast.slint:1612`).
     if !user.is_empty() {
@@ -89,7 +121,12 @@ pub fn view<'a>(
 }
 
 /// Their avatar, name and marks.
-fn body<'a>(channel: &'a str, person: &'a VoicePerson, in_call: bool) -> Element<'a, Intent> {
+fn body<'a>(
+    channel: &'a str,
+    person: &'a VoicePerson,
+    in_call: bool,
+    motion: Motion,
+) -> Element<'a, Intent> {
     let speaking = in_call && person.speaking;
     let connected = !in_call || person.connected;
     let name = text(person.name.as_str())
@@ -132,6 +169,16 @@ fn body<'a>(channel: &'a str, person: &'a VoicePerson, in_call: bool) -> Element
             person: person.id.clone(),
         });
         parts = parts.push(live(watch));
+    } else if let Some(Expected::Ready(game)) = &person.game
+        && marked
+    {
+        // Their LIVE tag stands for what they play while they stream.
+        let game = picture(game.clone())
+            .side(GAME)
+            .radius(GAME_RADIUS)
+            .fit(Fit::Cover)
+            .motion(motion);
+        parts = parts.push(game.boxed());
     }
     if (person.muted || person.deafened) && marked {
         parts = parts.push(mark(Icon::MicOff, person.server_muted));

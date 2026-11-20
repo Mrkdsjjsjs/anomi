@@ -1,9 +1,10 @@
 //! The grid's shots: the window with the call's stage open, named after the
-//! golden screenshots where one matches. `dmcall/connected_discord_dm.png`
-//! is the same call with Discord's DM open, which shows no stage (V01's
-//! dock and N03's list draw it); its stage is Bob's DM's,
-//! `dmcall/connected_bob_dm.png`, here as `call_bob_dm` beside V01's shot
-//! of that name.
+//! golden screenshots where one matches; a stream is a tile of its own
+//! there, as in Discord's call (`discord-stage-stream-own-tile.png`).
+//! `dmcall/connected_discord_dm.png` is the same call with Discord's DM
+//! open, which shows no stage (V01's dock and N03's list draw it); its
+//! stage is Bob's DM's, `dmcall/connected_bob_dm.png`, here as
+//! `call_bob_dm` beside V01's shot of that name.
 
 use anomi_vm::fixtures::voice::stage as fixtures;
 use anomi_vm::fixtures::{GOLDEN, SMALL, Shot};
@@ -44,6 +45,10 @@ pub fn shots() -> Vec<Shot> {
             fixtures::window(fixtures::others_hidden())
         }),
         bonfire("voice", "stage_sharing", fixtures::sharing_window),
+        // A stream is a tile of its own: Bob's beside his camera in the
+        // grid, and this account's large over its stand-in and the others.
+        bonfire("voice", "stream_beside_camera", fixtures::streamer_window),
+        bonfire("voice", "own_stream_large", fixtures::sharing_large_window),
         bonfire("voice", "stage_ten", || fixtures::window(fixtures::ten())),
         bonfire("voice", "stage_alone", fixtures::alone_window),
         bonfire("dmcall", "call_watching", || {

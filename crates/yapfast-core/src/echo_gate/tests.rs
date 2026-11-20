@@ -34,6 +34,29 @@ fn turns_our_echo_down_150_300_and_600_ms_late() {
     }
 }
 
+/// What we sent, measured once and carried as a watching worker's input
+/// carries it, then heard as that worker hears a stream, gates them as the
+/// call's own gate does.
+#[test]
+fn measured_once_and_carried_elsewhere_it_gates_alike() {
+    let ours = speech(OURS, 12.0, 120.0, -22.0);
+    let heard = mixed(&echo(&ours, |_| 300.0, -12.0), &noise(ours.len(), -65.0));
+    let mut gate = EchoGate::new();
+    let here = run(&mut gate, &ours, &heard);
+    let (mut measure, mut far) = (Measure::new(), EchoGate::new());
+    let mut there = heard.clone();
+    for (tick, theirs) in there.chunks_exact_mut(FRAME).enumerate() {
+        let said = ours.get(tick * FRAME..(tick + 1) * FRAME);
+        let said = said.filter(|frame| frame.iter().any(|sample| *sample != 0.0));
+        let line = serde_json::to_string(&measure.ours(said)).unwrap();
+        far.take(serde_json::from_str(&line).unwrap());
+        far.heard_unpaced(theirs);
+    }
+    assert!(here == there, "it gated otherwise");
+    assert_eq!(found_ms(&far), found_ms(&gate));
+    assert_eq!(Measure::new().ours(None), Ours::NOTHING);
+}
+
 #[test]
 fn lets_them_through_when_they_talk_over_our_echo() {
     let ours = speech(OURS, 20.0, 120.0, -22.0);
@@ -146,11 +169,55 @@ fn does_nothing_in_silence_or_without_us() {
 
 #[test]
 fn turns_down_over_60_ms_and_back_up_over_5() {
-    let gate = EchoGate::new();
+    let mut gate = EchoGate::new();
+    assert!((gate.fall.powf(FALL) - gate.ducked).abs() < 1e-3);
+    assert!((gate.ducked * gate.rise.powf(RISE) - 1.0).abs() < 1e-3);
+    // At any depth.
+    gate.set_depth(35.0);
+    assert!((gate.ducked - amplitude(-35.0)).abs() < 1e-6);
     assert!((gate.fall.powf(FALL) - gate.ducked).abs() < 1e-3);
     assert!((gate.ducked * gate.rise.powf(RISE) - 1.0).abs() < 1e-3);
     assert_eq!(AROUND[0].0, -(SOONER as isize));
     assert_eq!(AROUND[AROUND.len() - 1].0, LATER as isize);
+}
+
+/// The depth chosen in the card: 20 dB is the gate as it always was, a
+/// shallower one turns our echo down less, and none leaves them as they
+/// come while the gate still finds our echo.
+#[test]
+fn turns_our_echo_down_as_deep_as_chosen() {
+    let ours = speech(OURS, 20.0, 120.0, -22.0);
+    let heard = mixed(&echo(&ours, |_| 300.0, -12.0), &noise(ours.len(), -65.0));
+    let mut always = EchoGate::new();
+    let as_always = run(&mut always, &ours, &heard);
+    let mut twenty = EchoGate::new();
+    twenty.set_depth(20.0);
+    let at_twenty = run(&mut twenty, &ours, &heard);
+    assert!(at_twenty == as_always, "20 dB is the depth it had");
+    let mut ten = EchoGate::new();
+    ten.set_depth(10.0);
+    let at_ten = run(&mut ten, &ours, &heard);
+    let (down_ten, down_twenty) = (
+        change(&heard, &at_ten, 8.0, 20.0),
+        change(&heard, &at_twenty, 8.0, 20.0),
+    );
+    assert!(
+        down_ten < -4.0 && down_ten > down_twenty + 2.0,
+        "10 dB took our echo {down_ten:.1} dB down, 20 dB {down_twenty:.1}"
+    );
+    // The deepest the card's slider goes takes out more than 20 dB does.
+    let mut forty = EchoGate::new();
+    forty.set_depth(40.0);
+    let down_forty = change(&heard, &run(&mut forty, &ours, &heard), 8.0, 20.0);
+    assert!(
+        down_forty < down_twenty - 4.0,
+        "40 dB took our echo {down_forty:.1} dB down, 20 dB {down_twenty:.1}"
+    );
+    let mut none = EchoGate::new();
+    none.set_depth(0.0);
+    let out = run(&mut none, &ours, &heard);
+    assert!(none.delay().is_some(), "it still finds our echo");
+    assert!(out == heard, "and turns nothing down");
 }
 
 #[cfg(feature = "discord")]

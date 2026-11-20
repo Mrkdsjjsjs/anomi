@@ -547,6 +547,85 @@ pub struct VoicePerson {
     /// This account, in the call on another client, as Discord shows it:
     /// dimmed, without its icons.
     pub elsewhere: bool,
+    /// What they're doing, as far as their presence is known: the channel
+    /// list marks the game they play on their row, and its card shows it.
+    pub activities: Activities,
+}
+
+/// The game someone plays, as a voice channel's row marks it and their card
+/// shows it: Discord's "Playing" activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceGame<'a> {
+    pub name: &'a str,
+    /// The address of its picture: the activity's own, else its
+    /// application's icon (`discord-app-icon:`).
+    pub icon: Option<&'a str>,
+    /// When they started, in Unix milliseconds.
+    pub start: Option<u64>,
+    /// The application Discord knows the game by, which says where it's
+    /// sold ([`DiscordCommand::GameStore`]).
+    pub application: Option<&'a str>,
+}
+
+impl VoicePerson {
+    /// The game they play, the first among their activities.
+    #[cfg(feature = "discord")]
+    pub fn playing(&self) -> Option<VoiceGame<'_>> {
+        let game =
+            (self.activities.iter()).find(|activity| activity.kind == ActivityKind::Playing)?;
+        Some(VoiceGame {
+            name: &game.name,
+            icon: game.large_image.as_deref(),
+            start: game.start,
+            application: game.application_id.as_deref(),
+        })
+    }
+
+    /// Only Discord says what people play.
+    #[cfg(not(feature = "discord"))]
+    pub fn playing(&self) -> Option<VoiceGame<'_>> {
+        None
+    }
+}
+
+/// A store whose page a game's card links to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Store {
+    Steam,
+    Xbox,
+    Microsoft,
+}
+
+/// Where a game is sold: its store, and its page there.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StorePage {
+    pub store: Store,
+    pub url: String,
+}
+
+impl StorePage {
+    /// The page of the game with `id` at the store Discord's list of games
+    /// names by `distributor`; none for a store whose page an id doesn't
+    /// name, or an id that isn't plain.
+    pub fn of(distributor: &str, id: &str) -> Option<Self> {
+        let plain = !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric());
+        let (store, url) = match distributor {
+            "steam" if plain => (
+                Store::Steam,
+                format!("https://store.steampowered.com/app/{id}/"),
+            ),
+            "xbox" if plain => (
+                Store::Xbox,
+                format!("https://www.xbox.com/games/store/-/{id}"),
+            ),
+            "microsoft" if plain => (
+                Store::Microsoft,
+                format!("https://apps.microsoft.com/detail/{id}"),
+            ),
+            _ => return None,
+        };
+        Some(Self { store, url })
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
@@ -2949,6 +3028,11 @@ pub enum DiscordCommand {
         room: String,
         user: String,
     },
+    /// Where the game Discord knows by this application id is sold, from
+    /// its list of games; [`Event::GameStore`] follows.
+    GameStore {
+        application: String,
+    },
     /// Send a Discord user a friend request or accept theirs, or with
     /// `add` false, ignore theirs or cancel this account's.
     Friend {
@@ -4735,6 +4819,12 @@ pub enum Event {
         room: String,
         user: String,
         picture: Option<Arc<Picture>>,
+    },
+    /// Where [`DiscordCommand::GameStore`]'s game is sold; none when it's
+    /// sold nowhere a page can be named, or there's no list of games yet.
+    GameStore {
+        application: String,
+        page: Option<StorePage>,
     },
     Connected {
         user: String,

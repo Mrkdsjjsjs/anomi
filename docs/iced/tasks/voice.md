@@ -27,7 +27,7 @@ soundboard. Screens in `anomi-voice/src/<area>/`, view-models in
 - **Done when:** avatar tiles, the speaking ring, mute and deafen marks, camera and stream frames as handles without a copy per frame, the stream preview with "Watch". I18.
 
 ### V04 · The participant grid (Opus · L)
-- **Owns:** `anomi-voice/src/stage/`, `anomi-vm/src/voice/stage.rs`.
+- **Owns:** `anomi-voice/src/stage/`, `anomi-vm/src/voice/stage.rs`, `anomi-vm/src/fixtures/voice/stage/`.
 - **After:** V03.
 - **Ports:** `ParticipantGrid` (`ui/voice.slint:857`); `src/ui/refresh.rs:4541` (`show_stage`); `src/ui/tiles.rs` (visible tiles and their sizes back to the core); `src/ui/alone.rs`; `src/ui/callbacks.rs:3759`, `:3789`.
 - **Shots:** `voice/stage.png`, `voice/watching_stream.png`, `dmcall/connected_discord_dm.png`, `small/voice_stage.png`, `light/voice_stage.png`.
@@ -73,7 +73,7 @@ soundboard. Screens in `anomi-voice/src/<area>/`, view-models in
 - **After:** F06, F05.
 - **Ports:** `ShareMenu`, `ScreenCard` (`ui/voice.slint:1414`, `:1359`); `src/ui/callbacks.rs:3108`-`:3302`.
 - **Shots:** `voice/share_menu.png`.
-- **Done when:** sound, resolution, frame rate and encoder choices, the source cards, Go Live. I18. While live, the share buttons (the dock's, the call bar's) and the gears on "Your screen" and on this account's stream's tile open the stream's own menu, as Discord's: "Stream Quality" (its submenu: FRAME RATE 15/30/60, RESOLUTION 720p/1080p/Source with radio marks, then the encoding), "Sound" (all applications or none), "Change Windows" (the sources to switch to; the system's dialog at once where only it picks), "Stop Streaming"; a choice applies at once and the menu stays open; the keys as the device menus'.
+- **Done when:** sound, resolution, frame rate and encoder choices, the source cards, Go Live. I18. While live, the share buttons (the dock's, the call bar's) and the gears on "Your screen" and on this account's stream's tile open the stream's own menu, as Discord's: "Stream Quality" (its submenu: FRAME RATE 15/30/60, RESOLUTION 720p/1080p/1440p/Source with radio marks, then the encoding), "Sound" (all applications or none), "Change Windows" (the sources to switch to; the system's dialog at once where only it picks), "Stop Streaming"; a choice applies at once and the menu stays open; the keys as the device menus'.
 
 ### V11 · A participant's menu (Sonnet · S)
 - **Owns:** `anomi-voice/src/participant_menu.rs`, `anomi-vm/src/voice/participant_menu.rs`.

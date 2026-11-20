@@ -70,6 +70,19 @@ pub async fn download_list() -> Result<()> {
     Ok(())
 }
 
+/// Where the game Discord knows by `application` is sold, as the list
+/// detection keeps names it: a store's distributor (`steam`, `xbox`,
+/// `microsoft`) and the game's id there; Steam's first. None for a game the
+/// list sells nowhere, or before there's a list. It reads the list from the
+/// disk, so it's called off the window's and the runtime's threads.
+pub fn store_sku(application: &str) -> Option<(String, String)> {
+    let path = cache_path()?;
+    catalog::store_sku(&path, application).unwrap_or_else(|error| {
+        tracing::debug!(%error, "no game list to find a store in");
+        None
+    })
+}
+
 /// The address of the icon of the game Discord knows by `id`, which the
 /// pictures' download asks Discord for once (`activity::application_icon`).
 pub fn icon_address(id: u64) -> String {

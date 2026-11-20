@@ -69,6 +69,27 @@ static void set_rate(AVCodecContext *codec, unsigned kbps) {
   codec->rc_buffer_size = (int)(kbps * 500);
 }
 
+/* The lowest H264 level from 4.2 up (its level_idc, 51 for 5.1) whose
+ * frame size and macroblock rate (H.264's table A-1) take `width` by
+ * `height` at `fps`: 4.2 for 1080p60, 5.1 for 1440p60, 5.2 for 4K60. AMF
+ * holds H264 to 4.2 unless told, and 1440p's 14400 macroblocks are past its
+ * 8704; NVENC, VA-API and x264 choose a level by the size and rate
+ * themselves, and every encoder does for H265, whose level 5 takes 1440p60. */
+static int h264_level(unsigned width, unsigned height, unsigned fps) {
+  static const struct {
+    int idc;
+    unsigned long frame, second;
+  } LEVELS[] = {
+      {42, 8704, 522240},     {50, 22080, 589824},    {51, 36864, 983040},
+      {52, 36864, 2073600},   {60, 139264, 4177920},  {61, 139264, 8355840},
+  };
+  unsigned long blocks = (unsigned long)((width + 15) / 16) * ((height + 15) / 16);
+  for (size_t at = 0; at < sizeof LEVELS / sizeof *LEVELS; at++) {
+    if (blocks <= LEVELS[at].frame && blocks * fps <= LEVELS[at].second) return LEVELS[at].idc;
+  }
+  return 62;
+}
+
 static void close_encoder(struct yapfast_hwenc *h) {
   avcodec_free_context(&h->codec);
   av_frame_free(&h->surface);
@@ -156,6 +177,7 @@ static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va
     if (codec_id == CODEC_HEVC) av_opt_set(options, "header_insertion_mode", "idr", 0);
     if (codec_id == CODEC_H264) {
       av_opt_set(options, "profile", "main", 0);
+      av_opt_set_int(options, "level", h264_level(width, height, fps), 0);
       av_opt_set_int(options, "bf", 0, 0);
       av_opt_set_int(options, "header_spacing", codec->gop_size, 0);
     }

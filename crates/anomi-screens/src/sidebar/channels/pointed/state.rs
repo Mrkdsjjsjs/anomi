@@ -33,11 +33,23 @@ pub(super) struct State {
     pub turn: Animation<bool>,
     /// The card growing in, as `PopupEntry` has it.
     pub card: Popup,
+    /// A card that takes the pointer (`Pointed::holding`): since when the
+    /// pointer rests on the row, whether the card was asked for and not let
+    /// go yet, whether the pointer is on it as its overlay sees it, since
+    /// when the pointer left the row and the card, and whether the card was
+    /// given as the row was last built.
+    pub rest: Option<Instant>,
+    pub told: bool,
+    pub on_card: bool,
+    pub left: Option<Instant>,
+    pub carded: bool,
     faded: RefCell<Option<(Theme, f32, Theme)>>,
 }
 
 impl State {
-    pub fn new(folded: bool) -> Self {
+    /// A row's state; `carded`, a card that takes the pointer given as it's
+    /// made, which shows whole at once.
+    pub fn new(folded: bool, carded: bool) -> Self {
         Self {
             hovered: false,
             pressed: false,
@@ -49,24 +61,36 @@ impl State {
             now: Instant::now(),
             lit: Animation::new(false),
             turn: Animation::new(folded),
-            card: Popup::closed(Pace::Popover),
+            card: if carded {
+                Popup::open(Pace::Popover)
+            } else {
+                Popup::closed(Pace::Popover)
+            },
+            rest: None,
+            told: false,
+            on_card: false,
+            left: None,
+            carded,
             faded: RefCell::new(None),
         }
     }
 
     /// The pointer came or went: the card enters or goes at once, and a
-    /// card hidden by a click shows again on the next visit.
-    pub fn point(&mut self, over: bool, motion: Motion, now: Instant) {
+    /// card hidden by a click shows again on the next visit. A card that
+    /// takes the pointer comes and goes as it's given instead (`holding`).
+    pub fn point(&mut self, over: bool, holding: bool, motion: Motion, now: Instant) {
         self.hovered = over;
         if !over {
             self.dismissed = false;
             self.pressed = false;
         }
-        self.card = if over {
-            Popup::entering(Pace::Popover, motion, now)
-        } else {
-            Popup::closed(Pace::Popover)
-        };
+        if !holding {
+            self.card = if over {
+                Popup::entering(Pace::Popover, motion, now)
+            } else {
+                Popup::closed(Pace::Popover)
+            };
+        }
         self.advance(now, None, motion);
     }
 

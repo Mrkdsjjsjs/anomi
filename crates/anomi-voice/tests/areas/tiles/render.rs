@@ -34,12 +34,14 @@ struct Golden {
     pointer: Option<Point>,
 }
 
-/// Four in two rows of 420 by 236.25, 12 apart.
+/// Five, three over two, 317.33 by 178.5, 12 apart: Bob's stream right
+/// before his own tile.
 const GRID: &[(f32, f32, f32, f32)] = &[
-    (462.0, 190.0, 420.0, 236.25),
-    (894.0, 190.0, 420.0, 236.25),
-    (462.0, 438.25, 420.0, 236.25),
-    (894.0, 438.25, 420.0, 236.25),
+    (400.0, 248.25, 317.33, 178.5),
+    (729.33, 248.25, 317.33, 178.5),
+    (1058.67, 248.25, 317.33, 178.5),
+    (564.67, 438.75, 317.33, 178.5),
+    (894.0, 438.75, 317.33, 178.5),
 ];
 /// Three in a row: in Latte, Bob gone.
 const THREE: &[(f32, f32, f32, f32)] = &[
@@ -47,21 +49,17 @@ const THREE: &[(f32, f32, f32, f32)] = &[
     (894.0, 190.0, 420.0, 236.25),
     (678.0, 438.25, 420.0, 236.25),
 ];
-/// The large one, and the rest 192 by 108 beneath it.
-const LARGE: (f32, f32, f32, f32) = (420.0, 109.0, 936.0, 526.5);
+/// Bob's stream large, and the rest 185.6 by 104.4 beneath it, its
+/// stand-in (the grid's, not drawn here) second among them.
+const LARGE: (f32, f32, f32, f32) = (416.8, 109.5, 942.4, 530.1);
 const WATCHING: &[(f32, f32, f32, f32)] = &[
-    (588.0, 647.5, 192.0, 108.0),
+    (400.0, 651.6, 185.6, 104.4),
     LARGE,
-    (792.0, 647.5, 192.0, 108.0),
-    (996.0, 647.5, 192.0, 108.0),
+    (795.2, 651.6, 185.6, 104.4),
+    (992.8, 651.6, 185.6, 104.4),
+    (1190.4, 651.6, 185.6, 104.4),
 ];
-const CAMERA: &[(f32, f32, f32, f32)] = &[
-    LARGE,
-    (486.0, 647.5, 192.0, 108.0),
-    (690.0, 647.5, 192.0, 108.0),
-    (894.0, 647.5, 192.0, 108.0),
-    (1098.0, 647.5, 192.0, 108.0),
-];
+const CAMERA: &[(f32, f32, f32, f32)] = WATCHING;
 
 /// Three rows of three, 420 by 236.25, 12 apart.
 const SHEET: &[(f32, f32, f32, f32)] = &[
@@ -80,7 +78,7 @@ const SHEET: &[(f32, f32, f32, f32)] = &[
 /// without and with its preview, your camera starting, Erin joining,
 /// Carol's connection lost, and Bob's stream full screen.
 fn states() -> Vec<Tile> {
-    let mut full = samples::with_camera().swap_remove(0);
+    let mut full = samples::with_camera().swap_remove(1);
     full.full = true;
     let mut tiles = vec![
         samples::sharing(),

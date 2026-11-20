@@ -460,9 +460,16 @@ games with this client open. Concretely:
   joins builds that tile's view-model alone. The previews of streams not
   watched are asked for again every five minutes, as their streamers'
   clients upload them, only while their tiles are in sight in front
-  (`intent/voice/previews.rs`): one wait for the next due, none behind
-  another window or in the tray, and one ask on coming back for those that
-  fell due meanwhile.
+  (`intent/voice/previews.rs`), or a streamer's card shows beside their row
+  in the channel list: one wait for the next due, none behind another window
+  or in the tray, and one ask on coming back for those that fell due
+  meanwhile.
+- The card beside someone's row under a voice channel
+  (`intent/sidebar/hover.rs`): the row waits once, 300 ms, for the pointer
+  to rest, and once, 200 ms, after it left the row and the card; the app
+  builds the card only while it shows, and its time played is an
+  `anomi_widgets::clock` that asks a frame at each whole second in front.
+  The window going behind another takes it away.
 - Settings' Voice & video (`anomi-app/src/intent/settings/{gate,camera}.rs`):
   the voice gate's meter, the microphone test and the camera test run only
   while the page shows in front; the gate's level is a `kind::Level` its

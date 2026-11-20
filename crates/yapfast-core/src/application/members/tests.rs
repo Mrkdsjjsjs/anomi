@@ -550,6 +550,7 @@ fn in_a_dm_call_someone_elses_voice_can_be_cleaned_and_nothing_more() {
         streaming: false,
         video: false,
         elsewhere: false,
+        activities: Default::default(),
     };
     let mut app = Application::default();
     app.apply(Event::Discord(Arc::new(Snapshot {

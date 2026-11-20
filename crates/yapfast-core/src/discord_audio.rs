@@ -24,8 +24,10 @@ use yapfast_discord::voice::{CHANNELS, FRAME, Listener, Microphone, SAMPLE_RATE,
 
 use crate::{
     audio_io::{LastingInput, LastingOutput},
-    echo_gate::EchoGate,
-    noise::{Denoiser, Rnnoise, Sent},
+    echo_gate::{EchoGate, Measure},
+    noise::{Denoiser, Rnnoise, Sent, Suppressor},
+    stream_worker::EchoFeed,
+    their_noise::{Strong, Theirs},
     volume::Cleaning,
 };
 
@@ -113,6 +115,13 @@ impl Hearing {
         });
     }
 
+    /// Hands what the call sends, tick by tick, to the echo gate of the
+    /// stream watched, in its worker, while its sound takes this account's
+    /// echo out; none stops it. A feed whose worker went stops by itself.
+    pub fn set_stream_echo(&self, feed: Option<EchoFeed>) {
+        lock(&self.people).stream_echo = feed;
+    }
+
     /// The Discord users heard speaking just now.
     pub fn speaking(&self) -> Vec<u64> {
         let now = Instant::now();
@@ -129,9 +138,12 @@ impl Listener for Hearing {
         let output = lock(&self.output);
         let mut people = lock(&self.people);
         people.next_tick();
-        // Nothing is cleaned that wouldn't play.
+        // Nothing is cleaned that wouldn't play, and DeepFilterNet's thread
+        // goes meanwhile.
         if !deafened && output.is_some() {
             people.clean(voices);
+        } else {
+            people.rest();
         }
         let people = &*people;
         {
@@ -204,13 +216,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Ticks of the call in a second.
 const TICKS_PER_SECOND: u64 = 50;
 /// People cleaned at once at most: eight talking together cost about 3% of
-/// a core on the call's thread. Anyone more plays as they come.
-const CLEANED_AT_ONCE: usize = 8;
-/// How far RNNoise turns someone's noise down, in dB, as Medium does the
-/// microphone's: what it mixes back of their voice keeps the ends of words.
-const THEIR_NOISE_LIMIT: f32 = 30.0;
+/// a core on the call's thread with RNNoise, and with DeepFilterNet about
+/// 22% of one more. Anyone more plays as they come.
+pub(crate) const CLEANED_AT_ONCE: usize = 8;
 /// Someone cleaned who's been silent this long has their denoiser freed,
-/// as the call forgets a speaker after 10 s.
+/// RNNoise or their copy of DeepFilterNet, as the call forgets a speaker
+/// after 10 s; DeepFilterNet's thread goes once none of those it's on for
+/// has spoken for as long.
 const DENOISER_AWAY: u64 = 10 * TICKS_PER_SECOND;
 /// Their echo gate keeps what it learned of their echo longer: they send
 /// only while their microphone hears something, our echo included, and
@@ -237,6 +249,18 @@ struct People {
     /// Someone more than [`CLEANED_AT_ONCE`] was left as they came; it's
     /// logged once.
     crowded: bool,
+    /// DeepFilterNet's thread for others' voices (`their_noise`), from the
+    /// first tick someone it's on for speaks; the last tick one did; and
+    /// whether its model wouldn't load in this call, RNNoise standing in
+    /// for good.
+    strong: Option<Strong>,
+    strong_used: u64,
+    strong_failed: bool,
+    /// Measures what the call sent once a tick for every echo gate, here
+    /// and in the watched stream's worker, made as the first is.
+    measure: Option<Measure>,
+    /// Where what the call sends goes to the watched stream's echo gate.
+    stream_echo: Option<EchoFeed>,
 }
 
 /// How someone plays: their own gain, before the speakers', and cleaning.
@@ -256,13 +280,19 @@ impl People {
             cleaned: HashMap::new(),
             tick: 0,
             crowded: false,
+            strong: None,
+            strong_used: 0,
+            strong_failed: false,
+            measure: None,
+            stream_echo: None,
         };
         people.copy();
         people
     }
 
-    /// Counts a tick, copies the choices if one changed, and once a second
-    /// frees what those away long enough held.
+    /// Counts a tick, copies the choices if one changed, takes what
+    /// DeepFilterNet's thread gave back, and once a second frees what those
+    /// away long enough held.
     fn next_tick(&mut self) {
         self.tick += 1;
         if self.changes.has_changed().unwrap_or(false) {
@@ -270,20 +300,32 @@ impl People {
             self.changes.mark_unchanged();
             self.copy();
         }
-        if self.tick.is_multiple_of(TICKS_PER_SECOND) && !self.cleaned.is_empty() {
-            let tick = self.tick;
-            self.cleaned.retain(|_, cleaned| {
-                let away = tick - cleaned.heard;
-                if away > DENOISER_AWAY {
-                    cleaned.denoiser = None;
+        self.take_strong();
+        if !self.tick.is_multiple_of(TICKS_PER_SECOND) {
+            return;
+        }
+        let tick = self.tick;
+        let strong = self.strong.as_ref();
+        self.cleaned.retain(|user, cleaned| {
+            let away = tick - cleaned.heard;
+            if away > DENOISER_AWAY {
+                cleaned.denoiser = None;
+                if cleaned.theirs.take().is_some()
+                    && let Some(strong) = strong
+                {
+                    strong.forget(*user);
                 }
-                away <= DENOISER_AWAY || (cleaned.gate.is_some() && away <= GATE_AWAY)
-            });
+            }
+            away <= DENOISER_AWAY || (cleaned.gate.is_some() && away <= GATE_AWAY)
+        });
+        if self.strong.is_some() && tick - self.strong_used > DENOISER_AWAY {
+            tracing::debug!("no one DeepFilterNet cleans has spoken for 10 s; its thread goes");
+            self.strong = None;
         }
     }
 
     /// Copies everyone's volume and cleaning as chosen, and lets go of the
-    /// cleaning turned off.
+    /// cleaning turned off: DeepFilterNet's thread once it's on for no one.
     fn copy(&mut self) {
         self.speakers = crate::volume::speakers();
         self.known.clear();
@@ -295,10 +337,22 @@ impl People {
             }
         });
         self.cleaning = self.known.values().any(|known| known.cleaning.any());
+        if !(self.known.values()).any(|known| by_deep_filter_net(known.cleaning)) {
+            self.strong = None;
+        }
         let known = &self.known;
+        let strong = self.strong.as_ref();
         self.cleaned.retain(|user, cleaned| {
             let cleaning = known.get(user).map(|known| known.cleaning);
-            cleaned.keep(cleaning.unwrap_or_default())
+            let had = cleaned.theirs.is_some();
+            let kept = cleaned.keep(cleaning.unwrap_or_default());
+            if had
+                && cleaned.theirs.is_none()
+                && let Some(strong) = strong
+            {
+                strong.forget(*user);
+            }
+            kept
         });
     }
 
@@ -321,6 +375,9 @@ impl People {
             if !known.cleaning.any() || known.gain * self.speakers == 0.0 {
                 continue;
             }
+            if by_deep_filter_net(known.cleaning) {
+                self.want_strong();
+            }
             let full = self.cleaned.len() >= CLEANED_AT_ONCE;
             let cleaned = match self.cleaned.entry(*user) {
                 Entry::Occupied(entry) => entry.into_mut(),
@@ -336,7 +393,69 @@ impl People {
                 }
                 Entry::Vacant(entry) => entry.insert(Cleaned::default()),
             };
-            cleaned.clean(known.cleaning, samples, self.tick);
+            let strong = self.strong.as_ref();
+            cleaned.clean(known.cleaning, samples, self.tick, *user, strong);
+        }
+    }
+
+    /// Someone DeepFilterNet is on for speaks: its thread starts, unless
+    /// it's going or its model wouldn't load in this call.
+    fn want_strong(&mut self) {
+        self.strong_used = self.tick;
+        if self.strong.as_ref().is_some_and(Strong::failed) {
+            tracing::warn!("DeepFilterNet isn't there for others' voices; RNNoise stands in");
+            self.strong = None;
+            self.strong_failed = true;
+        }
+        if self.strong.is_none() && !self.strong_failed {
+            self.strong = Strong::start();
+            self.strong_failed = self.strong.is_none();
+        }
+    }
+
+    /// While deafened, or with nowhere to play: DeepFilterNet's thread goes
+    /// at once, with its model and every copy, until someone it's on for
+    /// speaks again.
+    fn rest(&mut self) {
+        if self.strong.take().is_some() {
+            for cleaned in self.cleaned.values_mut() {
+                cleaned.theirs = None;
+            }
+        }
+    }
+
+    /// Hands what DeepFilterNet's thread gave back to whom it's of; what
+    /// came for someone no longer cleaned with it goes.
+    fn take_strong(&mut self) {
+        let Some(strong) = &self.strong else {
+            return;
+        };
+        while let Some(done) = strong.take() {
+            let theirs =
+                (self.cleaned.get_mut(&done.user)).and_then(|cleaned| cleaned.theirs.as_mut());
+            if let Some(theirs) = theirs {
+                theirs.came(done);
+            }
+        }
+    }
+
+    /// Waits until DeepFilterNet's thread has given back every 20 ms handed
+    /// to it, as a test needs to see each tick's.
+    #[cfg(test)]
+    fn settle(&mut self) {
+        let waiting = |people: &Self| {
+            (people.cleaned.values())
+                .filter_map(|cleaned| cleaned.theirs.as_ref())
+                .any(|theirs| theirs.waiting() > 0)
+        };
+        while waiting(self) {
+            let done = self.strong.as_ref().and_then(Strong::wait);
+            let done = done.expect("DeepFilterNet's thread gave back what it took");
+            let theirs =
+                (self.cleaned.get_mut(&done.user)).and_then(|cleaned| cleaned.theirs.as_mut());
+            if let Some(theirs) = theirs {
+                theirs.came(done);
+            }
         }
     }
 
@@ -350,48 +469,86 @@ impl People {
     }
 
     /// Hands what the call sent to every echo gate, whether its person
-    /// speaks or not: each keeps its own timeline of what we said.
+    /// speaks or not: each keeps its own timeline of what we said. It's
+    /// measured once for all of them, the watched stream's included, and
+    /// not at all while there's none.
     fn sent(&mut self, frame: Option<&[f32]>) {
+        let gates = (self.cleaned.values()).any(|cleaned| cleaned.gate.is_some());
+        if !gates && self.stream_echo.is_none() {
+            return;
+        }
+        let ours = self.measure.get_or_insert_with(Measure::new).ours(frame);
         for cleaned in self.cleaned.values_mut() {
             if let Some(gate) = &mut cleaned.gate {
-                gate.sent(frame);
+                gate.take(ours);
             }
+        }
+        let gone = (self.stream_echo.as_ref()).is_some_and(|feed| !feed.send(ours));
+        if gone {
+            self.stream_echo = None;
         }
     }
 }
 
+/// Whether DeepFilterNet takes out the noise of someone cleaned so.
+fn by_deep_filter_net(cleaning: Cleaning) -> bool {
+    cleaning.denoises() && cleaning.noise == Suppressor::DeepFilterNet
+}
+
 /// Someone's voice as it's cleaned, from the first tick they spoke with it
 /// on. Their denoiser comes when they speak and goes after
-/// [`DENOISER_AWAY`]; about 45 KB in all.
+/// [`DENOISER_AWAY`]: RNNoise, about 45 KB in all, or their side of
+/// DeepFilterNet's thread, 15 KB here and their copy of its model there.
 #[derive(Default)]
 struct Cleaned {
     denoiser: Option<Rnnoise>,
+    theirs: Option<Theirs>,
+    /// DeepFilterNet takes their noise out of what they say now, rather
+    /// than RNNoise: chosen as they start, so their voice doesn't jump by
+    /// the 40 ms between the two in the middle of a word.
+    strong: bool,
     gate: Option<EchoGate>,
     /// Their 20 ms in one channel as it's cleaned.
     mono: Vec<f32>,
     /// What the mix plays of them, interleaved stereo as it came.
     frame: Vec<i16>,
-    /// The tick they last spoke on.
+    /// The tick they last spoke on, and the one they started on after a
+    /// pause.
     heard: u64,
+    since: u64,
 }
 
 impl Cleaned {
     /// Keeps only what `cleaning` still asks for; whether anything is.
     fn keep(&mut self, cleaning: Cleaning) -> bool {
-        if !cleaning.noise {
+        if !cleaning.denoises() {
             self.denoiser = None;
         }
-        if !cleaning.own_echo {
+        if !by_deep_filter_net(cleaning) {
+            self.theirs = None;
+        }
+        if !cleaning.removes_echo() {
             self.gate = None;
         }
         cleaning.any()
     }
 
     /// Cleans their `samples` of tick `tick` into [`Self::frame`]: their
-    /// two channels in one, RNNoise on each 10 ms, and the echo gate.
-    fn clean(&mut self, cleaning: Cleaning, samples: &[i16], tick: u64) {
+    /// two channels in one, their noise taken out, the echo gate at its
+    /// depth.
+    fn clean(
+        &mut self,
+        cleaning: Cleaning,
+        samples: &[i16],
+        tick: u64,
+        user: u64,
+        strong: Option<&Strong>,
+    ) {
         let back = self.heard + 1 != tick;
         self.heard = tick;
+        if back {
+            self.since = tick;
+        }
         self.mono.resize(FRAME, 0.0);
         self.frame.resize(FRAME_SAMPLES, 0);
         let channels = usize::from(CHANNELS);
@@ -401,33 +558,57 @@ impl Cleaned {
             taken += 1;
         }
         self.mono[taken..].fill(0.0);
-        if cleaning.noise {
-            let fresh = self.denoiser.is_none();
-            let denoiser = self
-                .denoiser
-                .get_or_insert_with(|| Rnnoise::new(THEIR_NOISE_LIMIT));
-            // What it held of their last words would otherwise come first.
-            if back && !fresh {
-                denoiser.clear();
-            }
-            for block in self.mono.chunks_exact_mut(BLOCK) {
-                denoiser.block(block);
-            }
+        if cleaning.denoises() {
+            self.denoise(cleaning, back, user, strong);
         }
-        if cleaning.own_echo {
+        if cleaning.removes_echo() {
             // The gate hears them in full scale, as what the call sent.
             for value in &mut self.mono {
                 *value /= 32768.0;
             }
-            self.gate
-                .get_or_insert_with(EchoGate::new)
-                .heard(&mut self.mono);
+            let gate = self.gate.get_or_insert_with(EchoGate::new);
+            gate.set_depth(f32::from(cleaning.echo_depth));
+            gate.heard(&mut self.mono);
             for value in &mut self.mono {
                 *value *= 32768.0;
             }
         }
         for (sample, mono) in self.frame.chunks_exact_mut(channels).zip(&self.mono) {
             sample.fill(mono.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
+        }
+    }
+
+    /// Takes the noise out of [`Self::mono`] at the strength chosen:
+    /// DeepFilterNet on its thread when it's chosen and was ready as they
+    /// started, a tick later; else RNNoise, which also stands in while
+    /// DeepFilterNet loads.
+    fn denoise(&mut self, cleaning: Cleaning, back: bool, user: u64, strong: Option<&Strong>) {
+        let deep = cleaning.noise == Suppressor::DeepFilterNet;
+        if back {
+            self.strong = deep && strong.is_some_and(Strong::ready);
+        }
+        let chosen = deep && self.strong;
+        if let Some(strong) = strong.filter(|_| chosen) {
+            let limit = cleaning.noise_limit(Suppressor::DeepFilterNet);
+            let theirs = self.theirs.get_or_insert_with(Theirs::new);
+            if theirs.hand(strong, user, self.heard, self.since, limit, &mut self.mono) {
+                self.denoiser = None;
+                return;
+            }
+            // Its thread is gone: RNNoise from here on.
+            self.strong = false;
+            self.theirs = None;
+        }
+        let limit = cleaning.noise_limit(Suppressor::RNNoise);
+        let fresh = self.denoiser.is_none();
+        let denoiser = self.denoiser.get_or_insert_with(|| Rnnoise::new(limit));
+        denoiser.limit(limit);
+        // What it held of their last words would otherwise come first.
+        if back && !fresh {
+            denoiser.clear();
+        }
+        for block in self.mono.chunks_exact_mut(BLOCK) {
+            denoiser.block(block);
         }
     }
 }
@@ -2195,8 +2376,8 @@ mod tests {
     }
 
     const NOISE_ONLY: Cleaning = Cleaning {
-        noise: true,
-        own_echo: false,
+        noise: Suppressor::RNNoise,
+        ..Cleaning::NOTHING
     };
 
     /// 20 ms of hiss with a tone in it, the same in both channels, as a
@@ -2317,6 +2498,188 @@ mod tests {
         for user in &users {
             crate::volume::set_cleaning(&user.to_string(), Cleaning::default());
         }
+    }
+
+    /// Their tick in one channel, as the call cleans it: both averaged.
+    fn mono(frame: &[i16]) -> Vec<f32> {
+        (frame.chunks_exact(2))
+            .map(|pair| (f32::from(pair[0]) + f32::from(pair[1])) / 2.0)
+            .collect()
+    }
+
+    /// A tick in one channel back in both, as the mix plays it.
+    fn stereo(mono: &[f32]) -> Vec<i16> {
+        (mono.iter())
+            .flat_map(|value| {
+                let sample = value
+                    .round()
+                    .clamp(f32::from(i16::MIN), f32::from(i16::MAX))
+                    as i16;
+                [sample, sample]
+            })
+            .collect()
+    }
+
+    /// RNNoise at full strength cleans someone as it did before strengths
+    /// could be chosen, at 30 dB; at none, they play as they come.
+    #[test]
+    fn rnnoise_in_full_is_as_it_was_and_at_none_leaves_them_as_they_come() {
+        let user = 980_001u64;
+        crate::volume::set_cleaning("980001", NOISE_ONLY);
+        let mut people = People::new();
+        let mut before = Rnnoise::new(30.0);
+        let mut seed = 17;
+        for tick in 0..30 {
+            let frame = noisy_frame(tick, &mut seed);
+            people.next_tick();
+            people.clean(&[(user, &frame)]);
+            let mut expected = mono(&frame);
+            for block in expected.chunks_exact_mut(BLOCK) {
+                before.block(block);
+            }
+            let expected = stereo(&expected);
+            assert_eq!(people.cleaned(user), Some(&expected[..]), "tick {tick}");
+        }
+        let none = Cleaning {
+            noise_strength: 0,
+            ..NOISE_ONLY
+        };
+        crate::volume::set_cleaning("980001", none);
+        people.next_tick();
+        assert!(people.cleaned.is_empty(), "nothing done, nothing held");
+        let frame = noisy_frame(30, &mut seed);
+        people.clean(&[(user, &frame)]);
+        assert!(people.cleaned(user).is_none(), "played as they came");
+        // Half, their noise comes down less than in full.
+        let (mut full, mut half) = (Rnnoise::new(30.0), Rnnoise::new(15.0));
+        let (mut at_full, mut at_half) = (0.0, 0.0);
+        for tick in 0..100 {
+            let frame = mono(&noisy_frame(tick, &mut seed));
+            let (mut one, mut other) = (frame.clone(), frame);
+            for (one, other) in one
+                .chunks_exact_mut(BLOCK)
+                .zip(other.chunks_exact_mut(BLOCK))
+            {
+                full.block(one);
+                half.block(other);
+            }
+            if tick >= 50 {
+                at_full += one.iter().map(|value| value * value).sum::<f32>();
+                at_half += other.iter().map(|value| value * value).sum::<f32>();
+            }
+        }
+        assert!(at_half > at_full, "{at_half} against {at_full}");
+        crate::volume::set_cleaning("980001", Cleaning::NOTHING);
+    }
+
+    /// Our echo taken out of someone gets them an echo gate, 20 dB deep
+    /// unless chosen (`echo_gate`'s tests compare depths); at no depth they
+    /// play as they come.
+    #[test]
+    fn an_echo_depth_of_none_leaves_them_as_they_come() {
+        let user = 990_001u64;
+        let echo = Cleaning {
+            own_echo: true,
+            ..Cleaning::NOTHING
+        };
+        crate::volume::set_cleaning("990001", echo);
+        let mut people = People::new();
+        let mut seed = 19;
+        let frame = noisy_frame(0, &mut seed);
+        people.next_tick();
+        people.sent(None);
+        people.clean(&[(user, &frame)]);
+        let gate = people
+            .cleaned
+            .get(&user)
+            .and_then(|cleaned| cleaned.gate.as_ref());
+        assert!(gate.is_some(), "its gate, at 20 dB");
+        crate::volume::set_cleaning(
+            "990001",
+            Cleaning {
+                echo_depth: 0,
+                ..echo
+            },
+        );
+        people.next_tick();
+        people.clean(&[(user, &frame)]);
+        assert!(people.cleaned(user).is_none(), "played as they came");
+        crate::volume::set_cleaning("990001", Cleaning::NOTHING);
+    }
+
+    /// The strong one: RNNoise stands in while DeepFilterNet loads on a
+    /// thread of its own; from the next time they start speaking it's
+    /// DeepFilterNet's, a tick later and quieter; deafened, the thread goes
+    /// with every copy of the model, and at no strength they play as they
+    /// come.
+    #[test]
+    fn deep_filter_net_cleans_on_its_own_thread_and_goes_when_deafened() {
+        let user = 970_001u64;
+        let deep = Cleaning {
+            noise: Suppressor::DeepFilterNet,
+            ..Cleaning::NOTHING
+        };
+        crate::volume::set_cleaning("970001", deep);
+        let mut people = People::new();
+        let mut seed = 13;
+        let frame = noisy_frame(0, &mut seed);
+        people.next_tick();
+        people.clean(&[(user, &frame)]);
+        assert!(people.cleaned(user).is_some(), "RNNoise stands in");
+        let strong = people
+            .strong
+            .as_ref()
+            .expect("DeepFilterNet's thread started");
+        let waited = Instant::now();
+        while !strong.ready() {
+            assert!(!strong.failed(), "DeepFilterNet loads");
+            assert!(
+                waited.elapsed() < Duration::from_secs(60),
+                "it loads in time"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        // A tick without them, and they start again.
+        people.next_tick();
+        let (mut before, mut after) = (0.0, 0.0);
+        for tick in 1..150 {
+            let frame = noisy_frame(tick, &mut seed);
+            people.next_tick();
+            people.clean(&[(user, &frame)]);
+            let cleaned = people.cleaned.get(&user).expect("cleaned");
+            assert!(cleaned.theirs.is_some() && cleaned.denoiser.is_none());
+            let out = people.cleaned(user).expect("cleaned this tick").to_vec();
+            if tick == 1 {
+                assert!(out.iter().all(|sample| *sample == 0), "nothing back yet");
+            }
+            people.settle();
+            // DeepFilterNet takes a while to learn the noise.
+            if tick >= 50 {
+                before += energy(&frame);
+                after += energy(&out);
+            }
+        }
+        assert!(after < before, "{after} of {before}");
+        people.rest();
+        assert!(people.strong.is_none(), "deafened, its thread goes");
+        assert!(
+            people
+                .cleaned
+                .values()
+                .all(|cleaned| cleaned.theirs.is_none())
+        );
+        crate::volume::set_cleaning(
+            "970001",
+            Cleaning {
+                noise_strength: 0,
+                ..deep
+            },
+        );
+        people.next_tick();
+        people.clean(&[(user, &noisy_frame(150, &mut seed))]);
+        assert!(people.strong.is_none(), "not for no strength");
+        assert!(people.cleaned(user).is_none(), "played as they came");
+        crate::volume::set_cleaning("970001", Cleaning::NOTHING);
     }
 
     const MS: Duration = Duration::from_millis(1);

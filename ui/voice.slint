@@ -1548,7 +1548,7 @@ export component ShareMenu inherits Rectangle {
                 }
                 if !root.switching: VerticalLayout {
                     spacing: 2px;
-                    for choice[index] in ["720p", "1080p", @tr("Source")]: MenuItem {
+                    for choice[index] in ["720p", "1080p", "1440p", @tr("Source")]: MenuItem {
                         text: choice; checked: index == root.pick-resolution;
                         clicked => { root.pick-resolution = index; }
                     }

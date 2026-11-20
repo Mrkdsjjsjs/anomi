@@ -173,28 +173,19 @@ fn controls(app: &mut App, intent: controls::Intent) -> Task<Message> {
 fn tiles(app: &mut App, intent: tiles::Intent) -> Task<Message> {
     use tiles::Intent as I;
     match intent {
+        // Each tile is what it shows: a stream's its stream, someone's them.
         I::Focus(key) => {
             let chosen = match key {
                 tiles::Key::OwnScreen => Focus::OwnScreen,
                 tiles::Key::Stream(id) => Focus::Stream(id),
-                tiles::Key::Person(id) => {
-                    let voice = &app.core.state.voice;
-                    let stage = Stage {
-                        participants: &voice.participants,
-                        sharing: voice.sharing.is_some(),
-                    };
-                    let slot = stage.slot(&Focus::Person(id.clone()));
-                    match slot.and_then(|slot| stage.focus_at(slot)) {
-                        Some(focus) => focus,
-                        None => Focus::Person(id),
-                    }
-                }
+                tiles::Key::Person(id) => Focus::Person(id),
             };
             focus(app, Some(chosen))
         }
         I::Watch(id) => command(app, Command::Watch(id)),
         I::StopWatching => command(app, Command::StopWatching),
         I::StreamSettings(spot) => popups::open_share(app, spot),
+        I::OwnMenu(spot) => share::own_menu(app, spot),
         I::FullScreen(on) => full_screen(app, on),
         I::HideOthers(hidden) => {
             app.shown.voice.others_hidden = hidden;
@@ -203,6 +194,11 @@ fn tiles(app: &mut App, intent: tiles::Intent) -> Task<Message> {
         }
         I::Menu(user, spot) => match app.core.state.voice.room.clone() {
             Some(room) => crate::intent::menus::open_voice(app, room, user, spot),
+            None => Task::none(),
+        },
+        // A stream's tile: the menu of its sound while it's watched.
+        I::StreamMenu(user, spot) => match app.core.state.voice.room.clone() {
+            Some(room) => crate::intent::menus::stream::open(app, room, user, spot),
             None => Task::none(),
         },
         intent => {

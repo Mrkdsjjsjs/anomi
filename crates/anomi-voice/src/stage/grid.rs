@@ -4,7 +4,8 @@
 //! Its tiles are V03's `tiles::view`, each kept by its tile's key, so a
 //! tile keeps its state (its pointer, its rings) and its glide as others
 //! come and go before it. Only the tiles that show are built: full screen,
-//! or with the others hidden, the large one alone.
+//! or with the others hidden, the large one alone. A large stream's
+//! stand-in comes last, at the slot [`STAND_IN`], kept apart from it.
 //!
 //! The Widget itself is in `widget`; this holds what it's made of and
 //! what it keeps between views.
@@ -20,7 +21,7 @@ use anomi_vm::voice::stage::{Placement, Stage};
 use anomi_vm::voice::{self, tiles::Key};
 
 use super::glide::Glide;
-use super::layout::Arrangement;
+use super::layout::{Arrangement, STAND_IN};
 use crate::tiles;
 
 /// The participant grid: the tiles that show, each with its slot and key.
@@ -41,26 +42,39 @@ pub fn grid(stage: &Stage, motion: Motion) -> Grid<'_> {
         .enumerate()
         .filter(|(slot, _)| arrangement.shown(*slot))
         .collect();
+    let room = shown.len() + usize::from(arrangement.stand_in);
     let mut grid = Grid {
         arrangement,
-        slots: Vec::with_capacity(shown.len()),
-        keys: Vec::with_capacity(shown.len()),
-        tiles: Vec::with_capacity(shown.len()),
+        slots: Vec::with_capacity(room),
+        keys: Vec::with_capacity(room),
+        tiles: Vec::with_capacity(room),
         motion,
     };
     for (slot, tile) in shown {
         grid.slots.push(slot);
-        grid.keys.push(hashed(&tile.key));
+        grid.keys.push(hashed(&tile.key, false));
         grid.tiles
             .push(tiles::view(tile, motion).map(voice::Intent::from).boxed());
+    }
+    // The large stream's stand-in, in its place beneath it.
+    if let Some(stand_in) = stage.stand_in.as_ref().filter(|_| arrangement.stand_in) {
+        grid.slots.push(STAND_IN);
+        grid.keys.push(hashed(&stand_in.key, true));
+        grid.tiles.push(
+            tiles::view(stand_in, motion)
+                .map(voice::Intent::from)
+                .boxed(),
+        );
     }
     grid
 }
 
-/// A tile's key as the grid keeps it.
-fn hashed(key: &Key) -> u64 {
+/// A tile's key as the grid keeps it, a stand-in's apart from the tile it
+/// stands for.
+fn hashed(key: &Key, stand_in: bool) -> u64 {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
+    stand_in.hash(&mut hasher);
     hasher.finish()
 }
 

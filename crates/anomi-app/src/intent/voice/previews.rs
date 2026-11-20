@@ -45,15 +45,18 @@ impl Previews {
 }
 
 /// After each update: tells the core which previews are in sight when that
-/// changed, and keeps one wait set for the next that falls due.
+/// changed, and that a streamer's card in the channel list went without its
+/// row saying so (`intent::sidebar::hover`), and keeps one wait set for the
+/// next that falls due.
 pub fn after(app: &mut App) -> Task<Message> {
+    let card = crate::intent::sidebar::lost_card(app);
     let previews = &mut app.shown.voice.previews;
     let told = if previews.in_sight == previews.told {
-        Task::none()
+        card
     } else {
         previews.told.clone_from(&previews.in_sight);
         let users = previews.told.clone();
-        app.dispatch(Action::VisibleStreams(users))
+        Task::batch([card, app.dispatch(Action::VisibleStreams(users))])
     };
     let due = app.core.stream_previews_due();
     let wait = &mut app.shown.voice.previews.wait;

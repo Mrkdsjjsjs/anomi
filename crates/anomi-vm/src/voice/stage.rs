@@ -5,15 +5,18 @@
 //! (`focus-tile`); which tile is which, and which shows large, is `Stage`
 //! and `Focus` in `src/ui/tiles.rs`.
 //!
-//! The stage holds the call's tiles in the order of `src/ui/tiles.rs`: this
-//! account's shared screen leads, then the streams of those who film too,
-//! in tiles of their own, then everyone; a tile's place in it is its slot.
-//! The grid lays them out itself from the room it gets, as Slint's does,
-//! and tells the app where they are ([`Placement`]) so cameras are decoded
-//! only for tiles in sight, at their size. Which tile shows large, over the
-//! whole window or not, and whether the others beneath it are hidden, the
-//! tiles say themselves ([`Stage::new`] sets it on them); the stage reads
-//! it back from them, so the two can't disagree.
+//! The stage holds the call's tiles in Discord's order: everyone in the
+//! call's, each one who shares a screen with their stream's tile right
+//! before their own (`tiles`); a tile's place in it is its slot. The grid
+//! lays them out itself from the room it gets, as Slint's does, and tells
+//! the app where they are ([`Placement`]) so cameras are decoded only for
+//! tiles in sight, at their size. Which tile shows large, over the whole
+//! window or not, and whether the others beneath it are hidden, the tiles
+//! say themselves ([`Stage::new`] sets it on them); the stage reads it back
+//! from them, so the two can't disagree. A stream shown large keeps its
+//! place among the tiles beneath it, as Discord's strip does, with a
+//! stand-in that draws only its screen icon and LIVE badge
+//! ([`Stage::stand_in`]); a person shown large leaves theirs.
 //!
 //! `src/ui/alone.rs` (leaving a DM call nobody else is in) draws nothing:
 //! it is the app's timer, I18's, and the line over the stage that says so
@@ -27,6 +30,9 @@ use crate::voice::tiles::Tile;
 pub struct Stage {
     /// The call's tiles, in slot order (see the module's doc).
     pub tiles: Vec<Tile>,
+    /// What stands for the stream shown large in its place beneath it,
+    /// while the tiles beneath show: its name and badge on the screen icon.
+    pub stand_in: Option<Tile>,
 }
 
 impl Stage {
@@ -36,7 +42,8 @@ impl Stage {
     /// to its `StageTile`s (`:993`, `:1016`, `:1057`): `focused` for the
     /// large one, `full` for all, and whether there are others to hide. A
     /// slot past the tiles focuses none; hiding the others lasts only while
-    /// one is large (`changed focusing`, `:907`).
+    /// one is large (`changed focusing`, `:907`). A stream large gets its
+    /// stand-in beneath it, unless nothing shows there.
     pub fn new(
         mut tiles: Vec<Tile>,
         focused: Option<usize>,
@@ -51,7 +58,11 @@ impl Stage {
             tile.can_hide_others = others;
             tile.others_hidden = others_hidden && focused.is_some();
         }
-        Self { tiles }
+        let stand_in = focused
+            .map(|slot| &tiles[slot])
+            .filter(|large| large.key.stream() && others && !full && !others_hidden)
+            .map(Tile::stand_in);
+        Self { tiles, stand_in }
     }
 
     /// The slot of the tile shown large, if any (`focused`, `:881`).
@@ -97,6 +108,9 @@ pub struct Placement {
     pub focused: Option<usize>,
     pub focus_width: f32,
     pub focus_height: f32,
+    /// The large one's stand-in keeps its place in the rows
+    /// ([`Stage::stand_in`]), which then don't close up after it.
+    pub stand_in: bool,
 }
 
 impl Placement {
@@ -109,7 +123,7 @@ impl Placement {
                 return (self.focus_width > 0.0 && self.focus_height > 0.0)
                     .then(|| (pixels(self.focus_width), pixels(self.focus_height)));
             }
-            Some(focused) if index > focused => index - 1,
+            Some(focused) if index > focused && !self.stand_in => index - 1,
             _ => index,
         };
         if self.columns == 0 || self.width <= 0.0 || self.height <= 0.0 {
@@ -208,6 +222,7 @@ mod tests {
             focused: Some(1),
             focus_width: 800.0,
             focus_height: 450.0,
+            stand_in: false,
         };
         assert_eq!(tiles.shown_at(1, 1.0), Some((800, 450)));
         assert_eq!(tiles.shown_at(0, 1.0), Some((192, 108)));
@@ -219,5 +234,49 @@ mod tests {
         };
         assert_eq!(alone.shown_at(1, 1.0), Some((800, 450)));
         assert_eq!(alone.shown_at(0, 1.0), None, "full screen shows one");
+        // A stream's stand-in keeps its place: the third slot is the
+        // fourth in the rows, on the second row.
+        let held = Placement {
+            stand_in: true,
+            ..tiles
+        };
+        assert_eq!(held.shown_at(2, 1.0), Some((192, 108)));
+        assert_eq!(held.shown_at(3, 1.0), None);
+    }
+
+    #[test]
+    fn a_stream_large_keeps_a_stand_in_beneath_it_and_a_person_does_not() {
+        let stream = Tile {
+            key: Key::Stream("1".into()),
+            badge: true,
+            ..Tile::default()
+        };
+        let mut with_stream = tiles(3);
+        with_stream[1] = stream;
+        let large = Stage::new(with_stream.clone(), Some(1), false, false);
+        let stand_in = large.stand_in.as_ref().expect("its stand-in");
+        assert_eq!(stand_in.key, Key::Stream("1".into()));
+        assert!(stand_in.badge && !stand_in.focused);
+        assert!(
+            Stage::new(tiles(3), Some(1), false, false)
+                .stand_in
+                .is_none()
+        );
+        assert!(
+            Stage::new(with_stream.clone(), None, false, false)
+                .stand_in
+                .is_none()
+        );
+        // Nothing shows beneath it full screen or with the others hidden.
+        assert!(
+            Stage::new(with_stream.clone(), Some(1), true, false)
+                .stand_in
+                .is_none()
+        );
+        assert!(
+            Stage::new(with_stream, Some(1), false, true)
+                .stand_in
+                .is_none()
+        );
     }
 }

@@ -89,7 +89,9 @@
 // one that isn't live, or Alice's own, with 404 Unknown Stream. Streamers
 // upload a new preview every five minutes, as Discord's client does, and
 // POST /_control/stream-preview has them upload one now: the address
-// changes, as the CDN's thumbnail hash does, and its window moves along.
+// changes, as the CDN's thumbnail hash does, and its window moves along;
+// with ?none, they've uploaded none yet, and every stream answers 404 until
+// the next.
 // /_control/voice-move moves Alice's call in the server to another voice
 // server, or with ?channel=ID moves her to that channel on another voice
 // server, as a member who drags her there does; &close=4022 has the old
@@ -3965,6 +3967,10 @@ let previewDownloads = 0;
 const PREVIEW_EVERY_MS = 5 * 60 * 1000;
 /** Previews uploaded on POST /_control/stream-preview, besides those every five minutes. */
 let previewsUploaded = 0;
+/** POST /_control/stream-preview?none: the streamers' clients have uploaded
+ *  none yet, as just after going live, and every stream's GET answers 404
+ *  until the next POST /_control/stream-preview. */
+let previewsWithheld = false;
 /** The number of the streamers' latest preview. */
 const previewVersion = () => Math.floor(Date.now() / PREVIEW_EVERY_MS) + previewsUploaded;
 /** The preview of someone's stream: a desktop with a window open, which
@@ -4271,8 +4277,11 @@ function sendCameras(ws: Socket, wants: any) {
  *  audio SSRC is `ssrc`, or null: the Video payload of
  *  docs.discord.food/topics/voice-connections, with the SSRCs Ready gave,
  *  one stream of only the documented fields, a fixed largest frame or the
- *  source's, a frame rate and a cap in bit/s. Sent again when the stream's
- *  quality changes, in the same shape. */
+ *  source's, a frame rate and a cap in bit/s. A fixed frame is any size, as
+ *  Yapfast names the one it sends: 1440p's is 2560 by 1440, or 2560 by 1070
+ *  from an ultrawide screen. /_control/video reports it as `announced`, in
+ *  op 12's own shape. Sent again when the stream's quality changes, in the
+ *  same shape. */
 function streamVideoProblem(ssrc: number, d: any): string | null {
   const only = (value: any, fields: string[]) =>
     !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).every((field) => fields.includes(field));
@@ -6506,7 +6515,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
   if (method === "GET" && (m = path.match(/^\/streams\/([^/]+)\/preview$/))) {
     const stream = decodeURIComponent(m[1]!);
     previewReads.push(stream);
-    if (!streams.has(stream) || stream.endsWith(`:${ALICE}`)) return notFound("Unknown Stream", 10049);
+    if (!streams.has(stream) || stream.endsWith(`:${ALICE}`) || previewsWithheld) return notFound("Unknown Stream", 10049);
     return json({ url: `${origin}/stream-previews/${encodeURIComponent(stream)}/${previewVersion()}.png` });
   }
 
@@ -9497,7 +9506,10 @@ const server = Bun.serve<SocketData>({
       return new Response(`${name} is live\n`);
     }
     if (req.method === "POST" && path === "/_control/stream-preview") {
-      // Every streamer's client uploads a new preview now.
+      // Every streamer's client uploads a new preview now, or with ?none
+      // none has uploaded any yet.
+      previewsWithheld = url.searchParams.has("none");
+      if (previewsWithheld) return new Response("no previews\n");
       previewsUploaded++;
       return new Response(`preview ${previewVersion()}\n`);
     }

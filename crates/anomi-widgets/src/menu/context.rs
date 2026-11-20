@@ -3,7 +3,8 @@
 //!
 //! It fills the window (a layer's) and places itself: the menu at its
 //! [`Spot`], below the pointer or above it, kept 8 px inside the window and
-//! scrolling when taller; a submenu beside its row, on the menu's right or,
+//! scrolling when taller, or, headed by a card ([`ContextMenu::headed`]),
+//! than the room below its spot; a submenu beside its row, on the menu's right or,
 //! without room there, its left, moved up to stay in the window. Each is as
 //! wide as its rows' text within 255 and 320 px. A submenu fades in over
 //! `QUICK`; the menu's own way in and out is its layer's.
@@ -11,7 +12,7 @@
 //! It takes the keyboard (see [`super::keys`]). A row with a submenu opens
 //! it on hover; clicked, it opens it too, unless the row has an intent of
 //! its own, which it then sends. Choosing a row sends its intent and then
-//! `on_close`; a box to tick sends its intent and the menu stays; a
+//! `on_close`; a box to tick or a radio sends its intent and the menu stays; a
 //! disabled row sends nothing. A click outside the panels isn't the menu's:
 //! the layer under it closes the menu.
 
@@ -111,6 +112,12 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for ContextMenu<'_, M> {
         tree.size = window;
         let state = tree.state.downcast_mut::<State>();
         state.measure(self.rows, self.narrowest, window.height - 2.0 * MARGIN);
+        // Rows under a card start where it ends and scroll what doesn't fit
+        // below, rather than moving up over it.
+        if self.headed {
+            let below = window.height - MARGIN - self.spot.anchor.y;
+            state.main.fit(below.max(window.height / 3.0));
+        }
         let main = &mut state.main;
         main.bounds = place::place(self.spot, main.bounds.size(), window, MARGIN).bounds;
         let widest = state

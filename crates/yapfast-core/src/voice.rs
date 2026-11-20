@@ -96,6 +96,10 @@ pub enum Resolution {
     P720,
     #[default]
     P1080,
+    /// 2560 by 1440, as Discord's client streams in its "Games" mode.
+    /// `devices.json` names each by its own name (`"p1440"`), so a file
+    /// from before it reads as it did.
+    P1440,
     /// The screen's own size, up to 4K.
     Source,
 }
@@ -838,6 +842,21 @@ mod tests {
         let quality = Chosen::read(&path).quality;
         assert_eq!((quality.resolution, quality.fps), (Resolution::P720, 60));
         assert_eq!(quality.max_kbps, None);
+        // 1440p is kept by its own name, beside the others'.
+        let wide = State {
+            quality: StreamQuality {
+                resolution: Resolution::P1440,
+                ..quality
+            },
+            ..Default::default()
+        };
+        Chosen::write(Some(&path), &wide);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(r#""p1440""#)
+        );
+        assert_eq!(Chosen::read(&path).quality.resolution, Resolution::P1440);
         // Unset, it isn't written, and the file reads as before it.
         let state = State {
             quality,

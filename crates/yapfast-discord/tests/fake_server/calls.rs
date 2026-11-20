@@ -843,6 +843,12 @@ async fn calls_and_goes_live() {
         .await
         .unwrap();
     assert!(after.starts_with(b"\x89PNG") && after != before);
+    // Just after going live, before his client uploaded one, there's none:
+    // the card beside his row says the stream started until one comes.
+    post_control(server, "/_control/stream-preview?none", "");
+    assert!(discord.stream_preview_url(&bob_stream).await.is_err());
+    post_control(server, "/_control/stream-preview", "");
+    assert!(discord.stream_preview_url(&bob_stream).await.is_ok());
 
     let watched = discord.watch(&bob_stream).await.unwrap();
     assert_eq!(watched.stream_key, bob_stream);
@@ -1070,9 +1076,10 @@ async fn calls_and_goes_live() {
     );
     // A new quality while live: the same connection announces the new
     // size, frame rate and cap with op 12 before the next frame, and the
-    // frames go on, the new encoder's first a keyframe.
+    // frames go on, the new encoder's first a keyframe. 1440p, as Discord's
+    // "Games" mode streams, announces its fixed size and 1080p's cap.
     let announced = video["announcements"].as_u64().unwrap();
-    sender.resize(1920, 1080);
+    sender.resize(2560, 1440);
     sender.set_fps(60);
     for (index, data) in recording(SEND_CODEC).into_iter().take(3).enumerate() {
         sender.send(Frame {
@@ -1105,7 +1112,7 @@ async fn calls_and_goes_live() {
     .expect("the stream stopped at its new quality");
     assert_eq!(
         retuned["announced"],
-        serde_json::json!({"type": "fixed", "width": 1920, "height": 1080})
+        serde_json::json!({"type": "fixed", "width": 2560, "height": 1440})
     );
     assert_eq!(
         (

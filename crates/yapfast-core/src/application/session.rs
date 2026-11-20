@@ -68,7 +68,8 @@ impl Application {
             Command::Discord(
                 DiscordCommand::Pictures(_)
                 | DiscordCommand::CancelPictures(_)
-                | DiscordCommand::StreamPreview { .. },
+                | DiscordCommand::StreamPreview { .. }
+                | DiscordCommand::GameStore { .. },
             ) => {
                 return;
             }

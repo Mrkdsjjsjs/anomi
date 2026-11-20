@@ -11,8 +11,11 @@ Scope for the beta:
   voice leveling as Yapfast calls. Noise suppression is DeepFilterNet, or
   RNNoise, rather than WebRTC's, as described under Microphone below.
 - Someone else's voice can be cleaned here before it plays: their noise
-  suppressed, or our own echo from their speakers turned down; see
-  [Cleaning someone's voice](#cleaning-someones-voice).
+  suppressed, by RNNoise or DeepFilterNet, or our own echo from their
+  speakers turned down, each as strongly as chosen; see
+  [Cleaning someone's voice](#cleaning-someones-voice). So can the sound of
+  a stream watched, apart from its streamer's voice; see
+  [Cleaning a stream's sound](go-live.md#cleaning-a-streams-sound).
 
 Clicking a voice channel joins through the same voice dock and one-call rule as
 Matrix voice, and, as Discord's client does, without showing the call: a second
@@ -220,6 +223,52 @@ the list scrolls or shows another server, as a dialog, the quick switcher
 or a ringing call covers the window, and as its channel empties, is deleted
 or is filtered out by the channel search.
 
+### What someone in a voice channel is doing
+
+As in Discord's client, the row of someone under a voice channel ends with
+the icon of the game they play, unless they stream, when their LIVE tag
+stands there instead. The pointer resting on the row of someone who plays
+or streams (300 ms, the window in front) opens a card beside it, hanging
+from the row's top:
+
+- **Streaming:** "Streaming now" with the LIVE tag, their stream's latest
+  still, or "The stream has started. Don't miss it!" until one came, the
+  game with how long they've played, and Watch Stream, which does what their
+  LIVE tag does (`Action::ShowVoicePerson`: the call is joined first, asking
+  as joining always does, and the stream watched once it connects). While
+  this account watches them it says Watching Stream, disabled.
+- **Playing:** "Playing now", the game's icon, its name and how long
+  they've played, from the activity's start.
+- Either ends with the store the game is sold at, "Get on Steam", "Get on
+  Xbox" or "Get on Microsoft Store", which opens its page in the browser,
+  when Discord's list of games names one; nothing otherwise.
+
+What they play comes from their presence: a friend's, a DM's person's, and,
+since the gateway sends them, those of anyone in a server's voice channel
+(PRESENCE_UPDATE with the server's id, a member list's rows, READY_SUPPLEMENTAL's
+`merged_presences.guilds`), which the tracker keeps while they're in voice
+and forgets as they leave. Someone whose presence Discord doesn't send shows
+no game. Where it's sold comes from the list of games detection keeps
+(`game_detection::store_sku`), which keeps each game's Steam, Xbox and
+Microsoft Store ids: Epic's, GOG's, Ubisoft's and Battle.net's ids in that list
+name no page, so those stores get no button. The list is read from the disk,
+off the window's thread, once for each game a card shows (`Action::HoverVoicePerson`,
+`Event::GameStore`); before the list was ever downloaded there's none.
+
+The card stays while the pointer is on the row or on the card, and goes
+200 ms after it left both, at a click, a right click or the wheel on the
+row, at Watch Stream or the store's button, and as the window goes behind
+another. Nothing is asked, built or drawn for it while it doesn't show: its
+stream's preview counts as on screen only while it shows, asked for at once
+and again every 5 minutes as a tile's ([Go Live](go-live.md)), and a stream
+outside this account's call lets go of its preview as the card goes; the
+time played ticks once a second, only while the card shows in front.
+
+Discord's client also has "Ask to Stream" there. docs.discord.food describes
+no request a client sends for it (its streams' endpoints are the preview's,
+the stream's region and a notification to the streamer's friends), so
+Yapfast doesn't offer it.
+
 ## The call's channel line
 
 As in Discord's voice panel, the dock's line under the status ("gen ·
@@ -402,53 +451,118 @@ of 5"), and giving up logs a warning with the number of asks.
 The call's thread doesn't ask `volume.rs` for each speaker's volume as it
 mixes. It keeps its own copy, by Discord user id, of everyone who doesn't
 play as they come: their volume, a local mute as 0, and how their voice is
-cleaned, below (`People` in `discord_audio.rs`). It copies them again on the
-tick after `volume::changes()` says one changed, so a tick costs one atomic
-load and a lookup by number for each voice, with no lock on the shared maps
-and no string.
+cleaned and how strongly, below (`People` in `discord_audio.rs`). It copies
+them again on the tick after `volume::changes()` says one changed, so a tick
+costs one atomic load and a lookup by number for each voice, with no lock on
+the shared maps and no string.
 
 ### Cleaning someone's voice
 
-Someone else's menu in a Discord call has two boxes after Mute Soundboard,
-in a server's voice channel and in a DM's or group DM's call, where they're
-all the menu has: one takes the noise out of their voice, the other turns
-them down while what comes from them is only this account's own voice, back
-from their speakers (`MenuChoice::SuppressTheirNoise` and `RemoveMyEcho`).
-Neither is offered for this account, nor in Matrix calls, whose audio LiveKit
-plays. They're kept by user id beside the volume (`volume::Cleaning`) and
-remembered in `layout.json` (`denoised_people`, `echo_removed_people`), so
-they hold in every call, for every account, and after a restart.
+Someone else's menu in a Discord call has two rows of Anomi's own after
+Mute Soundboard, in a server's voice channel and in a DM's or group DM's
+call, where they're all the menu has (`MenuChoice::SuppressTheirNoise` and
+`RemoveMyEcho`). "Suppress their noise" opens a submenu of what takes the
+noise out of their voice, named as Voice's settings name the microphone's:
+Off, RNNoise, which says it's light on the processor, and DeepFilterNet,
+which says it's stronger but uses more of it. The one chosen is marked, and
+named under the row, as a device menu names its device. "Remove my echo" is
+a box that turns them down while what comes from them is only this
+account's own voice, back from their speakers. Choosing a suppressor keeps
+the menu open, as ticking a box does, and the mark moves to it. Neither row
+is offered for this account, nor in Matrix calls, whose audio LiveKit plays.
+The menu of a watched stream's tile has the same two for the stream's
+sound, which its worker plays and cleans (see
+[Go Live](go-live.md#cleaning-a-streams-sound)).
 
-Each tick, the frame of someone with a box ticked is cleaned before the mix,
-into a frame of their own: their two channels in one; RNNoise on each 10 ms,
-turning noise down at most 30 dB, as Medium does the microphone's, so what
-it mixes back of their voice keeps the ends of words; then the echo gate;
-then back into both channels. With RNNoise their voice plays 10 ms later,
-and either way in mono, which a music bot's stereo loses. Their speaking
-ring follows the cleaned voice, so noise or the echo doesn't light it.
-Nothing is cleaned for someone silent, since the call has no frame of theirs,
-nor muted here, nor while deafened. RNNoise takes about 40 µs a block, 0.4%
-of a core while they speak, and the state of someone cleaned about 45 KB.
-Eight people are cleaned at once at most; anyone more plays as they come, and
-the log says so once. When someone speaks again after a pause, RNNoise first
-lets go of the 10 ms it held of what they said before, which would otherwise
-play first. Their denoiser goes after 10 s without them, as the call forgets
-a speaker; their echo gate keeps what it learned for a minute, since they
-send only while their microphone hears something, and learning it again
-takes seconds of our speech.
+The card over the menu, with their volumes, has a slider for each that's
+on: "Noise suppression strength", from 0% to 100%, while a suppressor is
+chosen, and "Echo removal strength", from 0 to 40 dB, while the box is
+ticked. A slider is heard as it moves and kept when it's let go, as the
+volumes are. When a slider comes or goes, the card and the rows under it are
+placed again from where the right click was, so the rows stay right under
+it (`intent::menus::cleaning` in `anomi-app`).
 
-DeepFilterNet isn't offered here: it would cost 2.7% of a core and 39 MiB a
-person, and its model isn't Send, so it can't run on the call's thread.
-Voices that Discord's own Krisp already cleaned change little; on noisy ones
-RNNoise can sound a little underwater.
+What's chosen is kept by user id beside the volume (`volume::Cleaning`), and
+in `layout.json` as `cleaned_voices`, so it holds in every call, for every
+account, and after a restart. Each person's entry leaves out what's as it is
+unless chosen: `{"noise": "deepfilternet", "noise_strength": 60, "echo":
+true, "echo_depth": 30}`, or `{"noise": "rnnoise"}`. A strength set while
+nothing is on is kept for when it is; once nothing is chosen and both
+strengths are as they were, the person is forgotten. The Slint app keeps the
+key through its catch-all. An earlier Anomi kept two sets of user ids,
+`denoised_people` and `echo_removed_people`: they're read into the map as
+what they did, RNNoise at full strength and the echo 20 dB down, and never
+written again, so the next write keeps the map alone.
+
+The strength of noise suppression lets the suppressor turn noise down at
+most that share of its limit at full strength, in dB: 30 dB for RNNoise, as
+before it could be chosen and as Medium does the microphone's, so what it
+mixes back of their voice keeps the ends of words; 40 dB for DeepFilterNet,
+past Medium, since with no limit at all it takes giggles and breathy laughs
+for noise. Both keep to the limit by mixing their voice as it came back in,
+10^(-dB/20) of it: RNNoise into its output, lined up with the block its
+output is a block behind, and DeepFilterNet into its output spectrum, which
+is libDF's own attenuation limit. That costs nothing more and makes no sound
+of its own: at 0 dB it is their voice as it came. The share is of the limit
+in dB rather than of the mix, so the slider moves evenly in what's heard;
+half the plain mix would take out only 6 dB. At 0% no suppressor runs, and
+with the echo's box unticked they play as they come, in stereo. The echo's
+strength is how far the echo gate turns them down, 20 dB unless chosen; it
+turns them down over 60 ms and lets them through within 5 ms at any depth,
+and at 0 dB it doesn't run.
+
+Each tick, the frame of someone with something on is cleaned before the
+mix, into a frame of their own: their two channels in one; their noise
+taken out; then the echo gate; then back into both channels. With RNNoise
+their voice plays 10 ms later, with DeepFilterNet 50 ms, and either way in
+mono, which a music bot's stereo loses. Their speaking ring follows the
+cleaned voice, so noise or the echo doesn't light it. Nothing is cleaned for
+someone silent, since the call has no frame of theirs, nor muted here, nor
+while deafened. RNNoise takes about 40 µs a block, 0.4% of a core while they
+speak, and the state of someone cleaned with it about 45 KB. Eight people
+are cleaned at once at most; anyone more plays as they come, and the log
+says so once. When someone speaks again after a pause, RNNoise first lets go
+of the 10 ms it held of what they said before, which would otherwise play
+first. Their denoiser goes after 10 s without them, as the call forgets a
+speaker; their echo gate keeps what it learned for a minute, since they send
+only while their microphone hears something, and learning it again takes
+seconds of our speech. Voices that Discord's own Krisp already cleaned
+change little; on noisy ones RNNoise can sound a little underwater.
+
+DeepFilterNet costs about 270 µs a 10 ms block (82 µs its encoder, 105 and
+82 its two decoders, on a Ryzen 9 9900X), 2.7% of a core a person while they
+speak, against RNNoise's 40 µs; the microphone's took 39 MiB as it loaded.
+Its model isn't Send and takes 0.2 s of a core to load, which the call's
+thread can't spend without the speakers running dry. So it runs on a thread
+of its own for the call, `yapfast-their-noise` (`their_noise.rs`), which
+starts at normal priority, since the call's thread is raised with
+`SCHED_RESET_ON_FORK`, the first time someone it's on for speaks. The model
+loads there once. Each person gets a copy of it as they first speak, which
+shares the model's weights, as tract keeps them in shared constants, and
+holds its own state; the copy goes 10 s after their last word. The thread
+goes, model and copies with it, once none of them has spoken for 10 s, once
+it's on for no one, at once while this account is deafened, and with the
+call. Until the model has loaded, RNNoise stands in at the same strength,
+and DeepFilterNet takes over as they next start speaking, so their voice
+doesn't jump by the 40 ms between the two in the middle of a word; a model
+that doesn't load leaves RNNoise for the rest of the call, and the log says
+so. Each tick the call's thread hands the thread their 20 ms and plays what
+it gave back of the tick before, through bounded channels, in four buffers
+made as they first speak: the call's thread allocates nothing as it goes and
+never waits for it. A tick the thread is late with plays silent, and past
+one tick waiting the oldest goes unplayed, so they're never more than a
+tick behind it. Eight people on DeepFilterNet at once would take about 22%
+of a core on that thread.
 
 The echo gate (`echo_gate.rs`) is for someone on a laptop's speakers, whose
 microphone sends our voice back to us a few hundred milliseconds later. The
 call hands every 20 ms it sent, or that it sent nothing, to each gate on its
 thread just before it plays everyone (`Listener::sent`), whether that person
-speaks or not. A gate learns how late and how loud our voice comes back from
-them, and while what comes from them is only that, turns them down about
-20 dB, ramping so it doesn't click. Until it has learned the delay, from a
+speaks or not, measured once for all of them (`echo_gate::Measure`), and
+only while a gate or a watched stream's is on. A gate learns how late and how loud our voice comes back from
+them, and while what comes from them is only that, turns them down as far
+as the card says, 20 dB unless chosen, ramping so it doesn't click
+(`EchoGate::set_depth`). Until it has learned the delay, from a
 few seconds of our speech, it does nothing, and it stops on its own when our
 voice no longer comes back, as when they put headphones on. It works like a
 speakerphone: while our echo comes, they come through only by talking louder
@@ -459,11 +573,15 @@ would mostly fail: the echo comes 150 to 600 ms late and drifts with both
 sides' jitter buffers, through two Opus encodings, their speakers, their
 noise suppression and their gain control.
 
-`echo_gate`'s tests run the gate on made-up voices, through Opus too, and
-over two recordings of a real call (`gates_a_recording`); the fake's
-`POST /_control/carol-echo?delay=MS` has Carol send Alice's voice back, which
-the service test `carol_sends_alices_voice_back` checks, and which shows the
-gate in the window.
+`echo_gate`'s tests run the gate on made-up voices, through Opus too, at
+the depths the card offers, and over two recordings of a real call
+(`gates_a_recording`); the fake's `POST /_control/carol-echo?delay=MS` has
+Carol send Alice's voice back, which the service test
+`carol_sends_alices_voice_back` checks, and which shows the gate in the
+window. `discord_audio`'s tests check that RNNoise at full strength cleans
+as it did before strengths could be chosen and that no strength or depth
+leaves someone as they come, and run DeepFilterNet on its thread from
+loading to deafening.
 
 ## Camera video
 

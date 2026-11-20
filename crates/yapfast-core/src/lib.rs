@@ -89,7 +89,11 @@ pub mod spoiler;
 #[cfg(feature = "discord")]
 pub mod stream_audio;
 #[cfg(feature = "discord")]
+mod stream_cleaning;
+#[cfg(feature = "discord")]
 pub mod stream_worker;
+#[cfg(feature = "discord")]
+mod their_noise;
 #[cfg(feature = "discord")]
 pub mod video;
 #[cfg(feature = "discord")]

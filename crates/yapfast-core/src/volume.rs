@@ -7,7 +7,9 @@
 //! everyone plays at their own volume times the speakers'. Muting someone's
 //! soundboard here silences the sounds they play, not their voice. Someone's
 //! voice can also be cleaned here before it's mixed ([`Cleaning`]), in
-//! Discord calls, whose audio Yapfast mixes itself.
+//! Discord calls, whose audio Yapfast mixes itself, and so can the sound of
+//! someone's stream watched, apart from their voice
+//! ([`set_stream_cleaning`]), which the watching worker plays.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -17,7 +19,10 @@ use std::{
     },
 };
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+
+use crate::noise::Suppressor;
 
 /// Twice as loud, as Discord allows.
 pub const MAX: f32 = 2.0;
@@ -75,6 +80,10 @@ static MUTED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(RwLock::default)
 static SOUNDBOARD_MUTED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(RwLock::default);
 /// Those whose voice is cleaned before it's mixed, and how; no one else's is.
 static CLEANING: LazyLock<RwLock<HashMap<String, Cleaning>>> = LazyLock::new(RwLock::default);
+/// Those whose stream's sound is cleaned before it plays, and how, by the
+/// streamer: the same choices as a voice's, kept apart from them.
+static STREAM_CLEANING: LazyLock<RwLock<HashMap<String, Cleaning>>> =
+    LazyLock::new(RwLock::default);
 static CHANGED: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
 
 /// The microphone's and the speakers' gains in every call, as f32 bits.
@@ -156,37 +165,127 @@ pub fn heard(kind: Kind, person: &str) -> f32 {
     }
 }
 
-/// What's done to someone's voice here before it's mixed, as the boxes in
-/// their menu in a call ask: nothing unless chosen. Each costs nothing while
-/// they're silent, muted here or deafened to.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What's done to someone's voice here before it's mixed, as their menu in
+/// a call and the card over it ask, or to their stream's sound before it
+/// plays, as its tile's menu asks: nothing unless chosen. Each costs
+/// nothing while they're silent, muted here or deafened to. It travels to a
+/// watching worker as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Cleaning {
-    /// RNNoise takes the noise out of their voice, which then plays 10 ms
-    /// later, in mono.
-    pub noise: bool,
+    /// What takes the noise out of their voice: RNNoise, the light one,
+    /// which plays them 10 ms later, or DeepFilterNet, the strong one, on a
+    /// thread of its own (`their_noise`), which plays them 50 ms later and
+    /// costs about seven times the processor; `Off` for neither. Either way
+    /// they play in mono.
+    pub noise: Suppressor,
+    /// How much of their noise it takes out, in percent: 0 leaves their
+    /// voice as it comes, [`FULL_STRENGTH`] takes out all it's let to
+    /// ([`Cleaning::noise_limit`]).
+    pub noise_strength: u8,
     /// They're turned down while what comes from them is only this
-    /// account's own voice, back from their speakers (`echo_gate`).
+    /// account's own voice, back from their speakers (`echo_gate`)...
     pub own_echo: bool,
+    /// ...by this many dB: [`ECHO_DEPTH`] unless chosen, up to
+    /// [`MOST_ECHO_DEPTH`]; 0 leaves them as they come.
+    pub echo_depth: u8,
 }
 
+/// Noise suppression's strength unless chosen: all of it, as before it
+/// could be chosen.
+pub const FULL_STRENGTH: u8 = 100;
+/// How far our echo from someone is turned down unless chosen, in dB, and
+/// the most it can be.
+pub const ECHO_DEPTH: u8 = 20;
+pub const MOST_ECHO_DEPTH: u8 = 40;
+/// How far each suppressor turns someone's noise down at full strength, in
+/// dB. RNNoise 30, as Medium does the microphone's: what it mixes back of
+/// their voice keeps the ends of words. DeepFilterNet 40, past Medium; with
+/// no limit at all it takes giggles and breathy laughs for noise.
+const LIGHT_LIMIT: f32 = 30.0;
+const STRONG_LIMIT: f32 = 40.0;
+
 impl Cleaning {
+    /// Nothing done, each strength as it is unless chosen.
+    pub const NOTHING: Self = Self {
+        noise: Suppressor::Off,
+        noise_strength: FULL_STRENGTH,
+        own_echo: false,
+        echo_depth: ECHO_DEPTH,
+    };
+
     /// Whether anything is done.
     pub fn any(self) -> bool {
-        self.noise || self.own_echo
+        self.denoises() || self.removes_echo()
+    }
+
+    /// Whether a suppressor takes any of their noise out.
+    pub fn denoises(self) -> bool {
+        self.noise != Suppressor::Off && self.noise_strength > 0
+    }
+
+    /// Whether they're turned down at all while only our echo comes.
+    pub fn removes_echo(self) -> bool {
+        self.own_echo && self.echo_depth > 0
+    }
+
+    /// How far `suppressor` turns their noise down at this strength, in
+    /// dB: the strength's share of its limit at full strength, so the
+    /// slider moves evenly in what's heard. Both keep to it by mixing their
+    /// voice as it came back in, 10^(-dB/20) of it: RNNoise into its
+    /// output, as the microphone's does, DeepFilterNet into its spectrum,
+    /// as its own attenuation limit. Cheap, and with no artefact of its
+    /// own: at 0 dB it is their voice as it came.
+    pub fn noise_limit(self, suppressor: Suppressor) -> f32 {
+        let full = match suppressor {
+            Suppressor::DeepFilterNet => STRONG_LIMIT,
+            Suppressor::RNNoise | Suppressor::Off => LIGHT_LIMIT,
+        };
+        full * f32::from(self.noise_strength.min(FULL_STRENGTH)) / f32::from(FULL_STRENGTH)
     }
 }
 
-/// Sets what's done to `person`'s voice before it's mixed; nothing done
-/// forgets them.
+impl Default for Cleaning {
+    fn default() -> Self {
+        Self::NOTHING
+    }
+}
+
+/// Sets what's done to `person`'s voice before it's mixed. They're
+/// forgotten once nothing is chosen, strengths included; a strength chosen
+/// while nothing is done is kept, at no cost.
 pub fn set_cleaning(person: &str, cleaning: Cleaning) {
+    put(&CLEANING, person, cleaning);
+}
+
+/// What's done to `person`'s voice before it's mixed.
+pub fn cleaning(person: &str) -> Cleaning {
+    read(&CLEANING, person)
+}
+
+/// Sets what's done to the sound of `person`'s stream before it plays,
+/// apart from their voice: noise suppression is made for speech, and a
+/// stream's music or game sound suffers from it. Forgotten as a voice's is.
+pub fn set_stream_cleaning(person: &str, cleaning: Cleaning) {
+    put(&STREAM_CLEANING, person, cleaning);
+}
+
+/// What's done to the sound of `person`'s stream before it plays.
+pub fn stream_cleaning(person: &str) -> Cleaning {
+    read(&STREAM_CLEANING, person)
+}
+
+/// Keeps `cleaning` for `person` in `kept`, forgetting them once nothing
+/// is chosen, and says a call should copy it again.
+fn put(kept: &RwLock<HashMap<String, Cleaning>>, person: &str, cleaning: Cleaning) {
     let changed = {
-        let mut people = CLEANING
+        let mut people = kept
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cleaning.any() {
-            people.insert(person.to_owned(), cleaning) != Some(cleaning)
-        } else {
+        if cleaning == Cleaning::NOTHING {
             people.remove(person).is_some()
+        } else {
+            people.insert(person.to_owned(), cleaning) != Some(cleaning)
         }
     };
     if changed {
@@ -194,10 +293,8 @@ pub fn set_cleaning(person: &str, cleaning: Cleaning) {
     }
 }
 
-/// What's done to `person`'s voice before it's mixed.
-pub fn cleaning(person: &str) -> Cleaning {
-    CLEANING
-        .read()
+fn read(kept: &RwLock<HashMap<String, Cleaning>>, person: &str) -> Cleaning {
+    kept.read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(person)
         .copied()
@@ -258,7 +355,8 @@ pub fn speakers() -> f32 {
     f32::from_bits(SPEAKERS.load(Ordering::Relaxed))
 }
 
-/// Changes whenever a volume, a mute or someone's [`Cleaning`] does.
+/// Changes whenever a volume, a mute or someone's [`Cleaning`] does, their
+/// stream's too.
 pub fn changes() -> watch::Receiver<u64> {
     CHANGED.subscribe()
 }
@@ -328,26 +426,92 @@ mod tests {
     #[test]
     fn cleaning_is_kept_by_person_until_nothing_is_done() {
         let person = "volume-test-7";
-        assert_eq!(cleaning(person), Cleaning::default(), "nothing by default");
+        assert_eq!(cleaning(person), Cleaning::NOTHING, "nothing by default");
         let mut changes = changes();
         let both = Cleaning {
-            noise: true,
+            noise: Suppressor::DeepFilterNet,
             own_echo: true,
+            ..Cleaning::NOTHING
         };
         set_cleaning(person, both);
         assert!(changes.has_changed().unwrap(), "a call copies it at once");
         changes.mark_unchanged();
         assert_eq!(cleaning(person), both);
         let noise = Cleaning {
-            noise: true,
-            own_echo: false,
+            noise: Suppressor::RNNoise,
+            noise_strength: 40,
+            ..Cleaning::NOTHING
         };
         set_cleaning(person, noise);
         assert_eq!(cleaning(person), noise);
-        set_cleaning(person, Cleaning::default());
+        // A strength with nothing on is kept for when it is.
+        let kept = Cleaning {
+            noise: Suppressor::Off,
+            ..noise
+        };
+        set_cleaning(person, kept);
+        assert!(!cleaning(person).any());
+        assert_eq!(cleaning(person).noise_strength, 40);
+        set_cleaning(person, Cleaning::NOTHING);
         assert!(changes.has_changed().unwrap());
-        assert!(!cleaning(person).any(), "forgotten");
+        assert_eq!(cleaning(person), Cleaning::NOTHING, "forgotten");
         assert_eq!(get(Kind::Voice, person), 1.0, "the volume stays");
+    }
+
+    #[test]
+    fn a_streams_cleaning_is_kept_apart_from_its_streamers_voice() {
+        let person = "volume-test-12";
+        let mut changes = changes();
+        let noise = Cleaning {
+            noise: Suppressor::RNNoise,
+            ..Cleaning::NOTHING
+        };
+        set_stream_cleaning(person, noise);
+        assert!(changes.has_changed().unwrap(), "the watch hears of it");
+        changes.mark_unchanged();
+        assert_eq!(stream_cleaning(person), noise);
+        assert_eq!(
+            cleaning(person),
+            Cleaning::NOTHING,
+            "their voice as it comes"
+        );
+        set_stream_cleaning(person, Cleaning::NOTHING);
+        assert_eq!(stream_cleaning(person), Cleaning::NOTHING, "forgotten");
+        // It travels to the worker as it is.
+        let sent = serde_json::to_string(&noise).unwrap();
+        assert_eq!(serde_json::from_str::<Cleaning>(&sent).unwrap(), noise);
+    }
+
+    #[test]
+    fn a_strength_of_none_does_nothing_and_full_is_each_suppressors_limit() {
+        let rnnoise = Cleaning {
+            noise: Suppressor::RNNoise,
+            ..Cleaning::NOTHING
+        };
+        assert!(rnnoise.denoises());
+        assert_eq!(rnnoise.noise_limit(Suppressor::RNNoise), 30.0, "as before");
+        assert_eq!(rnnoise.noise_limit(Suppressor::DeepFilterNet), 40.0);
+        let half = Cleaning {
+            noise_strength: 50,
+            ..rnnoise
+        };
+        assert_eq!(half.noise_limit(Suppressor::RNNoise), 15.0);
+        let none = Cleaning {
+            noise_strength: 0,
+            ..rnnoise
+        };
+        assert!(!none.denoises() && !none.any(), "their voice as it comes");
+        let echo = Cleaning {
+            own_echo: true,
+            ..Cleaning::NOTHING
+        };
+        assert!(echo.removes_echo());
+        assert_eq!(echo.echo_depth, 20, "as before");
+        let flat = Cleaning {
+            echo_depth: 0,
+            ..echo
+        };
+        assert!(!flat.removes_echo() && !flat.any());
     }
 
     #[cfg(feature = "discord")]
@@ -357,8 +521,8 @@ mod tests {
         mute("volume-test-9", true);
         set(Kind::Voice, "volume-test-9", 1.5);
         let noise = Cleaning {
-            noise: true,
-            own_echo: false,
+            noise: Suppressor::RNNoise,
+            ..Cleaning::NOTHING
         };
         set_cleaning("volume-test-10", noise);
         let mut copied = HashMap::new();

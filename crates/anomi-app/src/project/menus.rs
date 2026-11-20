@@ -1,8 +1,9 @@
 //! Every menu's rows: a server's, a folder's ([`folder`]), a conversation's,
 //! a category's, a person's, the server header's dropdown, its events, the
-//! header's bell and a thread's More (`menu`, `src/ui/menus.rs:110`), and the
-//! message's facts (`message`). The rows are built as a menu opens, never on
-//! a refresh: a closed menu costs nothing. A person's menu opened before
+//! header's bell and a thread's More (`menu`, `src/ui/menus.rs:110`), the
+//! message's facts (`message`), and a watched stream's tile's (`stream`,
+//! Anomi's own). The rows are built as a menu opens, never on a refresh: a
+//! closed menu costs nothing. A person's menu opened before
 //! the open room's apps came is built again once they have
 //! ([`show`]), as the Slint window's `changed app-commands-ready` does.
 //!
@@ -14,6 +15,7 @@ pub(crate) mod folder;
 mod label;
 pub(crate) mod message;
 pub(crate) mod notify;
+pub(crate) mod stream;
 pub(crate) mod subs;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -57,6 +59,9 @@ pub(crate) struct Shown {
     /// The link the message menu opened on is masked: its Open Link asks
     /// before leaving, as a click on it does.
     pub(crate) message_masked: bool,
+    /// Where a participant's card was opened, which places it and its rows
+    /// again as its sliders come and go (`intent::menus::cleaning`).
+    pub(crate) card_at: iced::Point,
 }
 
 /// Makes the rows of the menu about `target`, each sending its choice.
@@ -199,6 +204,10 @@ pub(crate) fn rows(core: &Application, layout: &Layout, target: &str, person: bo
             C::ServerNotifications => notifications()
                 .map(|known| level_name(known.own.level.unwrap_or(known.own.inherited)).to_owned())
                 .unwrap_or_default(),
+            // The suppressor chosen, as a device menu names its device.
+            C::SuppressTheirNoise => {
+                subs::suppressor_name(yapfast_core::volume::cleaning(id).noise).to_owned()
+            }
             _ => String::new(),
         };
         if label::checkbox(choice) {
@@ -209,7 +218,6 @@ pub(crate) fn rows(core: &Application, layout: &Layout, target: &str, person: bo
                 C::HideMuted => notifications().is_some_and(|known| known.hide_muted),
                 C::LocalMute => yapfast_core::volume::muted(id),
                 C::SoundboardMute => yapfast_core::volume::soundboard_muted(id),
-                C::SuppressTheirNoise => yapfast_core::volume::cleaning(id).noise,
                 C::RemoveMyEcho => yapfast_core::volume::cleaning(id).own_echo,
                 C::SelfMute => state.voice.muted,
                 C::SelfDeafen => state.voice.deafened,
@@ -236,6 +244,9 @@ pub(crate) fn rows(core: &Application, layout: &Layout, target: &str, person: bo
                 Some((room, user)) => subs::move_to(core, &make, room, user),
                 None => Vec::new(),
             },
+            C::SuppressTheirNoise => {
+                subs::their_noise(&make, yapfast_core::volume::cleaning(id).noise)
+            }
             _ => Vec::new(),
         };
         if !submenu.is_empty() {

@@ -144,8 +144,9 @@ of the server, with what Discord's client adds there, in its order:
   keeps their volume for when it's unticked, and Mute Soundboard, a box
   that silences the soundboard sounds they play, for this account alone;
   Yapfast remembers both, as Discord's client keeps them locally. Then two
-  boxes of Yapfast's own, kept as Mute is, which Discord's client lacks:
-  Suppress their noise and Remove my echo (`docs/discord/voice.md`,
+  rows of Anomi's own, kept as Mute is, which Discord's client lacks:
+  Suppress their noise, a submenu of suppressors, and the box Remove my echo,
+  each with a slider on the card above when on (`docs/discord/voice.md`,
   "Cleaning someone's voice"); a DM call's menu has those two alone. One's own
   entry, in the call Yapfast is in there, has Mute and Deafen boxes for this
   account's own instead, and no volume.

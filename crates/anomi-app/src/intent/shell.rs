@@ -178,7 +178,8 @@ fn close(app: &mut App, layer: Layer) -> Task<Message> {
 /// popouts do, each through its own close as Escape closes it, so the core
 /// lets go what it showed: the window's menu with its submenus and the
 /// participant's card over it, every transient layer ([`Layer::transient`])
-/// from the top, and the composer's suggestions. What the person is in the
+/// from the top, the composer's suggestions and the card beside someone in
+/// a voice channel. What the person is in the
 /// middle of stays. Nothing awaited hangs on what closes here: a file
 /// dialog's answer goes to the core or the composer, and Go Live closes its
 /// menu before the system's dialog asks.
@@ -198,6 +199,9 @@ pub(crate) fn unfocused(app: &mut App) -> Task<Message> {
         }
     }
     tasks.push(super::chat::composer::close_suggestions(app));
+    // The card beside someone in a voice channel goes with its row's own
+    // word of it, and its stream's preview stops being asked for.
+    tasks.push(super::sidebar::card_gone(app));
     Task::batch(tasks)
 }
 

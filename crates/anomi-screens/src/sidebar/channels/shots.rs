@@ -3,6 +3,9 @@
 //! `thread/book_club_not_joined`, `menu/channel_context`), then the states
 //! they don't show. Shots have no pointer: the hover fill, the chat button
 //! and the card of who is in a voice channel are the tests' and the app's.
+//! The card of what someone in a voice channel is doing shows while the
+//! view-model holds it, so its shots show it: playing, streaming without a
+//! still and with one, and watched.
 
 use anomi_vm::Vm;
 use anomi_vm::fixtures::shell;
@@ -34,6 +37,14 @@ pub fn shots() -> Vec<Shot> {
         shot("channels", "moving", channels::moving_window),
         shot("channels", "empty", channels::empty_window),
         shot("channels", "browsing", channels::browsing_window),
+        shot("channels", "card_playing", channels::playing_window),
+        shot("channels", "card_streaming", channels::streaming_window),
+        shot(
+            "channels",
+            "card_streaming_preview",
+            channels::streaming_preview_window,
+        ),
+        shot("channels", "card_watching", channels::watching_window),
         Shot {
             theme: "catppuccin-latte",
             ..shot("channels", "general_latte", shell::server_home)

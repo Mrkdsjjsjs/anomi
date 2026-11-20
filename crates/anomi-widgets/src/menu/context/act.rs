@@ -57,7 +57,9 @@ impl<M: Clone> ContextMenu<'_, M> {
     }
 
     /// `pick` (`:1394`): a disabled row does nothing; a box sends its
-    /// intent and stays; any other sends its intent and closes.
+    /// intent and stays, and so does a radio, whose mark moves to it, as
+    /// what it chose may show beside the menu (a participant's card grows a
+    /// slider); any other sends its intent and closes.
     fn pick(&self, row: &Row<M>, shell: &mut Shell<'_, M>) {
         if row.disabled {
             return;
@@ -66,6 +68,7 @@ impl<M: Clone> ContextMenu<'_, M> {
             shell.publish(intent.clone());
         }
         if !row.checkbox
+            && !row.radio
             && let Some(close) = &self.on_close
         {
             shell.publish(close.clone());

@@ -22,6 +22,8 @@ mod previews;
 mod soundboard;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod tests_tiles;
 mod tiles;
 
 use yapfast_core::application::Application;
@@ -76,6 +78,9 @@ pub struct Shown {
     /// The call was connected at the last update: joining unmuted waits
     /// for it.
     pub ready: bool,
+    /// Go Live's "Hide stream preview", as the layout keeps it: this
+    /// account's stream shows no picture of itself, and none is made.
+    pub preview_hidden: bool,
     /// The wait that leaves an empty private call.
     pub alone: crate::intent::voice::alone::Alone,
     /// The streams whose previews are in sight, which the core asks for
@@ -142,7 +147,16 @@ pub fn show(
         close(vm, Layer::FullStage);
     }
     shown.lives.follow(voice);
-    let built = tiles::tiles(state, stage, &shown.lives, &mut shown.tiles, requests);
+    shown.preview_hidden = layout.hide_stream_preview;
+    let hidden = shown.preview_hidden;
+    let built = tiles::tiles(
+        state,
+        stage,
+        &shown.lives,
+        hidden,
+        &mut shown.tiles,
+        requests,
+    );
     let full = vm.shell.is_open(Layer::FullStage);
     let made = Tiles::new(built, focused, full, shown.others_hidden);
     if vm.voice.stage != made {
@@ -231,8 +245,9 @@ fn corner(
             let sharing = voice.sharing.as_ref();
             let phase = sharing.map(|sharing| sharing.phase);
             pip.title = tr!("Your screen").into();
-            pip.status = tiles::share_status(phase).into();
-            pip.frame = frame(lives.own.as_ref().map(|live| &live.1));
+            pip.status = tiles::own_status(phase, shown.preview_hidden).into();
+            pip.frame =
+                frame(lives.own.as_ref().map(|live| &live.1)).filter(|_| !shown.preview_hidden);
             pip.live = phase == Some(yapfast_core::voice::SharePhase::Live);
             let ids = sharing.map_or(&[][..], |sharing| &sharing.viewers);
             pip.viewers = tiles::viewers(state, stage.participants, ids, None);
@@ -291,6 +306,7 @@ pub fn place(core: &Application, vm: &Vm, shown: &mut Shown, media: &mut Media) 
             .map(|(pip, _)| pip)
             .filter(|_| vm.shell.is_open(Layer::Pip) && !covered),
         scale: anomi_widgets::picture::scale(),
+        own_hidden: shown.preview_hidden,
     };
     let sources = shown.lives.place(voice, stage, sight);
     crate::media::follow_call(media, sources);

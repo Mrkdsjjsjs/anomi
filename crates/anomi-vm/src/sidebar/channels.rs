@@ -15,8 +15,10 @@
 //! icons, the call's length as text. Dragging asks the app, which says what
 //! may drop where in [`Channels::arranging`] and [`Channels::moving`].
 
+pub mod hover;
 mod people;
 
+pub use hover::HoverCard;
 pub use people::VoicePerson;
 
 use crate::icon::Icon;
@@ -42,6 +44,9 @@ pub struct Channels {
     pub arranging: Option<Box<Arranging>>,
     /// Someone being dragged from a voice channel onto another.
     pub moving: Option<Box<Moving>>,
+    /// The card beside the row of someone in a voice channel the pointer
+    /// rests on, while it shows; boxed as the drags are.
+    pub hover: Option<Box<HoverCard>>,
 }
 
 /// A channel, or a category's heading above its channels.
@@ -222,9 +227,20 @@ pub enum Intent {
         user: String,
         at: Spot,
     },
-    /// Their LIVE tag: watch their stream, by their id in the call
-    /// (`show-voice-person`).
+    /// Their LIVE tag, or Watch Stream on their card: watch their stream,
+    /// by their id in the call, joining it first (`show-voice-person`).
     Watch { channel: String, person: String },
+    /// The pointer rested on the row of someone who plays or streams
+    /// ([`VoicePerson::has_card`]): their card shows beside it
+    /// ([`Channels::hover`]), by the channel's room id and their user id.
+    Hover { channel: String, user: String },
+    /// Their card goes: the pointer left their row and the card a moment
+    /// ago, a click, a right click or the wheel on the row took it, or the
+    /// window went behind another.
+    Unhover { channel: String, user: String },
+    /// The card's button to where the game is sold: its page opens in the
+    /// browser.
+    OpenStore(String),
     /// Dragging a channel or a category.
     Arrange(Arrange),
     /// Dragging someone onto another voice channel.

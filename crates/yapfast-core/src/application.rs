@@ -57,6 +57,7 @@ mod slash;
 mod stickers;
 mod stream_previews;
 mod threads;
+mod voice_card;
 
 pub use arrange::{Landing, MoveSync};
 pub use browse::{BrowseChannels, BrowsedChannel, BrowsedKind};
@@ -601,9 +602,15 @@ pub struct AppState {
     pub pending_camera: Option<String>,
     /// The previews Discord has of the streams in this account's call that
     /// it isn't watching, by their streamers' ids as in
-    /// [`voice::Participant::id`], which their tiles show. One is at most
-    /// 512 by 288 pixels, and goes when its stream is watched or ends.
+    /// [`voice::Participant::id`], which their tiles show, and of the stream
+    /// whose card shows beside its streamer's row in the channel list
+    /// ([`Action::HoverVoicePerson`]). One is at most 512 by 288 pixels, and
+    /// goes when its stream is watched or ends, or its card goes.
     pub stream_previews: HashMap<String, Arc<Picture>>,
+    /// Where the game the last card of someone in a voice channel asked
+    /// about is sold, by its application id: none until Discord's list of
+    /// games was read, or when it's sold nowhere a page can be named.
+    pub game_store: Option<(String, Option<chat::StorePage>)>,
     /// The places visited before this one, newest last, and those stepped
     /// back from, for the title bar's back and forward arrows.
     pub nav_back: Vec<HistoryPlace>,
@@ -1809,6 +1816,11 @@ pub enum Action {
     /// The moment [`Application::stream_previews_due`] named came: the
     /// previews on screen that fell due are asked for again.
     StreamPreviewsDue,
+    /// The card beside someone's row under a voice channel shows, by the
+    /// channel's room id and their user id, or with none it went: their
+    /// stream's preview counts as on screen, as a tile's does, and where
+    /// their game is sold is looked up ([`AppState::game_store`]).
+    HoverVoicePerson(Option<(String, String)>),
     /// Show the selected room's message with this item; see
     /// [`AppState::jump`]. When the timeline doesn't have it, the messages
     /// around it load in its place; see [`AppState::detached`].
@@ -4135,6 +4147,9 @@ impl Application {
             Action::WindowFocused(focused) => self.window_focused(focused),
             Action::VisibleStreams(users) => self.show_streams(users, crate::clock::now_ms()),
             Action::StreamPreviewsDue => self.ask_due_previews(crate::clock::now_ms()),
+            Action::HoverVoicePerson(hovered) => {
+                self.hover_voice_person(hovered, crate::clock::now_ms())
+            }
             Action::ActivityCardsHidden(hidden) => self.set_activity_cards_hidden(hidden),
             Action::SkipCallPrompt(skip) => {
                 self.state.skip_call_prompt = skip;
@@ -4335,6 +4350,7 @@ impl Application {
                 user,
                 picture,
             } => self.keep_stream_preview(&room, user, picture),
+            Event::GameStore { application, page } => self.keep_game_store(application, page),
             Event::Video(video) => {
                 self.state.video = video.filter(|video| self.state.shows_room(&video.room));
             }

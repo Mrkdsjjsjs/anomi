@@ -157,14 +157,13 @@ pub struct Saved {
     pub muted_people: BTreeSet<String>,
     /// Those whose soundboard sounds this account doesn't hear.
     pub soundboard_muted_people: BTreeSet<String>,
-    /// Those whose voice this device takes the noise out of, and those
-    /// whose voice it takes this account's own echo out of, from their menu
-    /// in a call (`yapfast_core::volume::Cleaning`). Written only once
-    /// someone is in them.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    pub denoised_people: BTreeSet<String>,
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    pub echo_removed_people: BTreeSet<String>,
+    /// How this device cleans each person's voice, by user id, from their
+    /// menu in a call (`super::cleaning`); written once someone is in it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub cleaned_voices: BTreeMap<String, super::CleanedVoice>,
+    /// The same for the sound of each one's stream watched, by streamer.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub cleaned_streams: BTreeMap<String, super::CleanedVoice>,
     /// Others see when this account is typing; on unless turned off.
     pub share_typing: Option<bool>,
     /// Desktop notifications, and whether they say what messages say; on
@@ -213,6 +212,9 @@ pub struct Saved {
     /// ([`Saved::encoder`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_encoder: Option<String>,
+    /// Go Live's "Hide stream preview" (its own stream's); written once set.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hide_stream_preview: bool,
     /// The processor's cores the program runs on; Auto unless chosen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_mode: Option<CpuChoice>,
@@ -289,13 +291,15 @@ impl Saved {
 
     /// What the Slint app's `Layout::read` settles as it reads: a person who
     /// turned off the desktop's sound for notifications, before the app had
-    /// its own sounds, keeps messages and mentions quiet.
+    /// its own sounds, keeps messages and mentions quiet; and Anomi's own
+    /// voices cleaned as an earlier Anomi kept them (`super::cleaning`).
     pub fn settle(&mut self) {
         if self.notification_sound.take() == Some(false) {
             self.adjust_each_sound = true;
             self.each_sound.insert(Sound::Message, 0);
             self.each_sound.insert(Sound::Mention, 0);
         }
+        self.settle_cleaning();
     }
 }
 

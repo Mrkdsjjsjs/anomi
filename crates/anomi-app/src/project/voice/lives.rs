@@ -16,7 +16,7 @@ use yapfast_core::voice;
 use anomi_vm::kind::Live;
 use anomi_vm::voice::stage::Placement;
 
-use super::focus::{Focus, Pip, Stage};
+use super::focus::{Focus, Pip, Slot, Stage};
 use crate::media::{Clock, Source};
 
 /// A worker's frames, the `Live` they show in, and how far in they are.
@@ -42,6 +42,9 @@ pub struct Sight {
     pub pip: Option<Pip>,
     /// Pixels a logical one.
     pub scale: f32,
+    /// Go Live's "Hide stream preview": this account's screen is never in
+    /// sight, so the worker makes no preview of it.
+    pub own_hidden: bool,
 }
 
 impl Sight {
@@ -87,29 +90,29 @@ impl Lives {
     }
 
     /// Tells each camera the size it shows at, or that it doesn't, and says
-    /// which pictures the window follows: those in sight, in front.
+    /// which pictures the window follows: those in sight, in front. Each
+    /// shows in its own tile: a camera in its person's, a stream in its own.
     pub fn place(&self, voice: &voice::State, stage: Stage<'_>, sight: Sight) -> Vec<Source> {
         let mut sources = Vec::new();
-        let before = stage.before();
         let pixels = |side: f32| (side * sight.scale).round() as u32;
         let corner = (
             anomi_vm::voice::pip::Pip::WIDTH,
             anomi_vm::voice::pip::Pip::HEIGHT,
         );
         let in_grid = |slot: usize| sight.in_grid(slot);
-        for (index, person) in stage.participants.iter().enumerate() {
+        let large = sight.placement.and_then(|placement| placement.focused);
+        for (slot, kind) in stage.slots().enumerate() {
+            let Slot::Person(index) = kind else { continue };
+            let person = &stage.participants[index];
             let Some(feed) = &person.video else { continue };
             let in_corner = sight.front && sight.pip == Some(Pip::Camera(index));
             let at = if in_corner {
                 Some((pixels(corner.0), pixels(corner.1)))
             } else {
-                in_grid(before + index)
+                in_grid(slot)
             };
-            let large = !in_corner
-                && at.is_some()
-                && sight.placement.and_then(|placement| placement.focused) == Some(before + index);
             feed.show_at(at);
-            feed.show_large(large);
+            feed.show_large(!in_corner && at.is_some() && large == Some(slot));
             if at.is_some()
                 && let Some(live) = self.camera(&person.id)
             {
@@ -127,8 +130,10 @@ impl Lives {
             mapped(watched, seen, &mut sources);
         }
         if let Some(own) = &self.own {
-            let seen = sight.front
-                && (sight.pip == Some(Pip::Shared) || in_grid(0).is_some() && stage.sharing);
+            let slot = stage.slot(&Focus::OwnScreen);
+            let seen = !sight.own_hidden
+                && sight.front
+                && (sight.pip == Some(Pip::Shared) || slot.and_then(in_grid).is_some());
             mapped(own, seen, &mut sources);
         }
         sources

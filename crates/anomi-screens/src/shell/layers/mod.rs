@@ -229,7 +229,12 @@ fn notes<'a>(
 /// One open layer, with its look.
 fn one<'a>(vm: &'a Vm, motion: Motion, frame: Frame, opened: &Opened) -> layer::Layer<'a, Intent> {
     let content = content::content(vm, motion, opened.layer);
-    let look = look(opened.layer);
+    let look = match opened.layer {
+        // Go Live is Discord's dialog in the middle; while live the same
+        // layer is the stream's menu at its button.
+        Layer::Share if vm.voice.share.live.is_none() => Look::Dialog { settings: false },
+        layer => look(layer),
+    };
     let close = Intent::Shell(shell::Intent::Close(opened.layer));
     let content: Element<'a, Intent> = match look {
         Look::Screen {

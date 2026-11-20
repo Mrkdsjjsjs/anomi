@@ -21,7 +21,8 @@ const SIZE: Size = Size::new(420.0, 236.0);
 const ALICE: &str = "1400000000000000001";
 const BOB: &str = "1400000000000000002";
 
-/// Its stop button at the top right, and the bottom right's two.
+/// The top right corner's button, on a tile without a LIVE badge, and the
+/// bottom right's two.
 const STOP: Point = Point::new(SIZE.width - 26.0, 26.0);
 const FULL: Point = Point::new(SIZE.width - 26.0, SIZE.height - 26.0);
 const HIDE: Point = Point::new(SIZE.width - 66.0, SIZE.height - 26.0);
@@ -61,9 +62,25 @@ fn right_click_at(tile: &Tile, at: Point) -> Vec<Intent> {
     asked(ui)
 }
 
-/// Bob's stream watched in his tile, shown large.
+/// Bob's stream watched in its own tile, shown large.
 fn watched() -> Tile {
     samples::watching().swap_remove(1)
+}
+
+/// The button right before a stream's LIVE badge at the top right: stop
+/// watching, or this account's gear. The tag's words are 5 px inside it,
+/// the button 32 px wide and 8 px before it.
+fn before_badge(tile: &Tile) -> Point {
+    let mut ui = simulate(tile);
+    let live = ui.find("LIVE").expect("its badge").bounds();
+    Point::new(live.x - 5.0 - 8.0 - 16.0, 26.0)
+}
+
+/// Bob's own tile with the LIVE tag in its chip, as a tile can still say.
+fn tagged() -> Tile {
+    let mut bob = samples::bob();
+    bob.chip.live = true;
+    bob
 }
 
 #[test]
@@ -76,11 +93,19 @@ fn a_click_on_someone_shows_them_large() {
 
 #[test]
 fn a_click_on_a_stream_offered_watches_it() {
+    let stream = samples::offered(true);
+    let mut ui = simulate(&stream);
+    let live = ui.find("LIVE").expect("its badge says it's live").bounds();
+    assert!(
+        live.x > SIZE.width - 60.0 && live.y < 20.0,
+        "top right: {live:?}"
+    );
+    ui.click("Watch stream").expect("the pill in its middle");
+    assert_eq!(asked(ui), [Intent::Watch(BOB.into())]);
+    // His own tile keeps his picture, and says nothing of his stream.
     let bob = samples::bob();
     let mut ui = simulate(&bob);
-    assert!(ui.find("LIVE").is_ok(), "his chip says he is live");
-    ui.click("Watch stream").expect("the pill at the top right");
-    assert_eq!(asked(ui), [Intent::Watch(BOB.into())]);
+    assert!(ui.find("LIVE").is_err() && ui.find("Watch stream").is_err());
 }
 
 #[test]
@@ -117,17 +142,27 @@ fn a_right_click_opens_their_menu_at_the_pointer() {
         right_click_at(&samples::alice(), at),
         [Intent::Menu(ALICE.into(), Spot::pointer(at))]
     );
-    let stream = samples::with_camera().swap_remove(0);
+    // A stream's: the menu of its sound while it's watched, the app says.
+    let stream = samples::with_camera().swap_remove(1);
     assert_eq!(
         right_click_at(&stream, at),
+        [Intent::StreamMenu(BOB.into(), Spot::pointer(at))]
+    );
+    assert_eq!(
+        right_click_at(&samples::bob(), at),
         [Intent::Menu(BOB.into(), Spot::pointer(at))]
     );
-    assert_eq!(right_click_at(&samples::sharing(), at), []);
+    // This account's screen: its stream's menu, as Discord's.
+    assert_eq!(
+        right_click_at(&samples::sharing(), at),
+        [Intent::OwnMenu(Spot::pointer(at))]
+    );
 }
 
 #[test]
 fn the_large_tile_under_the_pointer_has_its_buttons() {
-    assert_eq!(click_at(&watched(), STOP), [Intent::StopWatching]);
+    let stop = before_badge(&watched());
+    assert_eq!(click_at(&watched(), stop), [Intent::StopWatching]);
     assert_eq!(click_at(&watched(), HIDE), [Intent::HideOthers(true)]);
     assert_eq!(click_at(&watched(), FULL), [Intent::FullScreen(true)]);
     let hidden = Tile {
@@ -145,10 +180,12 @@ fn the_large_tile_under_the_pointer_has_its_buttons() {
 }
 
 /// As Discord's: this account's stream shows a gear under the pointer, at
-/// the top right, whose menu has its quality; nobody else's tile has one.
+/// the top right before its badge, whose menu has its quality; nobody
+/// else's tile has one.
 #[test]
 fn this_accounts_stream_has_its_gear_under_the_pointer() {
-    let asked = click_at(&samples::sharing(), STOP);
+    let gear = before_badge(&samples::sharing());
+    let asked = click_at(&samples::sharing(), gear);
     assert!(
         matches!(asked.as_slice(), [Intent::StreamSettings(_)]),
         "{asked:?}"
@@ -165,9 +202,12 @@ fn a_small_tile_has_no_large_tile_buttons() {
     let small = samples::waiting();
     assert_eq!(
         click_at(&small, FULL),
-        [Intent::Focus(Key::Person(BOB.into()))]
+        [Intent::Focus(Key::Stream(BOB.into()))]
     );
-    assert_eq!(click_at(&small, STOP), [Intent::StopWatching]);
+    assert_eq!(
+        click_at(&small, before_badge(&small)),
+        [Intent::StopWatching]
+    );
 }
 
 #[test]
@@ -274,11 +314,8 @@ fn holding(
 fn a_long_name_leaves_the_live_tag_its_room() {
     const NAME: &str = "Bartholomew Fitzgerald Ashcomb";
     const SMALL: Size = Size::new(192.0, 108.0);
-    let full = simulate(&samples::bob())
-        .find("LIVE")
-        .expect("his tag")
-        .bounds();
-    let mut long = samples::bob();
+    let full = simulate(&tagged()).find("LIVE").expect("his tag").bounds();
+    let mut long = tagged();
     long.chip.name = NAME.into();
     let mut ui = Simulator::with_size(settings(), SMALL, tiles::view(&long, front()));
     let live = ui.find("LIVE").expect("his tag").bounds();

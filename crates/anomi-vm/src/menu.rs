@@ -83,7 +83,8 @@ pub struct Row<I = crate::Intent> {
     /// choosing it leaves the menu open.
     pub checkbox: bool,
     /// One choice of a set, with a round mark at its end, filled while it's
-    /// the one chosen (`checked`), as Discord's device and profile rows.
+    /// the one chosen (`checked`), as Discord's device and profile rows;
+    /// choosing it leaves the menu open.
     pub radio: bool,
     /// Ticked, for a checkbox; chosen, for a radio; otherwise the current
     /// choice, marked with a check in place of its icon and in bold.

@@ -1,5 +1,6 @@
-//! The share menu: task V10's tests, driving `anomi_voice::share::view` over
-//! its fixtures in the simulator (`super::support`).
+//! The Go Live dialog and the stream's menus: driving
+//! `anomi_voice::share::view` over its fixtures in the simulator
+//! (`super::support`), and the gear's and one's own stream's menus as rows.
 
 use iced::Size;
 use iced::keyboard::key::Named;
@@ -7,178 +8,221 @@ use iced_test::{Simulator, selector};
 
 use anomi_theme::{Renderer, Theme};
 use anomi_vm::fixtures::voice::share as samples;
-use anomi_vm::menu::Key;
-use anomi_vm::voice::share::{Intent, Resolution, Share, Sound};
-use anomi_voice::share::{self, built};
+use anomi_vm::menu::{Key, Row};
+use anomi_vm::voice::share::{Intent, Offer, Resolution, Share, Sound, Tab};
+use anomi_voice::share::{self, built, gear, own_menu};
 
 use super::support::{asked, front, settings};
 
-const SIZE: Size = Size::new(336.0, 1000.0);
+/// Room for the dialog, as Discord's.
+const DIALOG: Size = Size::new(1000.0, 640.0);
 /// Room for the stream's menu and a submenu beside it.
 const LIVE: Size = Size::new(900.0, 700.0);
 
-fn menu(share: Share) -> Share {
-    built(share)
-}
-
 fn simulate(vm: &Share) -> Simulator<'_, Intent, Theme, Renderer> {
-    Simulator::with_size(settings(), SIZE, share::view(vm, front()))
+    Simulator::with_size(settings(), DIALOG, share::view(vm, front()))
 }
 
-/// Clicks `text` and returns what the menu asked for.
+/// Clicks `text` and returns what the dialog asked for.
 fn click(vm: &Share, text: &str) -> Vec<Intent> {
     let mut ui = simulate(vm);
     ui.click(text).unwrap();
     asked(ui)
 }
 
-/// Presses the button under the choices.
+/// Presses the button at the bottom right.
 fn go(vm: &Share) -> Vec<Intent> {
     let mut ui = simulate(vm);
     let _ = ui.click(selector::id(share::GO));
     asked(ui)
 }
 
-#[test]
-fn with_nothing_listed_it_picks_sound_and_quality_only() {
-    let vm = menu(samples::dialog());
-    let mut ui = simulate(&vm);
-    for shown in ["SOUND", "RESOLUTION", "FRAME RATE", "ENCODING"] {
-        assert!(ui.find(shown).is_ok(), "{shown}");
-    }
-    for hidden in ["SCREENS", "WINDOWS", "CAMERAS", "SCREEN", "One application"] {
-        assert!(ui.find(hidden).is_err(), "{hidden}");
-    }
+/// A window menu's row by its text, among its submenus too.
+fn row<'a>(rows: &'a [Row], text: &str) -> &'a Row {
+    rows.iter()
+        .find_map(|row| {
+            (row.text == text)
+                .then_some(row)
+                .or_else(|| row.submenu.iter().find(|row| row.text == text))
+        })
+        .unwrap_or_else(|| panic!("no row {text}"))
 }
 
 #[test]
-fn sources_are_listed_in_order_and_counted_from_the_screens() {
-    let vm = menu(samples::listed());
+fn where_the_system_picks_the_cards_ask_it_for_their_kind() {
+    let vm = built(samples::dialog());
     let mut ui = simulate(&vm);
     for shown in [
-        "SCREENS",
-        "WINDOWS",
-        "SCREEN",
-        "CAMERAS",
-        "Screen or window",
+        "Applications",
+        "Devices",
+        "Share your screen, a window or an application",
+        "Choose What to Share",
     ] {
         assert!(ui.find(shown).is_ok(), "{shown}");
     }
-    assert_eq!(click(&vm, "Screen 2"), [Intent::Source(1)]);
-    assert_eq!(click(&vm, "Terminal"), [Intent::Source(2)]);
-    assert_eq!(click(&vm, "Screen or window"), [Intent::Source(5)]);
-    assert_eq!(click(&vm, "Webcam"), [Intent::Source(6)]);
+    drop(ui);
+    assert_eq!(
+        click(&vm, "Share Entire Screen"),
+        [Intent::Ask(Offer::Screen)]
+    );
+    assert_eq!(click(&vm, "Share a Window"), [Intent::Ask(Offer::Window)]);
+    assert_eq!(go(&vm), [Intent::Ask(Offer::Either)]);
 }
 
 #[test]
-fn the_dialog_is_a_choice_only_beside_cameras() {
-    assert!(menu(samples::dialog()).rows.dialog.is_none());
-    assert!(menu(samples::listed()).rows.dialog.is_some());
-    let no_cameras = Share {
-        cameras: Vec::new(),
-        ..samples::listed()
-    };
-    assert!(menu(no_cameras).rows.dialog.is_none());
+fn the_mode_and_quality_show_along_the_bottom() {
+    let vm = built(samples::dialog());
+    let mut ui = simulate(&vm);
+    assert!(ui.find("Custom Quality").is_ok());
+    assert!(ui.find("720p · 60fps · System sound").is_ok());
+    drop(ui);
+    let muted = built(Share {
+        sound: Sound::None,
+        resolution: Resolution::Source,
+        fps: 15,
+        ..samples::dialog()
+    });
+    assert_eq!(muted.rows.mode, "Screen Share");
+    assert_eq!(muted.rows.quality, "Source · 15fps · No sound");
+}
+
+#[test]
+fn elsewhere_screens_and_windows_are_listed_and_picked() {
+    let vm = built(samples::listed());
+    assert!(simulate(&vm).find("Share Entire Screen").is_err());
+    assert_eq!(click(&vm, "Screen 2"), [Intent::Source(1)]);
+    assert_eq!(click(&vm, "Terminal"), [Intent::Source(2)]);
+    assert_eq!(click(&vm, "Devices"), [Intent::Tab(Tab::Devices)]);
+    assert!(matches!(
+        go(&vm)[..],
+        [Intent::GoLive {
+            source: 0,
+            resolution: Resolution::P1080,
+            fps: 30,
+            high_quality: false,
+        }]
+    ));
+    let mut ui = simulate(&vm);
+    assert!(ui.find("Start Streaming").is_ok());
 }
 
 #[test]
 fn a_screen_alone_is_still_chosen_by_its_card() {
-    let vm = menu(samples::one_screen());
+    let vm = built(samples::one_screen());
     assert_eq!(click(&vm, "Screen 1"), [Intent::Source(0)]);
 }
 
 #[test]
-fn the_choices_ask_for_themselves() {
-    let vm = menu(samples::dialog());
-    assert_eq!(click(&vm, "720p"), [Intent::Resolution(Resolution::P720)]);
-    assert_eq!(
-        click(&vm, "Source"),
-        [Intent::Resolution(Resolution::Source)]
-    );
-    assert_eq!(click(&vm, "60 fps"), [Intent::Fps(60)]);
-    assert_eq!(click(&vm, "No sound"), [Intent::Sound(Sound::None)]);
-    assert_eq!(click(&vm, "Higher quality"), [Intent::HighQuality(true)]);
+fn devices_lists_the_cameras_to_stream() {
+    let vm = built(samples::devices());
+    assert_eq!(vm.tab, Tab::Devices);
+    assert_eq!(click(&vm, "OBS Virtual Camera"), [Intent::Source(1)]);
+    assert!(matches!(go(&vm)[..], [Intent::GoLive { source: 0, .. }]));
+    assert_eq!(click(&vm, "Applications"), [Intent::Tab(Tab::Apps)]);
 }
 
 #[test]
-fn a_ticked_quality_asks_to_untick() {
-    let vm = menu(Share {
-        high_quality: true,
-        ..samples::dialog()
-    });
-    assert_eq!(click(&vm, "Higher quality"), [Intent::HighQuality(false)]);
-}
-
-#[test]
-fn go_live_carries_the_picks() {
-    let vm = menu(Share {
-        source: Some(2),
-        resolution: Resolution::P720,
-        fps: 60,
-        high_quality: true,
-        ..samples::listed()
-    });
-    assert_eq!(
-        go(&vm),
-        [Intent::GoLive {
-            source: 2,
-            resolution: Resolution::P720,
-            fps: 60,
-            high_quality: true,
-        }]
-    );
-}
-
-#[test]
-fn one_application_opens_its_list_and_names_the_choice() {
-    let closed = menu(Share {
-        apps_open: false,
-        sound: Sound::All,
-        ..samples::apps()
-    });
-    assert_eq!(closed.rows.sound[2].subtitle, "Chosen by its window");
-    assert_eq!(menu(samples::apps()).rows.sound[2].subtitle, "Video");
-    assert_eq!(click(&closed, "One application"), [Intent::Apps(true)]);
-
-    let open = menu(samples::apps());
-    assert_eq!(click(&open, "One application"), [Intent::Apps(false)]);
-    assert_eq!(
-        click(&open, "Music"),
-        [Intent::Sound(Sound::App(0))],
-        "the list's rows choose the application"
-    );
-}
-
-#[test]
-fn without_windows_to_choose_from_there_is_no_application_row() {
-    let vm = menu(samples::dialog());
-    assert_eq!(vm.rows.sound.len(), 2);
-    assert!(menu(samples::apps()).rows.sound.len() == 3);
-}
-
-/// After "Change Windows" the menu lists what to share instead: the
-/// stream's menu has the quality and the sound.
-#[test]
-fn switching_lists_the_sources_alone_and_waits_for_a_pick() {
-    let vm = menu(samples::switching());
+fn without_a_camera_devices_says_so_and_waits() {
+    let vm = built(samples::no_devices());
     let mut ui = simulate(&vm);
-    for shown in ["SCREENS", "WINDOWS", "CAMERAS", "Terminal"] {
-        assert!(ui.find(shown).is_ok(), "{shown}");
-    }
-    for hidden in ["SOUND", "RESOLUTION", "FRAME RATE", "ENCODING"] {
-        assert!(ui.find(hidden).is_err(), "{hidden}");
-    }
-    drop(ui);
-    // Before going live the sound comes first, then the quality.
-    let listed = menu(samples::listed());
-    let mut ui = simulate(&listed);
-    let sound = ui.find("SOUND").unwrap().bounds().y;
-    assert!(sound < ui.find("RESOLUTION").unwrap().bounds().y);
+    assert!(ui.find("No capture devices found.").is_ok());
     drop(ui);
     assert!(!vm.can_go());
-    assert_eq!(vm.go(), None);
-    // Disabled: pressing it asks for nothing.
+    assert!(go(&vm).is_empty(), "disabled: it asks for nothing");
+}
+
+#[test]
+fn switching_waits_for_a_pick_then_switches() {
+    let vm = built(samples::switching());
+    let mut ui = simulate(&vm);
+    assert!(ui.find("Switch").is_ok());
+    drop(ui);
     assert!(go(&vm).is_empty());
+    let picked = built(Share {
+        source: Some(1),
+        ..samples::switching()
+    });
+    assert_eq!(go(&picked), [Intent::Switch(1)]);
+}
+
+#[test]
+fn the_gears_menu_has_discords_modes_and_ours_under_advanced() {
+    let vm = built(samples::tuned());
+    let rows = gear(&vm);
+    let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "Stream Mode",
+            "Games",
+            "Screen Share",
+            "Custom Quality",
+            "Screen Resolution",
+            "Frame Rate",
+            "Mute Stream Audio",
+            "Advanced Options",
+        ]
+    );
+    assert!(rows[0].heading);
+    assert!(row(&rows, "Custom Quality").checked, "720p at 60");
+    assert_eq!(
+        row(&rows, "Games").subtitle,
+        "Smoother video (1440p, 60 fps)"
+    );
+    let sizes: Vec<&str> = (row(&rows, "Screen Resolution").submenu.iter())
+        .map(|row| row.text.as_str())
+        .collect();
+    assert_eq!(sizes, ["720p", "1080p", "1440p", "Source"]);
+    let games = built(Share {
+        resolution: Resolution::P1440,
+        fps: 60,
+        ..samples::tuned()
+    });
+    assert_eq!(games.rows.mode, "Games");
+    assert_eq!(games.rows.quality, "1440p · 60fps · System sound");
+    assert!(!row(&rows, "Mute Stream Audio").checked);
+    let advanced = &row(&rows, "Advanced Options").submenu;
+    assert_eq!(advanced[0].text, "Hide Stream Preview");
+    assert!(row(advanced, "6 Mbit/s").checked);
+    assert!(row(advanced, "Higher quality").checked);
+    assert!(!row(advanced, "Auto").checked, "the limit's Auto, first");
+    let encoders: Vec<&Row> = (advanced.iter())
+        .skip_while(|row| row.text != "ENCODE STREAMS ON")
+        .skip(1)
+        .collect();
+    let chosen: Vec<(&str, bool)> = (encoders.iter())
+        .map(|row| (row.text.as_str(), row.radio && row.checked))
+        .collect();
+    assert_eq!(
+        chosen,
+        [("Auto", true), ("Radeon 610M", false), ("Processor", false)]
+    );
+}
+
+#[test]
+fn the_own_streams_menu_is_discords() {
+    let vm = built(Share {
+        switching: true,
+        ..samples::dialog()
+    });
+    let rows = own_menu(&vm, true);
+    let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "Stop streaming",
+            "Stream quality",
+            "Share Stream Audio",
+            "More Settings"
+        ]
+    );
+    assert!(rows[0].danger && rows[0].icon.is_some());
+    assert!(rows[2].checkbox && rows[2].checked);
+    assert!(row(&rows, "60 fps").checked && row(&rows, "720p").checked);
+    let more = &rows[3].submenu;
+    assert_eq!(more[0].text, "Change Windows");
+    assert!(!more[0].disabled);
+    assert!(own_menu(&vm, false)[3].submenu[0].disabled);
 }
 
 /// The stream's menu in a window with room for its submenus.
@@ -188,7 +232,7 @@ fn live(vm: &Share) -> Simulator<'_, Intent, Theme, Renderer> {
 
 #[test]
 fn while_live_the_menu_is_the_streams_own() {
-    let vm = menu(samples::live());
+    let vm = built(samples::live());
     let mut ui = live(&vm);
     for shown in [
         "Stream Quality",
@@ -198,8 +242,7 @@ fn while_live_the_menu_is_the_streams_own() {
     ] {
         assert!(ui.find(shown).is_ok(), "{shown}");
     }
-    // Its submenus wait for their rows; the sources wait for Change Windows.
-    for hidden in ["FRAME RATE", "60 fps", "SOUND", "WINDOWS", "Switch"] {
+    for hidden in ["FRAME RATE", "60 fps", "Applications", "Switch"] {
         assert!(ui.find(hidden).is_err(), "{hidden}");
     }
     let stream = vm.live.as_ref().unwrap();
@@ -210,15 +253,12 @@ fn while_live_the_menu_is_the_streams_own() {
 
 #[test]
 fn its_quality_has_discords_groups_beside_it_and_marks_the_stream() {
-    let vm = menu(samples::live_quality());
+    let vm = built(samples::live_quality());
     let mut ui = live(&vm);
     let head = ui.find("Stream Quality").unwrap().bounds();
     let rates = ui.find("FRAME RATE").unwrap().bounds();
     assert!(rates.x > head.x + head.width, "beside the card: {rates:?}");
-    assert!(rates.y < ui.find("RESOLUTION").unwrap().bounds().y);
-    for shown in ["15 fps", "30 fps", "1080p", "Source", "Higher quality"] {
-        assert!(ui.find(shown).is_ok(), "{shown}");
-    }
+    assert!(ui.find("BITRATE LIMIT").is_ok());
     drop(ui);
     let rows = &vm.live.as_ref().unwrap().quality.submenu;
     let marked: Vec<&str> = (rows.iter())
@@ -230,57 +270,23 @@ fn its_quality_has_discords_groups_beside_it_and_marks_the_stream() {
     ui.click("1080p").unwrap();
     assert_eq!(asked(ui), [Intent::Resolution(Resolution::P1080)]);
     let mut ui = live(&vm);
-    ui.click("15 fps").unwrap();
-    assert_eq!(asked(ui), [Intent::Fps(15)]);
+    ui.click("1440p").unwrap();
+    assert_eq!(asked(ui), [Intent::Resolution(Resolution::P1440)]);
     let mut ui = live(&vm);
-    ui.click("FRAME RATE").unwrap();
-    assert!(asked(ui).is_empty(), "a group's title chooses nothing");
-}
-
-#[test]
-fn the_bitrate_limit_opens_its_list_and_picks_one() {
-    let vm = menu(samples::dialog());
-    let mut ui = simulate(&vm);
-    assert!(ui.find("Bitrate limit").is_ok());
-    assert!(ui.find("6 Mbit/s").is_err(), "the list waits for a click");
-    ui.click("Bitrate limit").unwrap();
-    assert_eq!(asked(ui), [Intent::Bitrates(true)]);
-    let open = menu(samples::bitrates());
-    let mut ui = simulate(&open);
-    for shown in ["Auto", "2 Mbit/s", "3.5 Mbit/s", "9 Mbit/s"] {
-        assert!(ui.find(shown).is_ok(), "{shown}");
-    }
-    ui.click("2 Mbit/s").unwrap();
-    assert_eq!(asked(ui), [Intent::Bitrate(Some(2_000))]);
-    let chosen: Vec<&str> = (open.rows.bitrates.iter())
-        .filter(|row| row.checked)
-        .map(|row| row.text.as_str())
-        .collect();
-    assert_eq!(chosen, ["6 Mbit/s"]);
-    let row = open.rows.bitrate.as_ref().unwrap();
-    assert_eq!(row.subtitle, "6 Mbit/s", "the limit under its name");
-}
-
-#[test]
-fn while_live_the_bitrate_limit_is_in_the_quality() {
-    let vm = menu(samples::live_quality());
-    let mut ui = live(&vm);
-    assert!(ui.find("BITRATE LIMIT").is_ok());
     ui.click("8 Mbit/s").unwrap();
     assert_eq!(asked(ui), [Intent::Bitrate(Some(8_000))]);
 }
 
 #[test]
 fn its_last_rows_change_what_is_shared_and_stop() {
-    let vm = menu(samples::live());
+    let vm = built(samples::live());
     let mut ui = live(&vm);
     ui.click("Change Windows").unwrap();
     assert_eq!(asked(ui).last(), Some(&Intent::Change));
     let mut ui = live(&vm);
     ui.click("Stop Streaming").unwrap();
     assert_eq!(asked(ui).last(), Some(&Intent::Stop));
-    // Before it's live there is nothing to change yet.
-    let starting = menu(samples::live_starting());
+    let starting = built(samples::live_starting());
     let mut ui = live(&starting);
     ui.click("Change Windows").unwrap();
     assert!(!asked(ui).contains(&Intent::Change));
@@ -288,7 +294,7 @@ fn its_last_rows_change_what_is_shared_and_stop() {
 
 #[test]
 fn its_keys_go_to_the_menu_and_escape_only_while_a_submenu_shows() {
-    let vm = menu(samples::live());
+    let vm = built(samples::live());
     let mut ui = live(&vm);
     for key in [Named::ArrowDown, Named::ArrowRight, Named::Escape] {
         ui.tap_key(key);
@@ -298,36 +304,8 @@ fn its_keys_go_to_the_menu_and_escape_only_while_a_submenu_shows() {
         [Intent::Key(Key::Down), Intent::Key(Key::Right)],
         "Escape is the layer's"
     );
-    let open = menu(samples::live_quality());
+    let open = built(samples::live_quality());
     let mut ui = live(&open);
     ui.tap_key(Named::Escape);
     assert_eq!(asked(ui), [Intent::Key(Key::Escape)]);
-}
-
-#[test]
-fn switching_to_a_pick_sends_it() {
-    let vm = menu(Share {
-        source: Some(1),
-        ..samples::switching()
-    });
-    assert!(vm.can_go());
-    assert_eq!(go(&vm), [Intent::Switch(1)]);
-}
-
-#[test]
-fn the_wider_menu_is_for_the_screens() {
-    assert!(samples::listed().wide());
-    assert!(!samples::dialog().wide());
-}
-
-#[test]
-fn go_live_stays_clickable_in_a_short_window() {
-    let vm = menu(samples::listed());
-    let mut ui = Simulator::with_size(
-        settings(),
-        Size::new(336.0, 400.0),
-        share::view(&vm, front()),
-    );
-    let _ = ui.click(selector::id(share::GO));
-    assert_eq!(asked(ui), vm.go().into_iter().collect::<Vec<_>>());
 }

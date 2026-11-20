@@ -554,7 +554,9 @@ fn take(shared: &Shared, progress: &Progress, control: Control) {
         | Control::Quality { .. }
         | Control::EncodeOn(_)
         | Control::Cpus(_)
-        | Control::Hear(_) => {}
+        | Control::Hear(_)
+        | Control::Cleaning(_)
+        | Control::Echo(_) => {}
     }
     shared.changed.notify_all();
 }

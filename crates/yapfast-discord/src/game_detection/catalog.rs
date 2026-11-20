@@ -26,6 +26,11 @@ pub(super) const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// The most file names whose rules are kept. Few running programs have a
 /// name the list knows; past this many, the kept rules start over.
 const KEPT_NAMES: usize = 256;
+/// The distributors of `third_party_skus` the list keeps, in the order a
+/// game's card links to them: Steam, whose ids also detect games, then the
+/// stores whose page an id names (Xbox's and the Microsoft Store's product
+/// ids). Epic's, GOG's, Ubisoft's and Battle.net's ids name no page.
+pub(super) const STORES: &[&str] = &["steam", "xbox", "microsoft"];
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Game {
@@ -165,8 +170,12 @@ fn read_games(reader: impl Read, visit: impl FnMut(Game) -> Result<()>) -> Resul
                         && !exe.name.is_empty()
                         && (exe.os == host_os() || (cfg!(target_os = "linux") && exe.os == "win32"))
                 });
-                game.third_party_skus
-                    .retain(|sku| sku.distributor == "steam" && sku.id.is_some());
+                // Steam's ids detect games; Steam's and the stores' that
+                // have a page by id link to where a game is sold.
+                game.third_party_skus.retain(|sku| {
+                    STORES.contains(&sku.distributor.as_str())
+                        && sku.id.as_deref().is_some_and(|id| !id.is_empty())
+                });
                 // A game Discord names by id stays even with nothing to
                 // detect it by here: the picker ties it to a program.
                 if !game.name.trim().is_empty()
@@ -251,7 +260,8 @@ impl Catalog {
         read_games(file, |game| {
             let mut info = None;
             for sku in &game.third_party_skus {
-                if let Some(id) = sku.id.as_deref().and_then(|id| id.parse().ok())
+                if sku.distributor == "steam"
+                    && let Some(id) = sku.id.as_deref().and_then(|id| id.parse().ok())
                     && steam.contains(&id)
                 {
                     let info = info.get_or_insert_with(|| GameInfo::of(&game));
@@ -448,6 +458,26 @@ fn arguments_match(args: &[std::ffi::OsString], expected: &str) -> bool {
         command.push_str(&arg.to_string_lossy());
     }
     command.contains(expected)
+}
+
+/// Where the game Discord knows by `application` is sold, from one read of
+/// the list at `path`: the distributor and the id there of its first sku in
+/// [`STORES`]' order. None for a game the list doesn't sell anywhere.
+pub(super) fn store_sku(path: &Path, application: &str) -> Result<Option<(String, String)>> {
+    let mut found = None;
+    read_games(open(path)?, |game| {
+        if found.is_none() && game.id.as_deref() == Some(application) {
+            found = STORES.iter().find_map(|store| {
+                let sku = game
+                    .third_party_skus
+                    .iter()
+                    .find(|sku| sku.distributor == *store)?;
+                Some((sku.distributor.clone(), sku.id.clone()?))
+            });
+        }
+        Ok(())
+    })?;
+    Ok(found)
 }
 
 /// How long ago the list at `path` was fetched, or found unchanged.
@@ -657,9 +687,15 @@ mod tests {
         assert_eq!(kept[0]["aliases"], json!(["Other Name"]));
         assert_eq!(
             kept[1],
-            json!({"id":"43", "name":"Console Only"}),
-            "nothing it can't be detected by"
+            json!({"id":"43", "name":"Console Only",
+                "third_party_skus":[{"distributor":"xbox", "id":"X"}]}),
+            "nothing it can't be detected by, but where it's sold"
         );
+        assert_eq!(
+            store_sku(&cache, "43").unwrap(),
+            Some(("xbox".to_owned(), "X".to_owned()))
+        );
+        assert_eq!(store_sku(&cache, "42").unwrap(), None, "sold nowhere");
         // A list kept before games' other names were has none at all.
         let (_file, old) = catalog(json!([{"id":"42", "name":"Game",
             "executables":[{"os":host_os(), "name":"game"}]}]));
@@ -678,6 +714,11 @@ mod tests {
         assert_eq!(&*steam[&123].name, "Verified Steam Game");
         assert_eq!(steam[&123].id, Some(42));
         assert!(!steam.contains_key(&124));
+        // Its Steam page comes first; Battle.net's names none.
+        assert_eq!(
+            store_sku(file.path(), "42").unwrap(),
+            Some(("steam".to_owned(), "123".to_owned()))
+        );
         assert!(
             catalog
                 .matches("/games/launcher", &[], cfg!(target_os = "windows"))

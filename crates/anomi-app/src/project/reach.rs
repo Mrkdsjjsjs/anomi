@@ -74,7 +74,9 @@ impl Reach {
         match event {
             Event::Typing { .. } => Self::TYPING,
             Event::Members { .. } => Self::MEMBERS,
-            Event::Voice(_) | Event::StreamPreview { .. } => Self::VOICE,
+            // Where a card's game is sold shows on it, beside the call's
+            // places.
+            Event::Voice(_) | Event::StreamPreview { .. } | Event::GameStore { .. } => Self::VOICE,
             Event::Picture { url, .. } if url.contains("/emojis/") => Self::EMOJI,
             Event::Picture { .. } => Self::PICTURES,
             Event::GifPicture { .. } | Event::StickerPicture { .. } => Self::PICKER,
@@ -94,9 +96,11 @@ impl Reach {
             | Action::KeepEmojiPictures(_)
             | Action::CacheEmojiPictures
             | Action::VisibleMessages { .. }
-            // Previews asked for show as they come.
+            // Previews asked for show as they come; a card beside someone
+            // in a voice channel came or went, and showed itself.
             | Action::VisibleStreams(_)
             | Action::StreamPreviewsDue
+            | Action::HoverVoicePerson(_)
             | Action::WantedPictures(_) => Self::NOTHING,
             // Discord hears whether someone uses the window; the Activity
             // panel's feed it asks again for shows as it comes.

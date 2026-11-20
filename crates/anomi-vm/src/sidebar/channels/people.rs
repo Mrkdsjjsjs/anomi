@@ -1,9 +1,10 @@
 //! Someone in a voice channel, as the channel list shows them under it and
 //! on its card: `PersonRow` (`ui/voice.slint:6`) as `show_sidebar` fills it
 //! for a channel's people and the window's participants
-//! (`src/ui/refresh.rs:1414`).
+//! (`src/ui/refresh.rs:1414`), with the game they play at the end of their
+//! row, as Discord's client marks it.
 
-use crate::kind::Avatar;
+use crate::kind::{Avatar, Expected};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VoicePerson {
@@ -34,6 +35,10 @@ pub struct VoicePerson {
     pub connected: bool,
     /// They may be dragged onto another voice channel: Move to offers one.
     pub movable: bool,
+    /// The game they play, by its picture at the end of their row while
+    /// they don't stream (none drawn for a game without one); `None` while
+    /// they play nothing.
+    pub game: Option<Expected>,
 }
 
 impl VoicePerson {
@@ -41,5 +46,12 @@ impl VoicePerson {
     /// elsewhere not for this account on another client.
     pub fn marked(&self, in_call: bool) -> bool {
         in_call || !self.elsewhere
+    }
+
+    /// The pointer resting on their row shows their card beside it
+    /// ([`super::hover::HoverCard`]): they play a game, or stream for this
+    /// account to watch.
+    pub fn has_card(&self) -> bool {
+        !self.user.is_empty() && (self.game.is_some() || (self.live && !self.local))
     }
 }

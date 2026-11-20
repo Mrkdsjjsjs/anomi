@@ -270,10 +270,16 @@ user id in `layout.json`, so they hold in every call and after a restart. Discor
 voice scales each person as it mixes the call, from a copy of the volumes its
 thread takes again only when one changes, and a watched stream's worker
 scales its sound. In a Discord call the same menu can also clean their voice
-before it's mixed, suppressing their noise or turning down our own echo from
-their speakers, two boxes `layout.json` keeps by user id too
-(`denoised_people`, `echo_removed_people`); see [Cleaning someone's
-voice](discord/voice.md#cleaning-someones-voice). Yapfast calls play remote audio inside WebRTC, which LiveKit's
+before it's mixed: a submenu chooses what suppresses their noise (Off,
+RNNoise or DeepFilterNet, which costs more of the processor), a box turns
+down our own echo from their speakers, and the card over the menu then has
+a slider for how strongly each works. `layout.json` keeps them by user id
+too (`cleaned_voices`); see [Cleaning someone's
+voice](discord/voice.md#cleaning-someones-voice). In the iced window, a
+right click on the tile of a stream being watched opens the same card for
+its sound alone, its volume and how it's cleaned, kept apart
+(`cleaned_streams`); see [Cleaning a stream's
+sound](discord/go-live.md#cleaning-a-streams-sound). Yapfast calls play remote audio inside WebRTC, which LiveKit's
 Rust API can't adjust per track, so Yapfast's patch to `webrtc-sys` sets each
 track's volume through WebRTC's `SetVolume` by track id.
 

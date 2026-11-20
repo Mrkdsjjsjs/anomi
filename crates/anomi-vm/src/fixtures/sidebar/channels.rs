@@ -6,9 +6,11 @@
 //! `voice/joined_sidebar_dock.png`, `thread/book_club_not_joined.png`,
 //! `menu/channel_context.png`), then the states they don't show. Task N04's.
 
+mod hover;
 mod people;
 mod window;
 
+pub use hover::{factorio, playing, streaming, streaming_preview, watching};
 pub use window::*;
 
 use yapfast_lang::tr;

@@ -56,10 +56,15 @@ impl<'a, M: 'a> widget::Widget<M, Theme, Renderer> for Pointed<'a, M> {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::new(self.chevron.unwrap_or(false)))
+        let carded = self.hold.is_some() && self.card.is_some();
+        tree::State::new(State::new(self.chevron.unwrap_or(false), carded))
     }
 
     fn diff(&mut self, tree: &mut Tree) {
+        if self.hold.is_some() {
+            let state = tree.state.downcast_mut::<State>();
+            super::hold::given(state, self.card.is_some(), self.motion);
+        }
         tree.diff_children(&mut self.parts());
     }
 
@@ -175,7 +180,7 @@ impl<'a, M: 'a> widget::Widget<M, Theme, Renderer> for Pointed<'a, M> {
         match event {
             Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft) => {
                 if over != state.hovered {
-                    state.point(over, motion, Instant::now());
+                    state.point(over, self.hold.is_some(), motion, Instant::now());
                     if self.trailing.is_some() && self.look.fading.is_none() {
                         shell.invalidate_layout();
                     }
@@ -242,6 +247,10 @@ impl<'a, M: 'a> widget::Widget<M, Theme, Renderer> for Pointed<'a, M> {
             }
             _ => {}
         }
+        if let Some(hold) = &self.hold {
+            let carded = self.card.is_some();
+            hold.update(state, event, over, carded, motion.front, taken, shell);
+        }
     }
 
     fn draw(
@@ -302,7 +311,9 @@ impl<'a, M: 'a> widget::Widget<M, Theme, Renderer> for Pointed<'a, M> {
         } = tree;
         let state = state.downcast_mut::<State>();
         state.translation = translation;
-        let card_shows = state.hovered && !state.dismissed;
+        // A card that takes the pointer shows while it's given.
+        let holding = self.hold.is_some();
+        let card_shows = holding || (state.hovered && !state.dismissed);
         let amount = state.card.amount(state.now);
         let Self {
             body,
@@ -333,8 +344,10 @@ impl<'a, M: 'a> widget::Widget<M, Theme, Renderer> for Pointed<'a, M> {
                 anchor,
                 window,
                 amount,
+                top: holding,
             };
-            overlays.push(super::card::overlay(card, card_tree, place, renderer));
+            let held = holding.then_some(&mut state.on_card);
+            overlays.push(super::card::overlay(card, card_tree, place, held, renderer));
         }
         overlays
     }

@@ -44,6 +44,7 @@ macro_rules! icons {
 }
 
 icons! {
+    AppWindow => "app-window",
     ArrowLeft => "arrow-left",
     ArrowRight => "arrow-right",
     ArrowUpRight => "arrow-up-right",
@@ -124,6 +125,7 @@ icons! {
     MicOff => "mic-off",
     Minimize => "minimize",
     Minus => "minus",
+    Monitor => "monitor",
     Moon => "moon",
     Music => "music",
     NoiseBars => "noise-bars",

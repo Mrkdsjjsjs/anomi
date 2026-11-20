@@ -28,11 +28,11 @@ pub const BAN_HISTORY: [u32; 7] = [
     7 * 24 * 3600,
 ];
 
-/// The boxes that clean someone else's voice here before a Discord call
-/// mixes it, ticked as `volume::cleaning` says and set with
-/// `volume::set_cleaning`: Yapfast mixes Discord calls itself, and the
-/// choices hold across calls, as their volume does. Not offered for this
-/// account, nor in Matrix calls, whose audio LiveKit plays.
+/// The choices that clean someone else's voice here before a Discord call
+/// mixes it, a suppressor and a box, shown as `volume::cleaning` says and
+/// set with `volume::set_cleaning`: Yapfast mixes Discord calls itself, and
+/// the choices hold across calls, as their volume does. Not offered for
+/// this account, nor in Matrix calls, whose audio LiveKit plays.
 #[cfg(feature = "discord")]
 const CLEANING: [MenuChoice; 2] = [MenuChoice::SuppressTheirNoise, MenuChoice::RemoveMyEcho];
 

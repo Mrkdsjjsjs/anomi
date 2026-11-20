@@ -14,18 +14,26 @@ streams by key (`guild:{server}:{channel}:{user}`) and
 states carry `self_stream`, which shows as a LIVE badge beside the person.
 Sharing starts from the call's controls or from the voice panel's Share
 button, which works wherever the window is; the panel says when the stream
-is live and stops it. A click on someone's tile watches their stream, which
-then shows large in it; someone who films as well has a second tile for the
-stream. A stream being watched starts large, however watching began, and
-stays watched in its tile after a click beside it. While the call is off
-screen, the large tile's stream or camera, or else the stream being watched,
-or this account's own, shows in a corner (`StreamPip`), as Discord's
-picture in picture does. STREAM_CREATE and STREAM_UPDATE name a stream's
-viewers in `viewer_ids`; Yapfast keeps them for the stream it shares and the one
-it watches, and shows them over the stream (`ViewerStack`) and as a count in
-the voice panel; a click on it returns to the call. This account's
-own stream has a tile of its own, which opens large as others' do, without
-watching it through Discord: it shows the worker's preview.
+is live and stops it. In the call, as in Discord's, a stream is always a
+tile of its own, right before its streamer's, who keeps their picture or
+camera, their speaking ring and their marks: someone may film while they
+share. The stream's tile has the red LIVE badge at its top right, and their
+own none; a click on the stream's tile watches it and shows it large, a
+click on theirs shows them. A stream being watched starts large, however
+watching began, and stays watched in its tile after a click beside it.
+While a stream shows large, the row beneath keeps its place with a
+stand-in, its screen icon and LIVE badge, as Discord's strip does, which
+draws and decodes nothing more; someone shown large leaves the row. While
+the call is off screen, the large tile's stream or camera, or else the
+stream being watched, or this account's own, shows in a corner
+(`StreamPip`), as Discord's picture in picture does. STREAM_CREATE and
+STREAM_UPDATE name a stream's viewers in `viewer_ids`; Yapfast keeps them
+for the stream it shares and the one it watches, and shows them over the
+stream (`ViewerStack`) and as a count in the voice panel; a click on it
+returns to the call. This account's own stream, "Your screen", has a tile
+of its own right before its own, which opens large as others' do, without
+watching it through Discord: it shows the worker's preview. The iced
+window's order is in `anomi-app/src/project/voice/focus.rs`.
 
 A stream from a phone says how its picture is turned (the video orientation
 RTP extension, on a frame's last packet), and Yapfast shows it upright, as
@@ -67,6 +75,12 @@ and the worker captures the one picked by its id; see the
 read the X server, and Yapfast's own windows are listed too.
 `stream_worker::portal_picks` makes the choice as libwebrtc does:
 `XDG_SESSION_TYPE` starting with `wayland` and `WAYLAND_DISPLAY` set. The
+portal can be asked for one kind: under Wayland libwebrtc's screen and
+window capturers are the portal's, asking it for screens alone
+(`CaptureType::kScreen`) or windows alone (`kWindow`), and its generic one
+for either. `Source::PortalScreen` and `Source::PortalWindow` take the
+first two, `Source::Screen` the generic one; elsewhere the first two share
+the first screen or window listed. The
 ignored `glances_at_the_listed_screens` and `shares_a_listed_screen_and_window`
 list, picture, share and switch between a screen and a window, under Xvfb on
 Linux; the latter's comment says what the window there needs.
@@ -82,7 +96,8 @@ Linux, its DirectShow filter on Windows). The share menu lists the cameras
 [the call's camera](voice.md#camera-video) lists, under CAMERAS, after the
 screens and windows; on Wayland, where the portal picks a screen or window, a
 "Screen or window" choice comes first, and switching with no camera listed
-goes straight to the dialog, without the menu. The worker films the camera through the same
+goes straight to the dialog, without the menu. In the iced window the
+cameras are the Go Live dialog's "Devices" tab, as Discord's (below). The worker films the camera through the same
 capture module (`camera::Camera::open_at`), asking for the stream's
 resolution and frame rate rather than the call camera's 720p at 30, and
 copies each picture into one buffer it keeps for the next before the encoder
@@ -131,15 +146,47 @@ stream id (extension 12) in place of the stream id. An RTCP sender report goes
 out every second.
 
 Before sharing, the share button's menu picks a resolution and a frame rate, as
-Discord's client asks for them: 720p, 1080p or the screen's own size (up to
-4K), at 15, 30 or 60 fps. Its "Higher quality" checkbox, which Discord's client
+Discord's client asks for them: 720p, 1080p, 1440p or the screen's own size
+(up to 4K), at 15, 30 or 60 fps. Its "Higher quality" checkbox, which Discord's client
 doesn't have, has x264 work harder on each frame. Yapfast remembers the choice
 beside the chosen audio devices (`devices.json`), and starts at 1080p30 without
-it. In the iced window (`anomi`), while live, the share buttons, the gear on
-"Your screen" in the dock and the gear on one's own stream's tile open the
-stream's own menu, as Discord's client has it: "Stream Quality" with the frame
-rates, the resolutions, the encoding and the bitrate limit in its submenu,
-"Sound", "Change Windows" and "Stop Streaming". A choice there changes the
+it.
+
+The iced window (`anomi`) has Discord's Go Live dialog instead
+(`anomi_voice::share`): a card in the middle of the window with two tabs.
+"Applications", where the portal picks, says "Share your screen, a window or
+an application" over two cards, the whole screen and a window, each going
+live through the portal asked for that kind alone, and its "Choose What to
+Share" button asks the portal for either; elsewhere (X11, Windows) the tab
+lists the screens, with their pictures, and the windows to pick from, and
+"Start Streaming" shares the one picked. "Devices" lists the cameras and
+capture cards to stream, or says none was found. Along the bottom are the
+stream's mode and what it sends ("Custom Quality", "720p · 60fps · System
+sound") and the gear, whose menu is the window's context menu: "Stream
+Mode" with Discord's three modes as presets over the resolution and the
+frame rate (Games, 1440p at 60 frames, as Discord's; Screen Share, the
+source's size at 15 frames; Custom, what the person set, which choosing a
+preset remembers and
+Custom brings back), "Screen Resolution" and "Frame Rate" with their
+choices, "Mute Stream Audio", and "Advanced", with "Hide Stream Preview"
+and what this client has beyond Discord: the bitrate limit, "Higher
+quality" and where streams encode, the choice of Settings' Advanced
+(`layout.json`'s `stream_encoder`). Before going live a mode, resolution,
+frame rate, limit or quality chosen only changes the dialog, which carries
+it to the stream as it starts; the sound, the preview and the encoder are
+kept at once.
+
+While live, the share buttons, the gear on "Your screen" in the dock and the
+gear on one's own stream's tile open the stream's own menu, as Discord's
+client has it: "Stream Quality" with the frame rates, the resolutions, the
+encoding and the bitrate limit in its submenu, "Sound", "Change Windows",
+which opens the dialog again to pick what to switch to, and "Stop
+Streaming". A right click on that tile opens Discord's menu of it: "Stop
+streaming" first, in red; "Stream quality" with the resolutions and frame
+rates; "Share Stream Audio"; and "More Settings", with "Change Windows" and
+the rows of the gear's "Advanced". Discord's "Pop Out Stream" isn't there:
+the window has no window of its own for a stream yet, only the corner of
+the conversation. A choice in any of them changes the
 stream at once
 (`voice::Command::Quality`, which out of a stream only remembers the choice)
 and the menu stays open; the Slint menu hides them while live. The stream and its connection go on: the gateway's stream ops carry
@@ -163,9 +210,19 @@ take shows in the dock's notice, as other stream errors do. The menu lists
 every screen, window and camera, and is never taller than
 the window: where they don't all fit, as with many windows open or the window
 short or zoomed, the choices scroll as one above Go Live, which stays in view.
-Larger screens, and those of another shape, are scaled down to fit. Yapfast
-caps them at the bitrates Discord's client uses: at most 3.5 Mbit/s up to 720p
-and 9 Mbit/s above, with the frame rate as op 12's `max_framerate`. The
+Larger screens, and those of another shape, are scaled down to fit, keeping
+their shape and never scaled up: 1440p is at most 2560 by 1440, so a 3440 by
+1440 ultrawide goes out as 2560 by 1070, its width filling the bounds as at
+the other sizes, and op 12 names that size as its fixed `max_resolution`.
+Yapfast caps them at the bitrates Discord's client uses: at most 3.5 Mbit/s
+up to 720p and 9 Mbit/s above, 1440p and the source's size too, at every
+frame rate, with the frame rate as op 12's `max_framerate`. The voice docs'
+example op 12 sends 9 Mbit/s at 60 fps as its `max_bitrate`; they name no
+cap of 1440p's own, nor what each Nitro tier may stream (Discord's server features
+name only boosts' 720p60 and 1080p60, [`VIDEO_QUALITY_720_60FPS` and
+`VIDEO_QUALITY_1080_60FPS`](https://docs.discord.food/resources/guild#guild-features)),
+so Yapfast offers 1440p to every account, as it does 1080p and the source's
+size, and the limit's steps below are 1080p's. The
 menu's "Bitrate limit" (Auto, or 2, 3.5, 5, 6, 8 or 9 Mbit/s) lowers that
 cap, never raises it: `stream_connection::cap` takes the lower of the two,
 and at least 500 kbit/s. Auto is Discord's cap alone. The limit is kept
@@ -184,7 +241,11 @@ frames to I420 with libyuv, scales them with libyuv's filtering scaler, and
 encodes those; the preview is the same picture scaled down to 720p. While
 the window isn't in front the UI tells the worker (`Frames::pause`) and the
 preview timer stops: the worker neither scales nor converts the preview,
-but for the thumbnail Discord is sent.
+but for the thumbnail Discord is sent. In the iced window Go Live's "Hide
+Stream Preview" (`layout.json`'s `hide_stream_preview`) does the same
+whatever shows: this account's tile and the corner show no picture of the
+stream, saying "Your stream preview is hidden", and the worker makes no
+preview for them.
 
 Under the cap, the bitrate follows what the sender's uplink carries
 (`yapfast_discord::congestion`). Sending more than it carries fills its
@@ -240,12 +301,12 @@ quality 92. The worker reports it as a data URI, and Yapfast uploads it with
 later, up to three times; a newer still replaces an upload not done yet, and
 stopping the share cancels it.
 
-In a call, the tile of someone sharing whose stream this account isn't
-watching shows that still, as Discord's client does: filling the tile,
-dimmed, behind "Watch stream" (`StreamPreview` in `ui/voice.slint`); someone
-who films too shows it in their stream's own tile. Without one, as before
-the streamer's client uploaded any, the tile stays as it was, with their
-avatar. `GET /streams/{stream key}/preview` answers with the picture's
+In a call, the tile of a stream this account isn't watching shows that
+still, as Discord's client does: filling the tile, dimmed, behind "Watch
+stream" (`StreamPreview` in `ui/voice.slint`). Without one, as before the
+streamer's client uploaded any, the stream's tile shows the screen icon
+over "Watch stream". The Slint window shows a stream in its streamer's tile
+while they don't film. `GET /streams/{stream key}/preview` answers with the picture's
 address, and any failure means no preview, which nobody is told of.
 `Discord::stream_preview_picture` asks for the address and downloads the
 picture each time, past the picture cache on disk: a preview changes while
@@ -263,7 +324,11 @@ in the tray or with the call off screen. It waits for the moment the next
 one falls due (`Application::stream_previews_due`, one abortable wait in
 `anomi-app`'s `intent/voice/previews.rs`, nothing ticking meanwhile) and
 says when it came (`Action::StreamPreviewsDue`); a tile that comes back
-into sight after its preview fell due asks at once, once. The Slint window
+into sight after its preview fell due asks at once, once. The card beside a
+streamer's row in the channel list counts as on screen too, in this
+account's call or not ([its section](voice.md#what-someone-in-a-voice-channel-is-doing),
+`Action::HoverVoicePerson`): its preview is asked for as it shows, again as
+it falls due while it stays, and one outside the call goes with it. The Slint window
 doesn't say, so there a preview is as old as when it started to show. An
 answer that fails, a 404 while the streamer's client has uploaded none or a
 second 429 after the request path waited out the first, keeps the picture
@@ -304,7 +369,10 @@ and back to what it was. On Wayland with no camera listed, where switching goes
 straight to the dialog, that button is how the sound changes while live.
 Whether a stream has sound is kept in `devices.json` beside the stream's
 quality; an application chosen by its window isn't, as window ids last only
-while Yapfast runs, and the next run starts with all applications.
+while Yapfast runs, and the next run starts with all applications. The iced
+window offers all applications or none: "Mute Stream Audio" in the Go Live
+gear's menu and "Share Stream Audio" in the menu of one's own stream's tile,
+each taking effect at once; it has no choice of one application yet.
 
 The worker's sound has a thread of its own (`stream_audio::Capture`), started
 with the stream's connection, or when sound is first turned on, so a stream
@@ -412,6 +480,52 @@ with a `hear` control. Yapfast's workers play as "Yapfast", which sharing
 leaves out, so a stream you watch never reaches one you share. Watching a
 stream from Discord's own client works: H264 with DAVE. Discord's client shows
 Yapfast's stream at 1080p with its sound, without the call's.
+
+### Cleaning a stream's sound
+
+A right click on the tile of a stream this account watches opens its menu
+in the iced window, Anomi's own: the card with the stream's volume, then
+"Suppress noise", whose submenu has the suppressors someone's voice may be
+cleaned with (Off, RNNoise, DeepFilterNet), and "Remove my echo", for a
+streamer whose shared system sound carries the call back, this account's
+voice with it. Each that's on adds its slider to the card, as for a voice
+([Cleaning someone's voice](voice.md#cleaning-someones-voice)): "Noise
+suppression strength" and "Echo removal strength". The suppressors are made
+for speech and take music and a game's sound apart, which the row says
+under it; nothing is on unless chosen. On a stream not watched, whose sound
+doesn't play, the menu is its streamer's.
+
+What's chosen is kept by the streamer apart from their voice
+(`volume::set_stream_cleaning`), and in `layout.json` as `cleaned_streams`,
+in the shape of `cleaned_voices`: `{"1016732398987264102": {"noise":
+"rnnoise", "noise_strength": 40, "echo": true}}`. The watch job carries it
+to the worker (`Job::Watch`'s `cleaning`), and a change goes with
+`Control::Cleaning`, which the player reads once a frame from one atomic.
+
+The worker cleans as the call's thread cleans a voice
+(`yapfast_core::stream_cleaning`), on the thread that plays the stream's
+sound, after each frame is decoded and before its volume: 20 ms at a time in
+one channel, played in mono while anything is on, 10 ms later with RNNoise
+and 50 ms with DeepFilterNet, which runs on a thread of its own in the
+worker (`their_noise`), its model loaded there the first time it's on while
+the stream sounds, RNNoise standing in until it has: a stream may never
+pause, so it changes over at once, jumping by the 40 ms between the two.
+Off, a frame plays as it came. Nothing runs while the
+stream is silent, since no frame comes; the denoiser goes 10 s after its
+last sound, the echo gate after a minute, either as soon as it's turned
+off, and all of it with the worker, as the stream ends or isn't watched.
+After its buffers are made, a frame allocates nothing and takes no lock.
+
+The echo gate needs what the call sent, which the worker doesn't hear. The
+call's thread measures it once a tick for every echo gate, its own and the
+stream's (`echo_gate::Measure`), only while one is on, and hands the 36
+bytes of its levels by band to a bounded channel that never waits
+(`stream_worker::EchoFeed`); a thread of its own writes them to the worker
+as a `Control::Echo` line, and the line's reader hands them straight to the
+player, past the job's loop. The gate takes each tick as it comes and hears
+the stream as it comes (`EchoGate::heard_unpaced`), finding the lag between
+the two as it finds a voice's, up to 1.5 s. The feed ends when its box is
+unticked, or by itself once the worker is gone.
 
 The fake server (`testing/fake_discord.ts`) checks what a stream sends, without
 DAVE, and streams its recordings to viewers; its header lists the controls
@@ -540,7 +654,12 @@ leaves a calm screen below the cap rather than padding it. NVENC, AMF and
 VA-API change their bitrate as they run, without the IDR frame FFmpeg would
 insert, with a patch to FFmpeg for each (AMF's sets the target, peak and buffer
 on the running encoder). "Higher quality" changes nothing on the GPU: NVENC's
-slowest preset looked no better than p4.
+slowest preset looked no better than p4. The level follows the size and the
+frame rate: x264, NVENC and VA-API choose it themselves (H264's 5.1 for
+1440p60, H265's 5), and AMF, which holds H264 to 4.2 unless told, enough for
+1080p60 and not for 1440p's 14400 macroblocks, is told the lowest that takes
+the stream (`h264_level` in `native/hwenc.c`: 5.1 for 1440p60, 5.2 for
+4K60); its H265 level is the card's own.
 
 Where the card's encoder encodes AV1 or H265, the stream offers them too,
 first, AV1 before H265, as Discord's client orders them: each looks better

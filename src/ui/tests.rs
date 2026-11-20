@@ -12933,6 +12933,7 @@ fn a_busy_voice_channel_sums_up_who_is_in_it_and_its_card_goes_with_it() {
         streaming,
         video,
         elsewhere: false,
+        activities: Default::default(),
     };
     let show = |lounge: bool, people: Vec<VoiceMember>| {
         adapter
@@ -13111,6 +13112,7 @@ fn keys_this_app_doesnt_know_survive_its_reads_and_writes() {
     let unknown = serde_json::json!({
         "denoised_people": ["1016732398987264101"],
         "echo_removed_people": ["5"],
+        "cleaned_voices": {"7": {"noise": "deepfilternet", "noise_strength": 60, "echo": true}},
         "echo_cancellation": false,
         "cpu_mode": {"cores": [8, 9, 10, 11, 12, 13, 14, 15]},
         "stream_encoder": "pci:0000:73:00.0",

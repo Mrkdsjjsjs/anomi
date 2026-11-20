@@ -95,6 +95,41 @@ fn a_person_sharing_their_screen_has_a_stream_slider_of_its_own() {
 }
 
 #[test]
+fn the_cleaning_sliders_ask_for_their_strength_and_depth() {
+    let menu = ParticipantMenu {
+        noise_strength: Some(100),
+        echo_depth: Some(20),
+        ..fixture::card()
+    };
+    assert_eq!(menu.height(), 203.0, "two sliders more");
+    let mut ui = card(&menu);
+    // The noise's, under the voice's: its far end, all of the noise.
+    ui.point_at(Point::new(menu.width - 14.0, SECOND));
+    ui.simulate([press(), release()]);
+    let asked = support::asked(ui);
+    assert!(!asked.is_empty());
+    assert!(asked.iter().all(|intent| matches!(
+        intent,
+        Intent::NoiseStrength { person, strength, .. }
+            if person == fixture::CAROL && *strength > 90
+    )));
+    assert!(matches!(
+        asked.last(),
+        Some(Intent::NoiseStrength { last: true, .. })
+    ));
+    // Our echo's, under it: its near end, turned down hardly at all.
+    let mut ui = card(&menu);
+    ui.point_at(Point::new(14.0, SECOND + 53.0));
+    ui.simulate([press(), release()]);
+    let asked = support::asked(ui);
+    assert!(!asked.is_empty());
+    assert!(asked.iter().all(|intent| matches!(
+        intent,
+        Intent::EchoDepth { depth, .. } if *depth < 5
+    )));
+}
+
+#[test]
 fn without_a_stream_the_lower_card_has_no_second_slider() {
     let menu = fixture::card();
     let mut ui = card(&menu);
@@ -118,4 +153,31 @@ fn the_fixtures_put_the_card_and_its_rows_in_the_window() {
         )))
     );
     assert!(fixture::sharing().voice.participant_menu.live);
+}
+
+/// A watched stream's card has the stream's volume alone, then its
+/// cleaning: its one volume slider asks for the stream's.
+#[test]
+fn a_streams_card_has_its_volume_alone() {
+    let menu = ParticipantMenu {
+        stream: true,
+        live: true,
+        stream_volume: 54,
+        ..fixture::card()
+    };
+    assert_eq!(menu.height(), 97.0, "one slider");
+    let mut ui = card(&menu);
+    ui.point_at(Point::new(14.0, FIRST));
+    ui.simulate([press(), release()]);
+    let asked = support::asked(ui);
+    assert!(!asked.is_empty());
+    assert!(
+        asked
+            .iter()
+            .all(|intent| matches!(intent, Intent::Volume { stream: true, .. }))
+    );
+    let vm = fixture::stream();
+    let shown = &vm.voice.participant_menu;
+    assert!(shown.stream && shown.noise_strength.is_some());
+    assert_eq!(vm.menu.rows.len(), 2, "its noise and our echo");
 }

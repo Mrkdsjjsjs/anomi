@@ -3284,7 +3284,8 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
             let _ = source;
             let resolution = match resolution {
                 0 => voice::Resolution::P720,
-                2 => voice::Resolution::Source,
+                2 => voice::Resolution::P1440,
+                3 => voice::Resolution::Source,
                 _ => voice::Resolution::P1080,
             };
             // Anomi's stream menu chooses the ceiling; this app keeps the

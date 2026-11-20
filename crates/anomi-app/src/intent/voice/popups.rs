@@ -15,6 +15,7 @@ use anomi_vm::voice::{self, connection, participant_menu, soundboard};
 
 use super::command;
 use crate::app::App;
+use crate::intent::menus::cleaning::{self, Sound};
 use crate::message::Message;
 use crate::project::Reach;
 use crate::project::voice::link;
@@ -64,6 +65,26 @@ pub(super) fn handle(app: &mut App, intent: voice::Intent) -> Task<Message> {
                     }
                 });
             }
+            Task::none()
+        }
+        // How their voice is cleaned in a Discord call, or their stream's
+        // sound on its card.
+        I::ParticipantMenu(participant_menu::Intent::NoiseStrength {
+            person,
+            strength,
+            last,
+        }) => {
+            let sound = Sound::of(&app.vm.voice.participant_menu);
+            cleaning::noise_strength(app, sound, &person, strength, last);
+            Task::none()
+        }
+        I::ParticipantMenu(participant_menu::Intent::EchoDepth {
+            person,
+            depth,
+            last,
+        }) => {
+            let sound = Sound::of(&app.vm.voice.participant_menu);
+            cleaning::echo_depth(app, sound, &person, depth, last);
             Task::none()
         }
         I::Share(intent) => super::share::handle(app, intent),

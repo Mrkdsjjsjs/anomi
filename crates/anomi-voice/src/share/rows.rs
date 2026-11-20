@@ -1,29 +1,29 @@
-//! The menu's choices as rows, text translated: `MenuItem`s of
-//! `ui/voice.slint:1456`-`:1560`. A row's view borrows its row, so
-//! [`built`] stores them in the view-model (`Share::rows`); the projection
-//! calls it after setting the rest, and so do the shots and tests. The
-//! notes under a row stay on one line, elided: `Row::wraps` draws at a
-//! narrow width at this commit (reported), and at 280 px they fit. While
-//! live, the stream's menu's rows too (`Share::live`), its submenus with
-//! radio marks under the groups' titles, as Discord's client has them.
+//! What the dialog and the stream's menu say, made from the picks with the
+//! text translated: the windows to pick, the mode and quality along the
+//! dialog's bottom, and while live the stream's menu's rows, its submenus
+//! with radio marks under the groups' titles, as Discord's client has them.
+//! A row's view borrows its row, so [`built`] stores them in the view-model
+//! (`Share::rows`, `Share::live`); the projection calls it after setting
+//! the rest, and so do the shots and tests.
 
 use yapfast_lang::tr;
 
 use anomi_vm::menu::Row;
 use anomi_vm::voice::share::{
-    BITRATES, FRAME_RATES, Intent, Live, Part, Resolution, Rows, Share, Sound,
+    BITRATES, FRAME_RATES, Intent, Live, Mode, Part, Resolution, Rows, Share, Sound,
 };
 
-/// What the menu calls a resolution.
+/// What the menus call a resolution.
 pub fn resolution(resolution: Resolution) -> &'static str {
     match resolution {
         Resolution::P720 => "720p",
         Resolution::P1080 => "1080p",
+        Resolution::P1440 => "1440p",
         Resolution::Source => tr!("Source"),
     }
 }
 
-/// What the menu calls a bitrate limit, in kbit/s; Auto for none. The
+/// What the menus call a bitrate limit, in kbit/s; Auto for none. The
 /// steps are whole texts, as each language writes its decimals.
 pub fn bitrate(kbps: Option<u32>) -> String {
     match kbps {
@@ -38,79 +38,53 @@ pub fn bitrate(kbps: Option<u32>) -> String {
     }
 }
 
-/// What Auto sends, under its name: Discord's limits.
-fn auto_limit() -> &'static str {
-    tr!("3.5 Mbit/s up to 720p, 9 above")
-}
-
-/// The limits, Auto first, as rows of `mark`'s kind.
-fn limits(share: &Share, mark: fn(Row<Intent>, bool) -> Row<Intent>) -> Vec<Row<Intent>> {
+/// The limits, Auto first with what it sends, as radio rows.
+pub(super) fn limits<I>(share: &Share, intent: impl Fn(Intent) -> I) -> Vec<Row<I>> {
     std::iter::once(None)
         .chain(BITRATES.into_iter().map(Some))
         .map(|kbps| {
-            let row = Row::new(bitrate(kbps), Intent::Bitrate(kbps));
+            let row = Row::new(bitrate(kbps), intent(Intent::Bitrate(kbps)));
             let row = if kbps.is_none() {
-                row.subtitle(auto_limit())
+                row.subtitle(tr!("3.5 Mbit/s up to 720p, 9 above"))
             } else {
                 row
             };
-            mark(row, share.max_kbps == kbps)
+            row.radio(share.max_kbps == kbps).plain()
         })
         .collect()
 }
 
+/// A stream mode's name.
+pub(super) fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Games => tr!("Games"),
+        Mode::Screen => tr!("Screen Share"),
+        Mode::Custom => tr!("Custom Quality"),
+    }
+}
+
 /// `share` with its rows made from its picks.
 pub fn built(mut share: Share) -> Share {
-    let pick = |index: usize, text: &str| {
-        Row::new(text, Intent::Source(index)).checked(share.source == Some(index))
-    };
     let windows = (share.windows.iter().enumerate())
-        .map(|(at, title)| pick(share.screens.len() + at, title))
+        .map(|(at, title)| {
+            let index = share.screens.len() + at;
+            Row::new(title.as_str(), Intent::Source(index)).checked(share.source == Some(index))
+        })
         .collect();
-    let dialog = share.asks_dialog().then(|| {
-        pick(share.dialog_index(), tr!("Screen or window"))
-            .subtitle(tr!("Picked in the system's dialog"))
-    });
-    let cameras = (share.cameras.iter().enumerate())
-        .map(|(at, title)| pick(share.first_camera() + at, title))
-        .collect();
-    let rows = Rows {
-        windows,
-        dialog,
-        cameras,
-        sound: sound(&share),
-        apps: (share.sound_apps.iter().enumerate())
-            .map(|(at, app)| {
-                Row::new(app.as_str(), Intent::Sound(Sound::App(at)))
-                    .checked(share.sound == Sound::App(at))
-            })
-            .collect(),
-        resolutions: Resolution::ALL
-            .into_iter()
-            .map(|choice| {
-                Row::new(resolution(choice), Intent::Resolution(choice))
-                    .checked(share.resolution == choice)
-            })
-            .collect(),
-        rates: FRAME_RATES
-            .into_iter()
-            .map(|fps| Row::new(tr!("{} fps", fps), Intent::Fps(fps)).checked(share.fps == fps))
-            .collect(),
-        quality: Some(
-            Row::new(
-                tr!("Higher quality"),
-                Intent::HighQuality(!share.high_quality),
-            )
-            .subtitle(tr!("Sharper, at twice the CPU"))
-            .checkbox(share.high_quality),
-        ),
-        bitrate: Some(
-            Row::new(tr!("Bitrate limit"), Intent::Bitrates(!share.bitrates_open))
-                .subtitle(bitrate(share.max_kbps)),
-        ),
-        bitrates: limits(&share, Row::checked),
+    let sound = match share.sound {
+        Sound::All => tr!("System sound"),
+        Sound::None => tr!("No sound"),
     };
-    share.rows = rows;
+    share.rows = Rows {
+        windows,
+        mode: mode_name(share.mode()).to_owned(),
+        quality: format!(
+            "{} · {} · {}",
+            resolution(share.resolution),
+            tr!("{}fps", share.fps),
+            sound
+        ),
+    };
     if let Some(mut live) = share.live.take() {
         stream(&share, &mut live);
         share.live = Some(live);
@@ -126,8 +100,7 @@ pub fn quality(resolution: Resolution, fps: u32) -> String {
 
 /// The stream's menu's rows, from the picks: "Stream Quality" with the
 /// frame rates, the resolutions, the encoding and the bitrate limit beside
-/// it, "Sound" with
-/// its choices, "Change Windows" and "Stop Streaming".
+/// it, "Sound" with its choices, "Change Windows" and "Stop Streaming".
 fn stream(share: &Share, live: &mut Live) {
     let mut rates = vec![Row::heading(tr!("FRAME RATE"))];
     rates.extend(FRAME_RATES.into_iter().map(|fps| {
@@ -152,24 +125,19 @@ fn stream(share: &Share, live: &mut Live) {
         .plain(),
     );
     rates.push(Row::heading(tr!("BITRATE LIMIT")).separated());
-    rates.extend(limits(share, |row, chosen| row.radio(chosen).plain()));
+    rates.extend(limits(share, |intent| intent));
     let choice = |text: &str, sound: Sound| {
         Row::new(text, Intent::Sound(sound))
             .radio(share.sound == sound)
             .plain()
     };
-    let mut sounds = vec![
+    let sounds = vec![
         choice(tr!("All applications"), Sound::All).subtitle(tr!("Except Yapfast's own sound")),
         choice(tr!("No sound"), Sound::None),
     ];
-    for (at, app) in share.sound_apps.iter().enumerate() {
-        let row = choice(app.as_str(), Sound::App(at));
-        sounds.push(if at == 0 { row.separated() } else { row });
-    }
     let heard = match share.sound {
-        Sound::All => tr!("All applications").to_owned(),
-        Sound::None => tr!("No sound").to_owned(),
-        Sound::App(at) => share.sound_apps.get(at).cloned().unwrap_or_default(),
+        Sound::All => tr!("All applications"),
+        Sound::None => tr!("No sound"),
     };
     let opens = |part| Intent::Hover(Some(part));
     live.quality = Row::new(tr!("Stream Quality"), opens(Part::Quality))
@@ -187,28 +155,4 @@ fn stream(share: &Share, live: &mut Live) {
         .danger()
         .plain();
     live.settle();
-}
-
-/// All applications, No sound and, where there are windows to choose one
-/// from, One application, which opens the list.
-fn sound(share: &Share) -> Vec<Row<Intent>> {
-    let choice = |text: &'static str, sound: Sound| {
-        Row::new(text, Intent::Sound(sound)).checked(share.sound == sound)
-    };
-    let mut rows = vec![
-        choice(tr!("All applications"), Sound::All).subtitle(tr!("Except Yapfast's own sound")),
-        choice(tr!("No sound"), Sound::None),
-    ];
-    if !share.sound_apps.is_empty() {
-        let chosen = match share.sound {
-            Sound::App(at) => share.sound_apps.get(at).cloned(),
-            _ => None,
-        };
-        rows.push(
-            Row::new(tr!("One application"), Intent::Apps(!share.apps_open))
-                .subtitle(chosen.unwrap_or_else(|| tr!("Chosen by its window").into()))
-                .checked(matches!(share.sound, Sound::App(_))),
-        );
-    }
-    rows
 }

@@ -81,7 +81,7 @@ fn the_corner_goes_where_it_was_let_go() {
     let _ = std::fs::remove_dir_all(folder);
 }
 
-/// Bob's stream is offered in his tile, shown large over the window: the
+/// Bob's stream is offered in its own tile, shown large over the window: the
 /// core hears his preview is in sight, and one wait is set for when his
 /// client uploads the next. Off screen, behind another window, in the tray
 /// or while he's watched it isn't in sight, and no wait runs.
@@ -107,7 +107,8 @@ fn a_preview_in_sight_waits_for_the_next_upload_and_none_behind() {
     };
     app.show(crate::project::Reach::VOICE);
     assert_eq!(after(&mut app), (vec![], None), "the call is off screen");
-    let bob = tiles::Key::Person("bob".into());
+    // His stream's own tile, right before his.
+    let bob = tiles::Key::Stream("bob".into());
     drop(handle(&mut app, Intent::Tiles(tiles::Intent::Focus(bob))));
     let full = Intent::Tiles(tiles::Intent::FullScreen(true));
     drop(handle(&mut app, full));
@@ -339,12 +340,9 @@ fn the_streams_quality_changes_while_live() {
     assert!(quality.high_quality);
     assert!(app.vm.shell.is_open(Layer::Share), "the menu stays open");
     let share = &app.vm.voice.share;
-    assert!(
-        share
-            .rows
-            .rates
-            .iter()
-            .any(|row| row.checked && row.intent == Some(share::Intent::Fps(60)))
+    assert_eq!(
+        (share.fps, share.rows.quality.as_str()),
+        (60, "720p · 60fps · System sound")
     );
     drop(app);
     let _ = std::fs::remove_dir_all(folder);

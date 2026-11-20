@@ -10,13 +10,14 @@ use yapfast_core::chat::{ChannelKind, MemberChange, Muting, RelationshipChange};
 use anomi_vm::menu::{Choice, Intent, Menu, Row};
 use anomi_widgets::focus;
 
+use super::cleaning::Sound;
 use crate::app::App;
 use crate::message::Message;
 use crate::project::menus::choice_of;
 use crate::project::menus::notify::{Notify, muting, server_change};
 use crate::project::menus::subs::{
-    APP, BELL, EVENTS, HEADER, INVITE_TO, MOVE_TO, ROLE, relationship_place, subjects, thread_more,
-    voice_target,
+    APP, BELL, EVENTS, HEADER, INVITE_TO, MOVE_TO, ROLE, relationship_place, subjects,
+    their_noise_of, thread_more, voice_target,
 };
 
 /// Carries out the choice a row of the window's menu made.
@@ -32,6 +33,10 @@ pub(super) fn choose(app: &mut App, choice: Choice) -> Task<Message> {
     }
     // A checkbox shows its new state at once, as the menu stays open.
     let ticked = toggle(&mut app.vm.menu, &id);
+    // How a watched stream's sound is cleaned, from the menu of its tile.
+    if super::stream::choose(app, &target, &id, ticked) {
+        return Task::none();
+    }
     // A profile's More menu is its person's, said to come from the profile.
     let (target, relationship) = {
         let (user, location) = relationship_place(&target);
@@ -65,6 +70,11 @@ pub(super) fn choose(app: &mut App, choice: Choice) -> Task<Message> {
             place: target,
             change,
         });
+    }
+    // A suppressor for someone's voice, from their menu in a call.
+    if let Some(suppressor) = their_noise_of(&id) {
+        super::cleaning::suppress(app, Sound::Voice, &target, suppressor);
+        return Task::none();
     }
     let state = &app.core.state;
     let (room, user) = subjects(state, &target, person);
@@ -241,9 +251,9 @@ fn act(app: &mut App, choice: MenuChoice, subject: Subject) -> Task<Message> {
             }
             None
         }
-        C::SuppressTheirNoise | C::RemoveMyEcho => {
+        C::RemoveMyEcho => {
             if let Some(on) = ticked {
-                clean(app, choice == C::SuppressTheirNoise, &target, on);
+                super::cleaning::remove_echo(app, Sound::Voice, &target, on);
             }
             None
         }
@@ -299,6 +309,7 @@ fn act(app: &mut App, choice: MenuChoice, subject: Subject) -> Task<Message> {
         C::ServerSettings => Some(Action::OpenServerSettings(target)),
         // Their submenus' rows act; a server's notifications change above.
         C::Mute
+        | C::SuppressTheirNoise
         | C::Roles
         | C::InviteToServer
         | C::MoveTo
@@ -328,32 +339,6 @@ fn mute_locally(app: &mut App, soundboard: bool, person: &str, muted: bool) {
             &mut saved.muted_people
         };
         if muted {
-            people.insert(person.to_owned());
-        } else {
-            people.remove(person);
-        }
-    });
-}
-
-/// Takes the noise out of someone's voice, or this account's own echo
-/// coming back through their speakers, on this device alone, and keeps it:
-/// the call's audio has it at its next tick.
-fn clean(app: &mut App, noise: bool, person: &str, on: bool) {
-    use yapfast_core::volume;
-    let mut cleaning = volume::cleaning(person);
-    if noise {
-        cleaning.noise = on;
-    } else {
-        cleaning.own_echo = on;
-    }
-    volume::set_cleaning(person, cleaning);
-    app.layout.edit(|saved| {
-        let people = if noise {
-            &mut saved.denoised_people
-        } else {
-            &mut saved.echo_removed_people
-        };
-        if on {
             people.insert(person.to_owned());
         } else {
             people.remove(person);

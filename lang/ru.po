@@ -5899,6 +5899,35 @@ msgstr "Играет сейчас"
 msgid "Playing {}"
 msgstr "Играет в {}"
 
+msgctxt "StatusMenu"
+msgid "Playing now"
+msgstr "Играет сейчас"
+
+msgctxt "VoiceCard"
+msgid "Playing now"
+msgstr "Сейчас играет"
+
+msgid "Streaming now"
+msgstr "Сейчас стримит"
+
+msgid "The stream has started. Don't miss it!"
+msgstr "Стрим начался. Не пропустите его!"
+
+msgid "Watch Stream"
+msgstr "Смотреть стрим"
+
+msgid "Watching Stream"
+msgstr "Смотрит стрим"
+
+msgid "Get on Steam"
+msgstr "Получить в Steam"
+
+msgid "Get on Xbox"
+msgstr "Получить в Xbox"
+
+msgid "Get on Microsoft Store"
+msgstr "Получить в Microsoft Store"
+
 msgid "Plays to everyone in a voice channel or DM call as you join it, outside stage channels. A server's own comes before the one for all servers."
 msgstr "Воспроизводится для всех в голосовом канале или звонке в ЛС, когда вы входите, кроме трибун. Звук сервера приоритетнее общего звука для всех серверов."
 
@@ -10727,6 +10756,15 @@ msgstr "Подавлять его шум"
 msgid "Remove my echo"
 msgstr "Убирать моё эхо"
 
+msgid "Light on the processor"
+msgstr "Почти не нагружает процессор"
+
+msgid "Stronger, but uses more of the processor"
+msgstr "Сильнее, но больше нагружает процессор"
+
+msgid "Echo removal strength"
+msgstr "Сила подавления эха"
+
 msgid "Bitrate limit"
 msgstr "Предел битрейта"
 
@@ -10810,3 +10848,99 @@ msgstr "Работает на ядрах {0} (ЦП {1}): это энергоэф
 
 msgid "Runs on cores {0} (CPUs {1}): the last ones, core 0 stays free."
 msgstr "Работает на ядрах {0} (ЦП {1}): последних, ядро 0 остаётся свободным."
+
+msgid "Applications"
+msgstr "Приложения"
+
+msgid "Devices"
+msgstr "Устройства"
+
+msgid "Share your screen, a window or an application"
+msgstr "Демонстрируйте экран, окно или приложение"
+
+msgid "Share Entire Screen"
+msgstr "Демонстрировать весь экран"
+
+msgid "Share a Window"
+msgstr "Демонстрировать окно"
+
+msgid "There is no screen or window to share."
+msgstr "Нет экрана или окна для демонстрации."
+
+msgid "Choose What to Share"
+msgstr "Выбрать нужное"
+
+msgid "Start Streaming"
+msgstr "Стримить"
+
+msgid "Stream a camera or a capture card"
+msgstr "Стримьте с камеры или карты захвата"
+
+msgid "No capture devices found."
+msgstr "Устройства для захвата отсутствуют."
+
+msgid "Plug in a camera or a capture card, such as OBS's virtual camera, and open this dialog again."
+msgstr "Подключите камеру или карту захвата, например виртуальную камеру OBS, и откройте это окно снова."
+
+msgid "Stream Mode"
+msgstr "Режим стрима"
+
+msgid "Games"
+msgstr "Игры"
+
+msgid "Smoother video (1440p, 60 fps)"
+msgstr "Более плавное видео (1440p, 60 к/сек.)"
+
+msgid "Screen Share"
+msgstr "Демонстрация экрана"
+
+msgid "Sharper text (Source, 15 fps)"
+msgstr "Более чёткий текст (Источник, 15 к/сек.)"
+
+msgid "Custom Quality"
+msgstr "Пользовательские"
+
+msgid "Screen Resolution"
+msgstr "Разрешение экрана"
+
+msgid "Frame Rate"
+msgstr "Частота кадров"
+
+msgid "Mute Stream Audio"
+msgstr "Заглушить аудио стрима"
+
+msgid "Advanced Options"
+msgstr "Расширенные"
+
+msgid "Hide Stream Preview"
+msgstr "Скрыть предпросмотр стрима"
+
+msgid "ENCODE STREAMS ON"
+msgstr "КОДИРОВАТЬ НА"
+
+msgid "{}fps"
+msgstr "{}fps"
+
+msgid "System sound"
+msgstr "Звук системы"
+
+msgid "Stop streaming"
+msgstr "Прекратить стрим"
+
+msgid "Stream quality"
+msgstr "Качество передачи"
+
+msgid "Share Stream Audio"
+msgstr "Поделиться звуком стрима"
+
+msgid "More Settings"
+msgstr "Другие настройки"
+
+msgid "Your stream preview is hidden"
+msgstr "Предпросмотр стрима скрыт"
+
+msgid "Suppress noise"
+msgstr "Подавлять шум"
+
+msgid "Made for speech: music and game sound come out damaged"
+msgstr "Рассчитано на речь: музыку и звук игр портит"

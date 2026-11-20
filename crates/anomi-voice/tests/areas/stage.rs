@@ -52,6 +52,10 @@ fn focus(id: &str) -> Intent {
     tiles::Intent::Focus(Key::Person(id.into())).into()
 }
 
+/// Where the name of Bob's stream starts while it's large over the row
+/// beneath, five with its stand-in.
+const LARGE_NAME: f32 = 40.8 + 10.0 + 8.0 + 14.0 + 6.0;
+
 #[test]
 fn a_click_on_someone_shows_them_large() {
     let lounge = samples::lounge();
@@ -62,9 +66,15 @@ fn a_click_on_someone_shows_them_large() {
 
 #[test]
 fn a_click_on_a_stream_offered_watches_it() {
-    // Bob's tile, the second of the first row.
-    let asked = click_at(&samples::lounge(), Point::new(728.0, 223.0));
+    // Bob's stream, the second of the first row of three, right before
+    // his own tile.
+    let asked = click_at(&samples::lounge(), Point::new(600.0, 230.0));
     assert_eq!(asked, [tiles::Intent::Watch(BOB.into()).into()]);
+    assert_eq!(
+        click_at(&samples::lounge(), Point::new(800.0, 230.0)),
+        [focus(BOB)],
+        "his own tile"
+    );
 }
 
 #[test]
@@ -88,12 +98,15 @@ fn a_click_beside_the_large_tile_shows_them_all() {
         click_at(&watching, Point::new(20.0, 300.0)),
         [stage::Intent::ShowAll.into()]
     );
-    // The large one asks nothing more of a click; a small one shows large.
+    // The large one asks nothing more of a click; a small one shows large,
+    // Bob's own tile beneath his stream's stand-in, which asks nothing.
     assert_eq!(click_at(&watching, Point::new(500.0, 300.0)), []);
+    assert_eq!(click_at(&watching, Point::new(500.0, 600.0)), [focus(BOB)]);
     assert_eq!(
-        click_at(&watching, Point::new(500.0, 600.0)),
+        click_at(&watching, Point::new(700.0, 600.0)),
         [focus(CAROL)]
     );
+    assert_eq!(click_at(&watching, Point::new(300.0, 600.0)), []);
     // With none large, beside the tiles is nothing.
     assert_eq!(click_at(&samples::lounge(), Point::new(20.0, 20.0)), []);
 }
@@ -124,8 +137,8 @@ fn hidden_others_leave_the_large_tile_alone_until_a_click_beside_it() {
 
 #[test]
 fn the_grid_tells_the_app_where_its_tiles_are() {
-    let lounge = samples::lounge();
-    let mut ui = simulate(&lounge, front());
+    let people = samples::people();
+    let mut ui = simulate(&people, front());
     let now = Instant::now();
     frame(&mut ui, now);
     frame(&mut ui, now + Duration::from_millis(16));
@@ -140,6 +153,7 @@ fn the_grid_tells_the_app_where_its_tiles_are() {
         focused: None,
         focus_width: 0.0,
         focus_height: 0.0,
+        stand_in: false,
     };
     assert_eq!(asked(ui), [stage::Intent::Placed(placed).into()], "once");
 }
@@ -178,15 +192,16 @@ fn a_tile_shown_large_glides_there() {
     frame(&mut ui, start + Duration::from_millis(200));
     let after = chip(&mut ui);
     assert!(after < half && half < before, "{before} > {half} > {after}");
-    // The large tile's chip, 10 px in and 8 more from its left at 44.
-    assert_eq!(after, 62.0);
+    // The large stream's chip, 10 px in and 8 more from its left at 40.8,
+    // then its screen mark and 6 px.
+    assert!((after - LARGE_NAME).abs() < 0.01, "{after}");
 
     // A still window shows it there at once.
     let still = Motion::default();
     let ui = simulate(&lounge, still);
     let mut ui = ui.rebuild(view(&watching, still));
     frame(&mut ui, Instant::now());
-    assert_eq!(chip(&mut ui), 62.0);
+    assert!((chip(&mut ui) - LARGE_NAME).abs() < 0.01);
 }
 
 #[test]

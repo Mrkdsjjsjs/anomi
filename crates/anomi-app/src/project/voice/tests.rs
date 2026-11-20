@@ -108,8 +108,10 @@ fn someone_speaking_or_muting_builds_their_tile_alone() {
 fn a_stream_watched_shows_large_and_in_the_corner_off_screen() {
     let (mut app, folder) = in_call("watch");
     change(&mut app, |people| people[1].streaming = true);
-    let bob = &app.vm.voice.stage.tiles[1];
-    assert!(bob.watch && matches!(bob.fill, Fill::Avatar { .. }));
+    let stream = &app.vm.voice.stage.tiles[1];
+    assert!(stream.watch && matches!(stream.fill, Fill::Offer { preview: None }));
+    let bob = &app.vm.voice.stage.tiles[2];
+    assert!(!bob.watch && matches!(bob.fill, Fill::Avatar { .. }));
     app.core.state.voice.watching = Some(Box::new(Watching {
         user: "bob".into(),
         name: "Bob".into(),
@@ -134,8 +136,8 @@ fn a_stream_watched_shows_large_and_in_the_corner_off_screen() {
     let _ = std::fs::remove_dir_all(folder);
 }
 
-/// Bob streams beside his camera: the stream's own tile shows its preview
-/// as it comes, again after watching stopped.
+/// Bob streams beside his camera: the stream's own tile, right before his,
+/// shows its preview as it comes.
 #[test]
 fn a_stream_beside_a_camera_shows_its_preview_when_it_comes() {
     use yapfast_core::chat::{Picture, Pixels};
@@ -144,7 +146,7 @@ fn a_stream_beside_a_camera_shows_its_preview_when_it_comes() {
         people[1].streaming = true;
         people[1].video = Some(yapfast_core::picture::Feed::default());
     });
-    let offer = |app: &App| match &app.vm.voice.stage.tiles[0].fill {
+    let offer = |app: &App| match &app.vm.voice.stage.tiles[1].fill {
         Fill::Offer { preview } => preview.is_some(),
         _ => panic!("Bob's stream offered"),
     };

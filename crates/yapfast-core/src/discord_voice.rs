@@ -211,6 +211,10 @@ struct Watch {
     user: String,
     opening: Starting,
     worker: Option<(Worker, mpsc::UnboundedReceiver<Report>)>,
+    /// How the worker was told to clean the stream's sound, and whether the
+    /// call feeds its echo gate what it sends.
+    cleaning: crate::volume::Cleaning,
+    echo: bool,
 }
 
 impl Watch {
@@ -243,6 +247,33 @@ impl Watch {
         }
     }
 
+    /// Cleans the stream's sound as chosen for it (`volume::stream_cleaning`),
+    /// telling the worker of a change, and feeds its echo gate what the call
+    /// sends while that's on, from a new worker too; stops the feed once
+    /// it's off.
+    fn clean(&mut self, hearing: &Hearing) {
+        let Some((worker, _)) = self.worker.as_mut() else {
+            return;
+        };
+        let cleaning = crate::volume::stream_cleaning(&self.user);
+        if cleaning != self.cleaning {
+            self.cleaning = cleaning;
+            if let Err(error) = worker.cleaning(cleaning) {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "could not tell the stream worker"
+                );
+            }
+        }
+        let echo = cleaning.removes_echo();
+        if echo && !self.echo {
+            hearing.set_stream_echo(worker.echo_feed());
+        } else if !echo && self.echo {
+            hearing.set_stream_echo(None);
+        }
+        self.echo = echo;
+    }
+
     fn start(discord: &Discord, guild: &str, channel: &str, user: &str, state: &mut State) -> Self {
         let key = stream::key(guild, channel, user);
         let name = state
@@ -263,6 +294,8 @@ impl Watch {
             user: user.to_owned(),
             opening: Some(Box::pin(async move { discord.watch(&asked).await })),
             worker: None,
+            cleaning: crate::volume::Cleaning::NOTHING,
+            echo: false,
         }
     }
 
@@ -271,9 +304,19 @@ impl Watch {
     fn open(&mut self, server: &StreamServer, state: &mut State) -> Result<()> {
         self.opening = None;
         let volume = crate::volume::heard(crate::volume::Kind::Stream, &self.user);
-        let (worker, frames, reports) =
-            Worker::watch(server, state.speaker.clone(), state.deafened, volume)?;
+        let cleaning = crate::volume::stream_cleaning(&self.user);
+        let (worker, frames, reports) = Worker::watch(
+            server,
+            state.speaker.clone(),
+            state.deafened,
+            volume,
+            cleaning,
+        )?;
         self.worker = Some((worker, reports));
+        // The new worker is told in its job; its echo gate is fed anew
+        // (`Self::clean`), the old one's feed going with it.
+        self.cleaning = cleaning;
+        self.echo = false;
         if let Some(shown) = state.watching.as_mut() {
             shown.frames = Some(Arc::new(frames));
         }
@@ -903,16 +946,24 @@ pub(crate) async fn call(
                         }
                     }
                 }
-                Ok(()) = volumes.changed() => Watch::volume(&mut watch),
+                Ok(()) = volumes.changed() => {
+                    Watch::volume(&mut watch);
+                    if let Some(watching) = watch.as_mut() {
+                        watching.clean(&hearing);
+                    }
+                }
                 event = watch_event(&mut watch) => {
                     let mut stop = None;
                     match event {
                         WatchEvent::Opened(Ok(server)) => {
-                            if let Some(watching) = watch.as_mut()
-                                && let Err(error) = watching.open(&server, state)
-                            {
-                                tracing::warn!(error = format!("{error:#}"), "could not watch the stream");
-                                stop = Some(Some(format!("{error:#}")));
+                            if let Some(watching) = watch.as_mut() {
+                                match watching.open(&server, state) {
+                                    Ok(()) => watching.clean(&hearing),
+                                    Err(error) => {
+                                        tracing::warn!(error = format!("{error:#}"), "could not watch the stream");
+                                        stop = Some(Some(format!("{error:#}")));
+                                    }
+                                }
                             }
                         }
                         WatchEvent::Opened(Err(error)) => {
@@ -1048,11 +1099,14 @@ pub(crate) async fn call(
                             if let Some(shown) = state.watching.as_mut() {
                                 shown.opening = true;
                             }
-                            if let Err(error) = watching.open(&next, state)
-                                && let Some(stopped) = watch.take()
-                            {
-                                stopped.stop(discord, state);
-                                state.error = Some(format!("{error:#}"));
+                            match watching.open(&next, state) {
+                                Ok(()) => watching.clean(&hearing),
+                                Err(error) => {
+                                    if let Some(stopped) = watch.take() {
+                                        stopped.stop(discord, state);
+                                        state.error = Some(format!("{error:#}"));
+                                    }
+                                }
                             }
                         }
                         snapshots.send_replace(state.clone());

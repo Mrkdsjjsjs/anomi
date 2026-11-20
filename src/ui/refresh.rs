@@ -4441,7 +4441,8 @@ impl Adapter {
         window.set_share_resolution(match voice.quality.resolution {
             voice::Resolution::P720 => 0,
             voice::Resolution::P1080 => 1,
-            voice::Resolution::Source => 2,
+            voice::Resolution::P1440 => 2,
+            voice::Resolution::Source => 3,
         });
         window.set_share_fps(voice.quality.fps as i32);
         window.set_share_high_quality(voice.quality.high_quality);

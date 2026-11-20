@@ -5,7 +5,8 @@
 //! and Vesktop do, and so are other Discord clients': their sound is a call
 //! too, which a stream would echo back. [`crate::audio_io::others`] hears the
 //! applications, and [`crate::audio_io::window_audio`] one of them.
-//! Watching: the streamer's Opus, decoded and played ([`Player`]).
+//! Watching: the streamer's Opus, decoded, cleaned as its tile's menu asks
+//! ([`crate::stream_cleaning`]) and played ([`Player`]).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -380,16 +381,24 @@ fn scale(pcm: &mut [i16], volume: f32) {
 }
 
 impl Player {
-    /// Plays `sounds` on `speakers`, or the default output, at `volume`, while
-    /// `hearing` is set: being deafened silences streams too.
+    /// Plays `sounds` on `speakers`, or the default output, at `volume`,
+    /// cleaned as `cleaning` says, while `hearing` is set: being deafened
+    /// silences streams too.
     pub fn start(
         sounds: std::sync::mpsc::Receiver<Vec<u8>>,
         speakers: Option<String>,
         hearing: Arc<AtomicBool>,
         volume: Arc<Volume>,
+        cleaning: Arc<crate::stream_cleaning::Chosen>,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
-        let thread = play(sounds, speakers, hearing, volume, stop.clone())?;
+        let player = Playing {
+            hearing,
+            volume,
+            cleaning,
+            stop: stop.clone(),
+        };
+        let thread = play(sounds, speakers, player)?;
         Ok(Self {
             stop,
             thread: Some(thread),
@@ -406,13 +415,26 @@ impl Drop for Player {
     }
 }
 
+/// What the player's thread reads as it plays: Yapfast's word on hearing
+/// the stream, its volume, how it's cleaned, and when to stop.
+struct Playing {
+    hearing: Arc<AtomicBool>,
+    volume: Arc<Volume>,
+    cleaning: Arc<crate::stream_cleaning::Chosen>,
+    stop: Arc<AtomicBool>,
+}
+
 fn play(
     sounds: std::sync::mpsc::Receiver<Vec<u8>>,
     speakers: Option<String>,
-    hearing: Arc<AtomicBool>,
-    volume: Arc<Volume>,
-    stop: Arc<AtomicBool>,
+    player: Playing,
 ) -> Result<JoinHandle<()>> {
+    let Playing {
+        hearing,
+        volume,
+        cleaning,
+        stop,
+    } = player;
     use std::sync::mpsc;
     let (ready, started) = mpsc::sync_channel(1);
     let thread = std::thread::Builder::new()
@@ -445,8 +467,13 @@ fn play(
             };
             // Opus's longest frame, 120 ms.
             let mut pcm = vec![0i16; RATE as usize / 1000 * 120 * CHANNELS];
+            // Nothing is made for cleaning until something is on and the
+            // stream sounds.
+            let mut cleaner = crate::stream_cleaning::Cleaner::new(cleaning);
             while !stop.load(Ordering::Relaxed) {
-                let opus = match sounds.recv_timeout(Duration::from_millis(100)) {
+                let received = sounds.recv_timeout(Duration::from_millis(100));
+                cleaner.idle();
+                let opus = match received {
                     Ok(opus) => opus,
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -456,7 +483,7 @@ fn play(
                 }
                 match decoder.decode(&opus, &mut pcm, false) {
                     Ok(samples) => {
-                        let pcm = &mut pcm[..samples * CHANNELS];
+                        let pcm = cleaner.clean(&mut pcm[..samples * CHANNELS], CHANNELS);
                         scale(pcm, volume.get());
                         output.write(pcm);
                     }
@@ -640,6 +667,9 @@ mod tests {
             None,
             Arc::new(AtomicBool::new(true)),
             Arc::new(Volume::new(1.0)),
+            Arc::new(crate::stream_cleaning::Chosen::new(
+                crate::volume::Cleaning::NOTHING,
+            )),
         )
         .unwrap();
         player.thread.take().unwrap().join().unwrap();

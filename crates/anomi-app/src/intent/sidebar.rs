@@ -2,12 +2,16 @@
 //! (`src/ui/callbacks.rs:1282`-`:1305`, `:986`), the channel list's
 //! (`:2738`-`:3024`, `:3319`), the server header's (`:1358`) and Browse
 //! Channels' (`:3044`-`:3058`). The search fields filter the rows without
-//! the core; folding a category is the layout's; dragging is in [`drag`].
-//! Their menus open in `intent::menus`; a voice person's profile is I16's.
+//! the core; folding a category is the layout's; dragging is in [`drag`];
+//! the card beside someone in a voice channel in [`hover`]. Their menus
+//! open in `intent::menus`; a voice person's profile is I16's.
 
 mod drag;
+mod hover;
 #[cfg(test)]
 mod tests;
+
+pub(super) use hover::{gone as card_gone, lost as lost_card};
 
 use iced::Task;
 use yapfast_core::application::{Action, DmScreen, Navigation};
@@ -83,10 +87,18 @@ fn channels(app: &mut App, intent: channels::Intent) -> Task<Message> {
             }),
             None => Task::none(),
         },
-        I::Watch { channel, person } => app.dispatch(Action::ShowVoicePerson {
-            room: channel,
-            user: person,
-        }),
+        // From the LIVE tag or the card, which goes, as Discord's does.
+        I::Watch { channel, person } => {
+            let gone = hover::gone(app);
+            let watch = app.dispatch(Action::ShowVoicePerson {
+                room: channel,
+                user: person,
+            });
+            Task::batch([gone, watch])
+        }
+        I::Hover { channel, user } => hover::rested(app, channel, user),
+        I::Unhover { channel, user } => hover::left(app, &channel, &user),
+        I::OpenStore(url) => hover::store(app, &url),
         I::Menu(room, spot) => super::menus::open(app, room, false, spot),
         I::CategoryMenu(id, spot) => match category_of(app, &id) {
             Some(category) => super::menus::open(app, category, false, spot),

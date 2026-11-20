@@ -56,7 +56,7 @@ pub enum Status {
     Offline(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VoiceMember {
     pub user_id: String,
     pub name: String,
@@ -76,6 +76,11 @@ pub struct VoiceMember {
     /// This account, in the call on another client, such as Discord's app
     /// on a phone, rather than on this gateway session.
     pub elsewhere: bool,
+    /// What they're doing, as far as Discord tells this account their
+    /// presence: a friend's or a DM's person's, and anyone's in a server's
+    /// voice channel whose presence it sends. The channel list marks a game
+    /// on their row and shows it on their card.
+    pub activities: crate::activity::Activities,
 }
 
 /// The linked account, as Discord shows it outside any server.

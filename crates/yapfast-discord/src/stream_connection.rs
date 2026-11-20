@@ -75,7 +75,9 @@ fn schedule(
 }
 
 /// The most bit/s a stream of `height` lines may take, as Discord's client
-/// decides it: 3.5 Mbit/s up to 720p, 9 Mbit/s above.
+/// decides it: 3.5 Mbit/s up to 720p, 9 Mbit/s above, 1440p and the
+/// source's size too, at any frame rate. The voice docs give 9 Mbit/s as
+/// op 12's `max_bitrate` at 60 fps and name no other cap.
 pub fn max_bitrate(height: u32) -> u32 {
     if height > 720 { 9_000_000 } else { 3_500_000 }
 }
@@ -1325,6 +1327,25 @@ mod tests {
         assert_eq!(announced["streams"][0]["max_bitrate"], 6_000_000);
         let camera = video_attributes(1, 2, 3, (1280, 720), 30);
         assert_eq!(camera["streams"][0]["max_bitrate"], 3_500_000);
+    }
+
+    /// 1440p is capped as 1080p is, at every frame rate, and op 12 names
+    /// its size as fixed, as for the others.
+    #[test]
+    fn caps_1440p_as_1080p_at_every_frame_rate() {
+        for fps in [15, 30, 60] {
+            let announced = attributes(1, 2, 3, (2560, 1440), fps, cap(1440, None));
+            let stream = &announced["streams"][0];
+            assert_eq!(stream["max_bitrate"], 9_000_000, "{fps} fps");
+            assert_eq!(stream["max_framerate"], fps);
+            assert_eq!(
+                stream["max_resolution"],
+                json!({"type": "fixed", "width": 2560, "height": 1440})
+            );
+        }
+        // An ultrawide's 1440p, 2560 by 1070, is still above 720 lines.
+        assert_eq!(cap(1070, None), 9_000_000);
+        assert_eq!(cap(1440, Some(9_000)), 9_000_000, "the highest step");
     }
 
     /// A limit set while live lowers the target the encoder follows at

@@ -270,6 +270,7 @@ fn voice_person(member: &yapfast_discord::service::VoiceMember) -> VoicePerson {
         streaming: member.streaming,
         video: member.video,
         elsewhere: member.elsewhere,
+        activities: member.activities.clone(),
     }
 }
 
@@ -2554,6 +2555,7 @@ mod tests {
             elsewhere: false,
             server_muted: false,
             server_deafened: false,
+            activities: Default::default(),
         };
         let first = Snapshot {
             servers: vec![server("10", "11", "12"), server("20", "21", "22")],
@@ -2722,6 +2724,7 @@ mod tests {
                 streaming: false,
                 video: false,
                 elsewhere: false,
+                activities: Default::default(),
             }],
         );
         assert!(kept.update_into(&call, false, &mut rooms, &mut servers));
@@ -2816,6 +2819,7 @@ mod tests {
             streaming: false,
             video: false,
             elsewhere: false,
+            activities: Default::default(),
         };
         let snapshot = Snapshot {
             servers: vec![MarkedServer::marked(
@@ -2900,6 +2904,7 @@ mod tests {
                     elsewhere: false,
                     server_muted: false,
                     server_deafened: false,
+                    activities: Default::default(),
                 }],
             )]
             .into(),

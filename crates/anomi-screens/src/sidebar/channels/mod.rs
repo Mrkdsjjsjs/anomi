@@ -3,7 +3,8 @@
 //! channel on a line, and who is in each voice channel under it, with LIVE
 //! and mute marks and a card of them beside the row. Categories fold;
 //! channels and categories drag to new places, and people onto other voice
-//! channels. The Slint side: `RoomList`'s channel rows, `ChannelRow`,
+//! channels. Someone who plays or streams has a card of what they're doing
+//! beside their row once the pointer rests on it (`hover`). The Slint side: `RoomList`'s channel rows, `ChannelRow`,
 //! `CategoryHeading`, `BrowseLink`, `DropLine`, `PersonTouch` and
 //! `VoiceCardView` (`ui/rail.slint:1150`, `:397`, `:840`, `:1138`, `:787`,
 //! `:799`, `:741`); what they show comes from `show_sidebar`
@@ -17,6 +18,7 @@ mod card;
 mod channel;
 mod drag;
 mod heading;
+mod hover;
 mod items;
 mod live;
 mod person;

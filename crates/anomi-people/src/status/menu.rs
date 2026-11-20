@@ -44,7 +44,7 @@ pub fn view(menu: &Menu, motion: Motion) -> impl View<Intent> + '_ {
     let mut rows: Vec<Element<'_, Intent>> = Vec::new();
     if let Some(game) = &menu.game {
         let playing: Cow<'_, str> = if game.duration.is_empty() {
-            Cow::Borrowed(tr!("Playing now"))
+            Cow::Borrowed(tr!("StatusMenu" => "Playing now"))
         } else {
             Cow::Owned(tr!("Playing for {}", game.duration))
         };

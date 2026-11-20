@@ -1,9 +1,15 @@
-//! Who is in the fake's Lounge: Bob streaming, Carol muted, Dave muted and
-//! deafened (`testing/fake_discord.ts:2134`), and Alice once she joins.
+//! Who is in the fake's Lounge: Bob streaming as he plays Factorio, Carol
+//! muted, Dave muted and deafened (`testing/fake_discord.ts:2134`), and
+//! Alice once she joins.
 
 use crate::fixtures::avatar;
 use crate::fixtures::pictures::{picture, pictured};
+use crate::kind::Expected;
 use crate::sidebar::channels::VoicePerson;
+
+/// Factorio's icon, as the fake's CDN serves it (`applications`,
+/// `testing/fake_discord.ts:3110`).
+pub const FACTORIO_ICON: &str = "/app-icons/1400000000000000900/factorioicon.png";
 
 fn person(user: &str, name: &str, tint: u32) -> VoicePerson {
     VoicePerson {
@@ -24,9 +30,11 @@ pub fn alice() -> VoicePerson {
     }
 }
 
+/// Streaming as he plays Factorio: his LIVE tag stands for the game.
 pub fn bob() -> VoicePerson {
     VoicePerson {
         live: true,
+        game: Some(Expected::Ready(picture(FACTORIO_ICON))),
         ..person("1400000000000000002", "Bob", 0xeb459e)
     }
 }

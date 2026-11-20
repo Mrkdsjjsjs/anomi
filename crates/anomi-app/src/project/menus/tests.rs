@@ -193,6 +193,70 @@ fn a_folders_menu_marks_it_read_moves_it_opens_its_settings_and_closes_folders()
     assert_eq!(texts(&server)[0], "Mark as read");
 }
 
+/// Someone's menu in a DM's call: what suppresses their noise, a submenu
+/// of radios with the one chosen named under its row, the strong one saying
+/// what it costs, and the box for our echo.
+#[cfg(feature = "discord")]
+#[test]
+fn a_calls_menu_offers_what_cleans_their_voice() {
+    use yapfast_core::chat::VoicePerson;
+    use yapfast_core::network::Network;
+    use yapfast_core::noise::Suppressor;
+    use yapfast_core::volume::{self, Cleaning};
+    let folder = Folder::new("menus-cleaning-rows");
+    let mut app = discord_app(&folder);
+    // A person of this test alone: the registry is the process's.
+    let person = "discord:u-in-call";
+    let dm = Arc::make_mut(&mut app.core.state.rooms[1]);
+    dm.network = Network::Discord;
+    dm.people = vec![VoicePerson {
+        id: person.into(),
+        name: "Ann".into(),
+        ..VoicePerson::default()
+    }];
+    let target = format!("in-voice:discord:dm:d1/{person}");
+    let made = rows(&app.core, &app.layout, &target, true);
+    assert_eq!(texts(&made), ["Suppress their noise", "Remove my echo"]);
+    let noise = &made[0];
+    assert!(chooses(noise).is_none(), "it opens its submenu");
+    assert_eq!(noise.subtitle, "Off");
+    assert_eq!(texts(&noise.submenu), ["Off", "RNNoise", "DeepFilterNet"]);
+    let marks: Vec<(bool, bool)> = (noise.submenu.iter())
+        .map(|row| (row.radio, row.checked))
+        .collect();
+    assert_eq!(marks, [(true, true), (true, false), (true, false)]);
+    let strong = &noise.submenu[2];
+    assert!(
+        strong.wraps && !strong.subtitle.is_empty(),
+        "it says what it costs"
+    );
+    let ids: Vec<&str> = (noise.submenu.iter())
+        .filter_map(chooses)
+        .map(|choice| choice.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "their-noise:off",
+            "their-noise:rnnoise",
+            "their-noise:deepfilternet"
+        ]
+    );
+    assert!(made[1].checkbox && !made[1].checked);
+    // Chosen, the row names it.
+    let deep = Cleaning {
+        noise: Suppressor::DeepFilterNet,
+        own_echo: true,
+        ..Cleaning::NOTHING
+    };
+    volume::set_cleaning(person, deep);
+    let made = rows(&app.core, &app.layout, &target, true);
+    assert_eq!(made[0].subtitle, "DeepFilterNet");
+    assert!(made[0].submenu[2].checked && !made[0].submenu[0].checked);
+    assert!(made[1].checked);
+    volume::set_cleaning(person, Cleaning::NOTHING);
+}
+
 #[test]
 fn a_server_without_events_says_so() {
     let folder = Folder::new("menus-events");

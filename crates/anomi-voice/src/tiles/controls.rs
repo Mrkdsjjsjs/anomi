@@ -3,15 +3,16 @@
 //! the top right the viewers, and while a watched stream's tile is large
 //! or pointed at, the button that stops watching it, 8 px after them; on
 //! this account's stream's tile under the pointer, a gear there instead,
-//! which opens the stream's menu below it, as Discord's; at the bottom
-//! right of the large tile under the pointer, the buttons that hide the
-//! tiles beneath it and go full screen. Each is a white icon on a round
-//! dark scrim, 32 px.
+//! which opens the stream's menu below it, as Discord's; last, in the
+//! corner, a stream's red LIVE badge, at rest too, where Discord's strip
+//! has it; at the bottom right of the large tile under the pointer, the
+//! buttons that hide the tiles beneath it and go full screen. Each button
+//! is a white icon on a round dark scrim, 32 px.
 //!
 //! Slint fades these in over `QUICK`; iced draws no layer at an opacity,
 //! so they show at once.
 
-use iced::widget::{Row, Space, column};
+use iced::widget::{Row, Space, column, container};
 use iced::{Alignment, Color, Fill};
 use yapfast_lang::tr;
 
@@ -22,7 +23,7 @@ use anomi_widgets::button::icon_button;
 use anomi_widgets::icon::Icon;
 use anomi_widgets::menu::opener;
 
-use super::{INSET, SCRIM, viewers::viewers};
+use super::{INSET, SCRIM, live::live, viewers::viewers};
 
 /// A button's side, its corners, and the room between two (`:792`, `:800`).
 const BUTTON: f32 = 32.0;
@@ -46,6 +47,9 @@ pub fn view(tile: &Tile, hovered: bool, motion: Motion) -> Element<'_, Intent> {
     }
     if hovered && tile.key == Key::OwnScreen {
         top = top.push(settings(motion));
+    }
+    if tile.badge {
+        top = top.push(badge());
     }
     let mut bottom: Row<Element<'_, Intent>> = Row::new()
         .spacing(GAP)
@@ -82,6 +86,12 @@ fn button<'a>(shape: Icon, label: &'a str, intent: Intent, motion: Motion) -> El
         .on_press(intent)
         .view()
         .boxed()
+}
+
+/// A stream's red LIVE badge in the corner: at the top of the row the
+/// buttons sit in, as Discord's.
+fn badge<'a>() -> Element<'a, Intent> {
+    container(live::<Intent>(None)).align_top(BUTTON).boxed()
 }
 
 /// The gear of this account's stream, whose menu opens below it, its

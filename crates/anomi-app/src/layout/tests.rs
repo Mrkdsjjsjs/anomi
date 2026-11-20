@@ -207,8 +207,22 @@ fn anomis_own_keys_read_and_stay() {
     .unwrap();
     let mut layout = Layout::read(&folder);
     assert!(layout.odd.is_empty());
-    assert!(layout.denoised_people.contains("discord:u3"));
-    assert_eq!(layout.echo_removed_people.len(), 2);
+    // An earlier Anomi's two sets, read as each person's choices: RNNoise
+    // in full, our echo 20 dB down.
+    use yapfast_core::noise::Suppressor;
+    use yapfast_core::volume::Cleaning;
+    let both = Cleaning {
+        noise: Suppressor::RNNoise,
+        own_echo: true,
+        ..Cleaning::NOTHING
+    };
+    assert_eq!(layout.cleaned_voices["discord:u3"].cleaning(), both);
+    let echo = Cleaning {
+        own_echo: true,
+        ..Cleaning::NOTHING
+    };
+    assert_eq!(layout.cleaned_voices["discord:u4"].cleaning(), echo);
+    assert!(layout.other.is_empty(), "taken out of the unknown keys");
     assert_eq!(layout.echo_cancellation, Some(false));
     assert_eq!(layout.cores(), CpuChoice::Cores(vec![8, 9, 10]));
     assert_eq!(layout.encoder(), Encoder::Card("pci:0000:73:00.0".into()));
@@ -216,7 +230,11 @@ fn anomis_own_keys_read_and_stay() {
     layout.flush();
     let file = written(&folder);
     assert_eq!(file["cpu_mode"], json!("all"));
-    assert_eq!(file["denoised_people"], json!(["discord:u3"]));
+    assert_eq!(
+        file["cleaned_voices"],
+        json!({"discord:u3": {"noise": "rnnoise", "echo": true}, "discord:u4": {"echo": true}})
+    );
+    assert!(file.get("denoised_people").is_none() && file.get("echo_removed_people").is_none());
     assert_eq!(file["echo_cancellation"], json!(false));
     assert_eq!(file["stream_encoder"], json!("pci:0000:73:00.0"));
     layout.edit(|saved| saved.cpu_mode = Some(CpuChoice::Cores(vec![12])));
@@ -231,6 +249,8 @@ fn unset_own_keys_arent_written() {
     layout.edit(|saved| saved.zoom = Some(1.1));
     let file: Value = serde_json::from_slice(&layout.bytes().unwrap()).unwrap();
     for key in [
+        "cleaned_voices",
+        "cleaned_streams",
         "denoised_people",
         "echo_removed_people",
         "echo_cancellation",

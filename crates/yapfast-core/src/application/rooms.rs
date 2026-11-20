@@ -71,7 +71,8 @@ pub enum MenuChoice {
     /// as a box to tick.
     SoundboardMute,
     /// Take the noise out of someone else's voice here before it's mixed,
-    /// as a box to tick, in a Discord call; `volume::Cleaning::noise`.
+    /// in a Discord call, with the suppressor its submenu chooses, none
+    /// among them; `volume::Cleaning::noise`.
     SuppressTheirNoise,
     /// Turn someone else down here while what comes from them is only this
     /// account's own voice, back from their speakers, as a box to tick, in

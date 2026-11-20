@@ -2,13 +2,14 @@
 //! Lounge (`testing/fake_discord.ts:2134`): Alice in the call, Bob sharing
 //! his screen, Carol muted, Dave muted and deafened. Task V03's.
 //!
-//! Each golden screenshot of the stage has its tiles here in the stage's
-//! order ([`lounge`], [`speaking`], [`watching`], [`with_camera`],
-//! [`quiet`]), and
-//! the states the goldens don't show have theirs ([`sharing`],
-//! [`waiting`], [`offered`], [`starting`], [`joining`]). A stream's
-//! preview and a camera's picture are drawn here once a thread, as the fake
-//! draws them, so their handles keep their ids.
+//! As in Discord's call, Bob's stream has a tile of its own right before
+//! his, which keeps his picture or camera. Each golden screenshot of the
+//! stage has its tiles here in the stage's order ([`lounge`], [`speaking`],
+//! [`watching`], [`with_camera`], [`quiet`]), and the states the goldens
+//! don't show have theirs ([`people`], [`streamer_with_camera`],
+//! [`sharing`], [`waiting`], [`offered`], [`starting`], [`joining`]). A
+//! stream's preview and a camera's picture are drawn here once a thread, as
+//! the fake draws them, so their handles keep their ids.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -76,14 +77,9 @@ pub fn alice() -> Tile {
     person(ALICE, "Alice", alice_avatar())
 }
 
-/// Bob sharing his screen without a camera: its preview fills his tile,
-/// which a click watches.
+/// Bob's own tile: his picture. His stream is in a tile of its own.
 pub fn bob() -> Tile {
-    let mut bob = person(BOB, "Bob", bob_avatar());
-    bob.fill = Fill::Preview(stream_preview());
-    bob.watch = true;
-    bob.chip.live = true;
-    bob
+    person(BOB, "Bob", bob_avatar())
 }
 
 pub fn carol() -> Tile {
@@ -98,9 +94,40 @@ pub fn dave() -> Tile {
     dave
 }
 
-/// The Lounge's stage once Alice joined (`voice/stage.png`).
-pub fn lounge() -> Vec<Tile> {
+/// What a stream's tile says at its bottom left: the screen and whose it is.
+fn bobs_stream() -> Chip {
+    Chip {
+        name: "Bob".into(),
+        mark: Some(Mark::Screen),
+        ..Chip::default()
+    }
+}
+
+/// Bob's stream in its own tile, not watched, the LIVE badge at its top
+/// right: on its preview, or without one, behind "Watch stream".
+pub fn offered(preview: bool) -> Tile {
+    Tile {
+        key: Key::Stream(BOB.into()),
+        fill: Fill::Offer {
+            preview: preview.then(stream_preview),
+        },
+        chip: bobs_stream(),
+        badge: true,
+        watch: true,
+        ..Tile::default()
+    }
+}
+
+/// The Lounge's four, each in their own tile, nobody sharing: what a crowd
+/// starts from.
+pub fn people() -> Vec<Tile> {
     vec![alice(), bob(), carol(), dave()]
+}
+
+/// The Lounge's stage once Alice joined (`voice/stage.png`), as Discord's
+/// is: Bob's stream offered on its preview right before his own tile.
+pub fn lounge() -> Vec<Tile> {
+    vec![alice(), offered(true), bob(), carol(), dave()]
 }
 
 /// The Lounge once Bob left (`light/voice_stage.png`).
@@ -108,10 +135,11 @@ pub fn quiet() -> Vec<Tile> {
     vec![alice(), carol(), dave()]
 }
 
-/// Bob speaks (`voice/speaking_ring.png`).
+/// Bob speaks (`voice/speaking_ring.png`): his own tile rings, not his
+/// stream's.
 pub fn speaking() -> Vec<Tile> {
     let mut tiles = lounge();
-    tiles[1].outline = Outline::Speaking;
+    tiles[2].outline = Outline::Speaking;
     tiles
 }
 
@@ -124,47 +152,45 @@ fn alice_watches() -> Viewers {
     }
 }
 
-/// Alice watches Bob's stream, large in his tile (`voice/watching_stream.png`).
-pub fn watching() -> Vec<Tile> {
-    let mut tiles = lounge();
-    let bob = &mut tiles[1];
-    bob.fill = Fill::Watched {
-        frame: Some(Live::new(frame(640, 360))),
-        status: String::new(),
-    };
-    bob.watch = false;
-    bob.viewers = alice_watches();
-    bob.focused = true;
-    bob.can_hide_others = true;
-    tiles
-}
-
-/// Bob films too: his stream takes a tile of its own, large and watched,
-/// and his own tile shows his camera (`voice/with_camera.png`).
-pub fn with_camera() -> Vec<Tile> {
-    let stream = Tile {
-        key: Key::Stream(BOB.into()),
+/// Bob's stream watched, its picture shown large.
+fn watched() -> Tile {
+    Tile {
         fill: Fill::Watched {
             frame: Some(Live::new(frame(640, 360))),
             status: String::new(),
         },
-        chip: Chip {
-            name: "Bob".into(),
-            mark: Some(Mark::Screen),
-            live: true,
-            note: String::new(),
-        },
+        watch: false,
         viewers: alice_watches(),
         focused: true,
         can_hide_others: true,
-        ..Tile::default()
-    };
-    let mut bob = person(BOB, "Bob", bob_avatar());
-    bob.fill = Fill::Camera(Live::new(frame(320, 180)));
-    vec![stream, alice(), bob, carol(), dave()]
+        ..offered(false)
+    }
 }
 
-/// Alice shares her screen, live, Bob watching it: her screen's tile.
+/// Alice watches Bob's stream, large in its own tile, his picture in the
+/// row beneath (`voice/watching_stream.png`).
+pub fn watching() -> Vec<Tile> {
+    vec![alice(), watched(), bob(), carol(), dave()]
+}
+
+/// Bob films too: his stream large and watched, his camera in his own
+/// tile in the row beneath (`voice/with_camera.png`).
+pub fn with_camera() -> Vec<Tile> {
+    let mut tiles = watching();
+    tiles[2].fill = Fill::Camera(Live::new(frame(320, 180)));
+    tiles
+}
+
+/// Bob streams and films, nobody watching yet: his stream offered right
+/// before his camera, in the grid.
+pub fn streamer_with_camera() -> Vec<Tile> {
+    let mut tiles = lounge();
+    tiles[2].fill = Fill::Camera(Live::new(frame(320, 180)));
+    tiles
+}
+
+/// Alice shares her screen, live, Bob watching it: her screen's tile, its
+/// LIVE badge at the top right.
 pub fn sharing() -> Tile {
     Tile {
         key: Key::OwnScreen,
@@ -174,9 +200,9 @@ pub fn sharing() -> Tile {
         },
         chip: Chip {
             name: tr!("Your screen").into(),
-            live: true,
             ..Chip::default()
         },
+        badge: true,
         viewers: Viewers {
             faces: vec![bob_avatar()],
             count: 1,
@@ -186,17 +212,14 @@ pub fn sharing() -> Tile {
     }
 }
 
-/// Her stream on its way, before its first picture.
+/// Her stream on its way, before its first picture: not live yet.
 pub fn sharing_starting() -> Tile {
     Tile {
         fill: Fill::OwnScreen {
             frame: None,
             status: tr!("Starting your stream...").into(),
         },
-        chip: Chip {
-            live: false,
-            ..sharing().chip
-        },
+        badge: false,
         viewers: Viewers::default(),
         ..sharing()
     }
@@ -204,33 +227,19 @@ pub fn sharing_starting() -> Tile {
 
 /// Bob's stream watched before its first picture, watched by five.
 pub fn waiting() -> Tile {
-    let mut bob = watching().swap_remove(1);
-    bob.fill = Fill::Watched {
-        frame: None,
-        status: tr!("Connecting to {}'s stream...", "Bob"),
-    };
-    bob.focused = false;
-    bob.can_hide_others = false;
-    bob.viewers = Viewers {
-        faces: vec![alice_avatar(), carol_avatar(), dave_avatar()],
-        count: 5,
-        names: tr!("Watching: {}", "Alice, Carol, Dave, Erin, Person 1"),
-    };
-    bob
-}
-
-/// Bob's stream in a tile of its own, not watched: with its preview, or
-/// without one.
-pub fn offered(preview: bool) -> Tile {
     Tile {
-        fill: Fill::Offer {
-            preview: preview.then(stream_preview),
+        fill: Fill::Watched {
+            frame: None,
+            status: tr!("Connecting to {}'s stream...", "Bob"),
         },
-        watch: true,
-        viewers: Viewers::default(),
         focused: false,
         can_hide_others: false,
-        ..with_camera().swap_remove(0)
+        viewers: Viewers {
+            faces: vec![alice_avatar(), carol_avatar(), dave_avatar()],
+            count: 5,
+            names: tr!("Watching: {}", "Alice, Carol, Dave, Erin, Person 1"),
+        },
+        ..watched()
     }
 }
 

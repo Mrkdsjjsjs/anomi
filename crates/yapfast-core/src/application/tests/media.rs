@@ -360,6 +360,7 @@ fn asks_once_for_the_pictures_on_screen() {
                 elsewhere: false,
                 server_muted: false,
                 server_deafened: false,
+                activities: Default::default(),
             }],
         )]
         .into(),

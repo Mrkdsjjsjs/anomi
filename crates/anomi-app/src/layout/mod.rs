@@ -21,6 +21,7 @@
 //! changed of it.
 
 pub mod carry;
+mod cleaning;
 mod games;
 mod saved;
 #[cfg(test)]
@@ -34,6 +35,7 @@ use serde::Deserialize as _;
 use serde_json::{Map, Value};
 use yapfast_core::layout_file::LAYOUT as FILE;
 
+pub use cleaning::CleanedVoice;
 pub use games::DiscordGame;
 pub use saved::{
     Animate, CpuChoice, ENCODE_AUTO, ENCODE_SOFTWARE, Encoder, InputMode, KeptSticker,

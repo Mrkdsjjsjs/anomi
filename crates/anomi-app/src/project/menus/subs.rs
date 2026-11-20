@@ -1,9 +1,11 @@
 //! How a menu's target names what it is about (`header:`, `in-voice:`...),
 //! and the submenus built as a menu opens: a member's roles, the servers
 //! to invite someone to, the apps' user commands, the voice channels to
-//! move someone to, and a server's events (`src/ui/menus.rs`).
+//! move someone to, a server's events (`src/ui/menus.rs`), and Anomi's own,
+//! the suppressors that may take the noise out of someone's voice.
 
 use yapfast_core::application::{AppState, Application, CommandTarget};
+use yapfast_core::noise::Suppressor;
 use yapfast_lang::tr;
 
 use anomi_vm::menu::Row;
@@ -33,6 +35,17 @@ pub(crate) const ROLE: &str = "role:";
 pub(crate) const INVITE_TO: &str = "invite-to:";
 pub(crate) const APP: &str = "app:";
 pub(crate) const MOVE_TO: &str = "move-to:";
+/// What a row of someone's "Suppress their noise" reports, before the
+/// suppressor's name in `layout.json`: `off`, `rnnoise` or `deepfilternet`.
+pub(crate) const THEIR_NOISE: &str = "their-noise:";
+
+/// The suppressors someone's voice may be cleaned with, from none to the
+/// strongest.
+const THEIR_SUPPRESSORS: [Suppressor; 3] = [
+    Suppressor::Off,
+    Suppressor::RNNoise,
+    Suppressor::DeepFilterNet,
+];
 
 /// Where Discord's client says a profile's More menu blocked, unblocked or
 /// unfriended someone; a right-click menu is "ContextMenu".
@@ -175,4 +188,53 @@ pub(super) fn move_to(core: &Application, make: &Make<'_>, room: &str, user: &st
         .into_iter()
         .map(|(room, name)| make.row(&name, &format!("{MOVE_TO}{room}")))
         .collect()
+}
+
+/// What may take the noise out of someone's voice, by the names Voice's
+/// settings give the microphone's, the one `chosen` marked: none, RNNoise,
+/// light on the processor, and DeepFilterNet, which takes out more and
+/// costs more of it, as each says.
+pub(super) fn their_noise(make: &Make<'_>, chosen: Suppressor) -> Vec<Row> {
+    (THEIR_SUPPRESSORS.into_iter())
+        .map(|suppressor| {
+            let row = make
+                .row(suppressor_name(suppressor), &their_noise_id(suppressor))
+                .radio(suppressor == chosen)
+                .plain();
+            match suppressor {
+                Suppressor::Off => row,
+                Suppressor::RNNoise => row.subtitle(tr!("Light on the processor")),
+                Suppressor::DeepFilterNet => row
+                    .subtitle(tr!("Stronger, but uses more of the processor"))
+                    .wraps(),
+            }
+        })
+        .collect()
+}
+
+/// A suppressor's name, as Voice's settings give it.
+pub(crate) fn suppressor_name(suppressor: Suppressor) -> &'static str {
+    match suppressor {
+        Suppressor::Off => tr!("Off"),
+        Suppressor::RNNoise => "RNNoise",
+        Suppressor::DeepFilterNet => "DeepFilterNet",
+    }
+}
+
+/// The id the row choosing `suppressor` in [`their_noise`] reports.
+pub(crate) fn their_noise_id(suppressor: Suppressor) -> String {
+    let name = match suppressor {
+        Suppressor::Off => "off",
+        Suppressor::RNNoise => "rnnoise",
+        Suppressor::DeepFilterNet => "deepfilternet",
+    };
+    format!("{THEIR_NOISE}{name}")
+}
+
+/// The suppressor a row of [`their_noise`] chose, by its id.
+pub(crate) fn their_noise_of(id: &str) -> Option<Suppressor> {
+    if !id.starts_with(THEIR_NOISE) {
+        return None;
+    }
+    (THEIR_SUPPRESSORS.into_iter()).find(|suppressor| their_noise_id(*suppressor) == id)
 }

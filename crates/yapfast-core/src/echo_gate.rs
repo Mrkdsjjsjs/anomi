@@ -13,9 +13,10 @@
 //! echo in each band, from what we sent around that lag and how much quieter
 //! it comes back, which it learns as each band's running median. While what
 //! comes from them is no louder than that, by 6 dB in all but a band or two,
-//! it turns them down 20 dB, over 60 ms, and keeps them down through the
-//! pauses between our words; once they're louder than our echo in several
-//! bands, it lets them through again within 5 ms.
+//! it turns them down 20 dB, or as far as [`EchoGate::set_depth`] says, over
+//! 60 ms, and keeps them down through the pauses between our words; once
+//! they're louder than our echo in several bands, it lets them through again
+//! within 5 ms.
 //!
 //! It works like a speakerphone: while our echo comes back, they come through
 //! only by talking louder than it, and the first 20 to 40 ms of what they say
@@ -28,6 +29,12 @@
 //! FFTs, one of ours and one of theirs, and sums over 76 lags of 8 bands: a
 //! few µs. Once we have said nothing for 1.6 s, what comes from them costs
 //! nothing. A gate keeps about 7 KB.
+//!
+//! What we sent can be measured once ([`Measure`]) into an [`Ours`] of 36
+//! bytes for every gate ([`EchoGate::take`]), and carried to a gate in
+//! another process: a watched stream's, in its worker, whose sound plays
+//! there and doesn't come in step with the call's ticks
+//! ([`EchoGate::heard_unpaced`]).
 
 use std::{
     sync::{Arc, OnceLock},
@@ -35,6 +42,7 @@ use std::{
 };
 
 use realfft::{RealFftPlanner, RealToComplex, num_complex::Complex};
+use serde::{Deserialize, Serialize};
 
 /// Samples of a channel in one 20 ms tick at 48 kHz.
 const FRAME: usize = 960;
@@ -112,10 +120,11 @@ const HOLDS: f32 = 0.3;
 const GONE: f32 = 0.2;
 const GIVE_UP: u32 = 1_500;
 
-/// How far they're turned down while only our echo comes from them, in dB.
+/// How far they're turned down while only our echo comes from them, in dB,
+/// unless [`EchoGate::set_depth`] says otherwise.
 const DEPTH: f32 = 20.0;
 /// Turning them down takes 60 ms at 48 kHz, in samples; letting them through
-/// again, 5 ms.
+/// again, 5 ms; whatever the depth.
 const FALL: f32 = 2_880.0;
 const RISE: f32 = 240.0;
 /// What comes from them is more than our echo in a band this much louder
@@ -148,16 +157,101 @@ const FLOOR_RISE: f32 = 0.02;
 /// whatever echo is under it.
 const HIDDEN: f32 = 3.0;
 
-/// Turns one person down while what comes from them is only our own voice
-/// coming back; see the module. Fed on the call's thread every tick:
-/// [`Self::sent`], then, when they spoke, [`Self::heard`].
-pub struct EchoGate {
+/// What this account sent on one tick, as a gate takes it: its level in
+/// each band, in dB, and whether it was speech.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Ours {
+    pub levels: [f32; BANDS],
+    pub spoke: bool,
+}
+
+impl Ours {
+    /// A tick that sent nothing.
+    pub const NOTHING: Self = Self {
+        levels: [OUR_FLOOR; BANDS],
+        spoke: false,
+    };
+}
+
+/// Measures 20 ms of sound in the gate's bands: an FFT's buffers, made once.
+pub struct Measure {
     fft: Arc<dyn RealToComplex<f32>>,
     window: &'static [f32; SIZE],
     /// A tick as measured, its spectrum, and the FFT's scratch.
     measured: Vec<f32>,
     spectrum: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
+}
+
+impl Default for Measure {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Measure {
+    pub fn new() -> Self {
+        let fft = transform();
+        Self {
+            measured: fft.make_input_vec(),
+            spectrum: fft.make_output_vec(),
+            scratch: fft.make_scratch_vec(),
+            fft,
+            window: window(),
+        }
+    }
+
+    /// What this account sent this tick, as the call hands it to its
+    /// listener's `sent`: 20 ms at 48 kHz, mono or interleaved stereo, at
+    /// full scale 1.0, or `None` on a tick that sent nothing.
+    pub fn ours(&mut self, frame: Option<&[f32]>) -> Ours {
+        let Some(frame) = frame else {
+            return Ours::NOTHING;
+        };
+        let (bands, total) = self.levels(frame);
+        Ours {
+            levels: bands.map(|level| level.max(OUR_FLOOR)),
+            spoke: total > OUR_SPEECH,
+        }
+    }
+
+    /// The level of 20 ms of sound, mono or interleaved stereo at 48 kHz, in
+    /// dB in each band and over all of them.
+    fn levels(&mut self, sound: &[f32]) -> ([f32; BANDS], f32) {
+        let channels = (sound.len() / FRAME).clamp(1, 2);
+        let step = DECIMATE * channels;
+        for (index, (value, weight)) in self.measured.iter_mut().zip(self.window).enumerate() {
+            let start = index * step;
+            let samples = sound
+                .get(start..(start + step).min(sound.len()))
+                .unwrap_or_default();
+            *value = samples.iter().sum::<f32>() / step as f32 * weight;
+        }
+        if self
+            .fft
+            .process_with_scratch(&mut self.measured, &mut self.spectrum, &mut self.scratch)
+            .is_err()
+        {
+            return ([decibels(0.0); BANDS], decibels(0.0));
+        }
+        let (mut bands, mut total) = ([0.0; BANDS], 0.0);
+        for (band, edges) in bands.iter_mut().zip(EDGES.windows(2)) {
+            let bins = &self.spectrum[edges[0]..edges[1]];
+            let power = POWER * bins.iter().map(|bin| bin.norm_sqr()).sum::<f32>();
+            total += power;
+            *band = decibels(power);
+        }
+        (bands, decibels(total))
+    }
+}
+
+/// Turns one person down while what comes from them is only our own voice
+/// coming back; see the module. Fed on the call's thread every tick:
+/// [`Self::sent`], then, when they spoke, [`Self::heard`].
+pub struct EchoGate {
+    /// Measures what comes from them, and what we sent when it's handed
+    /// over unmeasured.
+    measure: Measure,
     /// Our levels by band over the last [`RING`] ticks, the newest at
     /// `newest`, and whether we spoke on each.
     ours: Box<[[f32; BANDS]; RING]>,
@@ -203,9 +297,10 @@ pub struct EchoGate {
     since_echo: u32,
     them_before: bool,
     /// The gain on their sound now and the one it moves to, how far down it
-    /// goes, and its steps each sample down and up.
+    /// goes, in dB and as a gain, and its steps each sample down and up.
     level: f32,
     target: f32,
+    depth: f32,
     ducked: f32,
     fall: f32,
     rise: f32,
@@ -219,13 +314,8 @@ impl Default for EchoGate {
 
 impl EchoGate {
     pub fn new() -> Self {
-        let fft = transform();
         Self {
-            measured: fft.make_input_vec(),
-            spectrum: fft.make_output_vec(),
-            scratch: fft.make_scratch_vec(),
-            fft,
-            window: window(),
+            measure: Measure::new(),
             ours: Box::new([[OUR_FLOOR; BANDS]; RING]),
             spoke: [false; RING],
             newest: 0,
@@ -253,9 +343,29 @@ impl EchoGate {
             them_before: false,
             level: 1.0,
             target: 1.0,
+            depth: DEPTH,
             ducked: amplitude(-DEPTH),
             fall: amplitude(-DEPTH / FALL),
             rise: amplitude(DEPTH / RISE),
+        }
+    }
+
+    /// Turns them down `decibels` while only our echo comes from them, from
+    /// the next sample on, over the same 60 ms; 0 turns them down not at
+    /// all, while the gate goes on learning. What it learned stays.
+    pub fn set_depth(&mut self, decibels: f32) {
+        let depth = decibels.max(0.0);
+        if depth == self.depth {
+            return;
+        }
+        self.depth = depth;
+        self.ducked = amplitude(-depth);
+        // At 0 dB the steps still bring back a gain the last depth lowered.
+        let ramp = depth.max(1.0);
+        self.fall = amplitude(-ramp / FALL);
+        self.rise = amplitude(ramp / RISE);
+        if self.ducking {
+            self.target = self.ducked;
         }
     }
 
@@ -265,12 +375,14 @@ impl EchoGate {
     /// or between words. It comes every tick, before [`Self::heard`], whether
     /// they spoke or not: the gate keeps time by it.
     pub fn sent(&mut self, frame: Option<&[f32]>) {
-        let (mut levels, mut spoke) = ([OUR_FLOOR; BANDS], false);
-        if let Some(frame) = frame {
-            let (bands, total) = self.measure(frame);
-            levels = bands.map(|level| level.max(OUR_FLOOR));
-            spoke = total > OUR_SPEECH;
-        }
+        let ours = self.measure.ours(frame);
+        self.take(ours);
+    }
+
+    /// What we sent this tick, measured once for every gate
+    /// ([`Measure::ours`]): as [`Self::sent`].
+    pub fn take(&mut self, ours: Ours) {
+        let Ours { levels, spoke } = ours;
         self.newest = (self.newest + 1) % RING;
         self.ours[self.newest] = levels;
         self.spoke[self.newest] = spoke;
@@ -295,10 +407,19 @@ impl EchoGate {
             // The tick's own word of what we sent never came: nothing, then.
             self.sent(None);
         }
+        self.heard_unpaced(sound);
+    }
+
+    /// Their 20 ms, as [`Self::heard`], for sound that doesn't come in step
+    /// with what we sent, as a watched stream's in its worker, where what
+    /// the call sent comes through a pipe: the ticks of ours taken since
+    /// the last count as passed, and none taken adds no silent tick of
+    /// ours, which would run our timeline ahead of the call's.
+    pub fn heard_unpaced(&mut self, sound: &mut [f32]) {
         self.fed = false;
         let passed = std::mem::take(&mut self.unheard).max(1);
         if self.quiet_for < RING {
-            let (levels, _) = self.measure(sound);
+            let (levels, _) = self.measure.levels(sound);
             self.listen(&levels, passed);
         } else {
             // Nothing we sent could be in it.
@@ -317,35 +438,6 @@ impl EchoGate {
     /// Whether they were turned down on the last tick heard.
     pub fn turned_down(&self) -> bool {
         self.ducking
-    }
-
-    /// The level of 20 ms of sound, mono or interleaved stereo at 48 kHz, in
-    /// dB in each band and over all of them.
-    fn measure(&mut self, sound: &[f32]) -> ([f32; BANDS], f32) {
-        let channels = (sound.len() / FRAME).clamp(1, 2);
-        let step = DECIMATE * channels;
-        for (index, (value, weight)) in self.measured.iter_mut().zip(self.window).enumerate() {
-            let start = index * step;
-            let samples = sound
-                .get(start..(start + step).min(sound.len()))
-                .unwrap_or_default();
-            *value = samples.iter().sum::<f32>() / step as f32 * weight;
-        }
-        if self
-            .fft
-            .process_with_scratch(&mut self.measured, &mut self.spectrum, &mut self.scratch)
-            .is_err()
-        {
-            return ([decibels(0.0); BANDS], decibels(0.0));
-        }
-        let (mut bands, mut total) = ([0.0; BANDS], 0.0);
-        for (band, edges) in bands.iter_mut().zip(EDGES.windows(2)) {
-            let bins = &self.spectrum[edges[0]..edges[1]];
-            let power = POWER * bins.iter().map(|bin| bin.norm_sqr()).sum::<f32>();
-            total += power;
-            *band = decibels(power);
-        }
-        (bands, decibels(total))
     }
 
     /// Learns from their levels this tick, `passed` ticks after the last

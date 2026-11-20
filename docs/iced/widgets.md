@@ -188,7 +188,9 @@ and out. Your dialog or popover is a plain view of your view-model.
   `menu::keyed(card, on_key)` hands the card the arrows, Enter and, while
   a submenu shows, Escape as `menu::Key`s for its view-model to move by
   (`voice::devices`, the stream's menu `voice::share::live`).
-  `Row::radio(chosen)` ends a row with a round mark; `Row::heading(text)`
+  `Row::radio(chosen)` ends a row with a round mark, and choosing it in a
+  context menu leaves the menu open, as a box to tick does, for the app to
+  move the mark (a participant's "Suppress their noise"); `Row::heading(text)`
   is a group's title among the rows (muted bold capitals, 24 px, never lit
   or chosen), as the stream's quality submenu has "FRAME RATE" and
   "RESOLUTION": a view-model's keys pass over it (`Row::choosable`).

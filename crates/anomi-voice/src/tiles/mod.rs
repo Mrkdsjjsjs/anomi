@@ -27,7 +27,11 @@
 //!
 //! A click watches the stream a tile offers, or else shows it large; on the
 //! large one a double click goes full screen and back; a right click on
-//! someone's opens their volume menu at the pointer. A press on the
+//! someone's opens their volume menu at the pointer, on someone's stream the
+//! menu of its sound (`Intent::StreamMenu`), on this account's screen its
+//! stream's menu, as Discord's. A stream's tile has the red LIVE badge at
+//! its top right (`controls`), and a stream shown large keeps a stand-in
+//! beneath it that draws only its screen icon (`fill`). A press on the
 //! buttons or the viewers stops there and asks the tile nothing. The
 //! outline's colour eases over `QUICK`; the camera's pill beats while the
 //! window plays and the waiting ring turns while someone may be looking
@@ -99,24 +103,21 @@ pub fn view(tile: &Tile, motion: Motion) -> impl View<Intent> + '_ {
 /// What a press on the tile's `layers` asks: see the module's doc.
 fn pressed<'a>(tile: &'a Tile, layers: impl View<Intent> + 'a) -> Element<'a, Intent> {
     let mut area = mouse_area(layers);
-    if let Some(click) = tile.click() {
-        area = area.on_press(click);
-    }
+    let click = tile.click();
     if tile.focused {
         area = area.on_double_click(Intent::FullScreen(!tile.full));
-    } else {
+    } else if click.is_some() {
+        // Not on a large stream's stand-in, which asks nothing.
         area = area.interaction(mouse::Interaction::Pointer);
     }
-    let opener = menu::opener(area);
-    match tile.key.participant() {
-        Some(id) => {
-            let id = id.to_owned();
-            opener
-                .on_right_press(move |at| Intent::Menu(id.clone(), Spot::pointer(at)))
-                .boxed()
-        }
-        None => opener.boxed(),
+    if let Some(click) = click {
+        area = area.on_press(click);
     }
+    // Someone's menu, their stream's, or this account's stream's, as
+    // Discord's.
+    menu::opener(area)
+        .on_right_press(move |at| tile.menu(Spot::pointer(at)))
+        .boxed()
 }
 
 /// How long the interface has been running at `now`, which a turning ring

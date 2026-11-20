@@ -3,12 +3,14 @@
 //! task V04's. Each golden screenshot of the stage has its stage here
 //! ([`lounge`], [`speaking`], [`watching`], [`with_camera`], [`quiet`],
 //! [`dm_call`]), the states the goldens don't show have theirs ([`full`],
-//! [`others_hidden`], [`sharing`], [`alone`], [`crowd`]), and the windows
-//! they show in ([`window`], [`dm_window`], [`full_window`]), with the
-//! server's list as each golden has it ([`speaking_window`],
-//! [`camera_window`], [`quiet_window`], [`sharing_window`],
-//! [`alone_window`]). The tiles are V03's
-//! (`fixtures::voice::tiles`).
+//! [`others_hidden`], [`people`], [`streamer`], [`sharing`],
+//! [`sharing_large`], [`alone`], [`crowd`]), and the windows they show in
+//! ([`window`], [`dm_window`], [`full_window`]), with the server's list as
+//! each golden has it ([`speaking_window`], [`camera_window`],
+//! [`streamer_window`], [`quiet_window`], [`sharing_window`],
+//! [`alone_window`]). The tiles are V03's (`fixtures::voice::tiles`): as in
+//! Discord's call, a stream has a tile of its own right before its
+//! streamer's, and one shown large keeps a stand-in in the row beneath.
 
 use yapfast_lang::trn;
 
@@ -36,10 +38,22 @@ fn grid(tiles: Vec<Tile>) -> Stage {
     Stage::new(tiles, None, false, false)
 }
 
-/// The Lounge's stage once Alice joined: four tiles two by two, Bob's
-/// stream offered in his (`voice/stage.png`).
+/// The Lounge's stage once Alice joined (`voice/stage.png`): five tiles,
+/// three over two, Bob's stream offered on its preview right before his
+/// own.
 pub fn lounge() -> Stage {
     grid(tiles::lounge())
+}
+
+/// The Lounge's four, nobody sharing: two by two.
+pub fn people() -> Stage {
+    grid(tiles::people())
+}
+
+/// Bob streams and films, nobody watching: his stream offered right before
+/// his camera, two tiles of his in the grid.
+pub fn streamer() -> Stage {
+    grid(tiles::streamer_with_camera())
 }
 
 /// Bob speaks (`voice/speaking_ring.png`).
@@ -52,16 +66,17 @@ pub fn quiet() -> Stage {
     grid(tiles::quiet())
 }
 
-/// Alice watches Bob's stream, large in his tile, the others in a row
-/// beneath it (`voice/watching_stream.png`).
+/// Alice watches Bob's stream, large in its own tile, the others in a row
+/// beneath it with his picture, and in its place the stream's stand-in, the
+/// screen and LIVE, as Discord's strip has it (`voice/watching_stream.png`).
 pub fn watching() -> Stage {
     Stage::new(tiles::watching(), Some(1), false, false)
 }
 
-/// Bob films too: his stream large in a tile of its own, his camera in the
-/// row beneath (`voice/with_camera.png`).
+/// Bob films too: his stream large, its stand-in and his camera side by
+/// side in the row beneath (`voice/with_camera.png`).
 pub fn with_camera() -> Stage {
-    Stage::new(tiles::with_camera(), Some(0), false, false)
+    Stage::new(tiles::with_camera(), Some(1), false, false)
 }
 
 /// Bob's stream over the whole window, alone and square.
@@ -74,12 +89,25 @@ pub fn others_hidden() -> Stage {
     Stage::new(tiles::watching(), Some(1), false, true)
 }
 
-/// Alice shares her screen, live: it leads the five tiles, which take
-/// columns of at least 240 px.
+/// Alice shares her screen, live, while Bob shares his: "Your screen"
+/// right before her own tile, his stream before his, six tiles three to a
+/// row.
 pub fn sharing() -> Stage {
+    grid(both_sharing())
+}
+
+/// Her screen shown large, its stand-in leading the row beneath, before
+/// her own tile, as Discord's call shows one's own stream
+/// (`discord-own-stream-stage.png`).
+pub fn sharing_large() -> Stage {
+    Stage::new(both_sharing(), Some(0), false, false)
+}
+
+/// Alice's screen, then the Lounge's tiles with Bob's stream.
+fn both_sharing() -> Vec<Tile> {
     let mut tiles = vec![tiles::sharing()];
     tiles.extend(tiles::lounge());
-    grid(tiles)
+    tiles
 }
 
 /// Alice alone in the Lounge, under the line that says so.
@@ -96,11 +124,12 @@ pub fn dm_call() -> Stage {
     ])
 }
 
-/// A call of `count`: the Lounge's four, then Erin and people of the fake's
-/// (`Person N`), one in three muted and one speaking. Ten fill a stage that
-/// scrolls; the call Q03 measures against Slint's memory.
+/// A call of `count`: the Lounge's four, nobody sharing, then Erin and
+/// people of the fake's (`Person N`), one in three muted and one speaking.
+/// Ten fill a stage that scrolls; the call Q03 measures against Slint's
+/// memory.
 pub fn crowd(count: usize) -> Vec<Tile> {
-    let mut tiles = tiles::lounge();
+    let mut tiles = tiles::people();
     tiles.extend((0..count.saturating_sub(4)).map(|index| {
         let name = match index {
             0 => "Erin".to_owned(),
@@ -182,10 +211,27 @@ pub fn camera_window() -> Vm {
     vm
 }
 
+/// Bob streaming and filming, nobody watching: [`streamer`], his camera in
+/// the server's list too.
+pub fn streamer_window() -> Vm {
+    let mut vm = window(streamer());
+    bob_in_lounge(&mut vm, |bob| bob.video = true);
+    vm
+}
+
 /// Alice sharing her screen: LIVE beside her in the server's list, and the
 /// dock and the call controls sharing too.
 pub fn sharing_window() -> Vm {
-    let mut vm = window(sharing());
+    shared(window(sharing()))
+}
+
+/// [`sharing_window`] with her screen shown large.
+pub fn sharing_large_window() -> Vm {
+    shared(window(sharing_large()))
+}
+
+/// `vm` while Alice shares her screen, Bob watching it.
+fn shared(mut vm: Vm) -> Vm {
     in_lounge(&mut vm, |people| {
         people
             .iter_mut()
@@ -300,68 +346,4 @@ fn counted(people: usize) -> Header {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_sample_says_which_tile_is_large() {
-        assert_eq!(lounge().focused(), None);
-        assert_eq!(watching().focused(), Some(1));
-        assert_eq!(with_camera().focused(), Some(0));
-        assert!(full().full() && !others_hidden().full());
-        assert!(others_hidden().others_hidden());
-        assert_eq!(crowd(10).len(), 10);
-        assert_eq!(crowd(3).len(), 3);
-        assert_eq!(
-            people_in(&with_camera()),
-            4,
-            "a stream's own tile isn't a person"
-        );
-        assert_eq!(people_in(&sharing()), 4, "nor this account's screen");
-    }
-
-    #[test]
-    fn the_lists_show_the_call_as_the_goldens_do() {
-        let vm = dm_window(dm_call());
-        let Place::Dms(dms) = &vm.sidebar.place else {
-            panic!("the DMs listed");
-        };
-        let chosen: Vec<_> = dms.rows.iter().filter(|row| row.selected).collect();
-        assert_eq!(chosen.len(), 1);
-        assert_eq!((chosen[0].name.as_str(), chosen[0].call), ("Bob", true));
-
-        let bob = |mut vm: Vm| {
-            let mut found = None;
-            in_lounge(&mut vm, |people| {
-                found = people
-                    .iter()
-                    .find(|person| person.name == "Bob")
-                    .map(|bob| (bob.speaking, bob.video));
-            });
-            found
-        };
-        assert_eq!(bob(speaking_window()), Some((true, false)));
-        assert_eq!(bob(camera_window()), Some((false, true)));
-        assert_eq!(bob(quiet_window()), None);
-
-        let mut names = Vec::new();
-        in_lounge(&mut alone_window(), |people| {
-            names = people.iter().map(|person| person.name.clone()).collect();
-        });
-        assert_eq!(names, ["Alice"], "alone in the list too");
-
-        let mut vm = sharing_window();
-        let mut alice_live = false;
-        in_lounge(&mut vm, |people| {
-            alice_live = people
-                .iter()
-                .any(|person| person.name == "Alice" && person.live);
-        });
-        assert!(alice_live && vm.voice.dock.sharing && vm.voice.controls.sharing);
-
-        let Header::Open(place) = &dm_window(dm_call()).header else {
-            panic!("Bob's header");
-        };
-        assert!(place.tools.call.is_none(), "no call button while in it");
-    }
-}
+mod tests;

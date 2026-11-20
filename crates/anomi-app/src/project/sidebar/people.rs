@@ -10,7 +10,7 @@ use yapfast_core::application::{AppState, Application};
 use yapfast_core::chat::{ChatRoom, Permission, VoicePerson as Person};
 use yapfast_core::voice::Participant;
 
-use anomi_vm::kind::Avatar;
+use anomi_vm::kind::{Avatar, Expected};
 use anomi_vm::sidebar::channels::{ChannelRow, Channels, VoicePerson};
 
 use crate::pictures;
@@ -81,17 +81,41 @@ pub(super) fn of_room(core: &Application, room: &ChatRoom) -> Vec<VoicePerson> {
             elsewhere: person.elsewhere,
             connected: true,
             movable: movable(&person.id),
+            game: game(state, person),
             ..VoicePerson::default()
         })
         .collect()
 }
 
+/// The game someone plays, by its picture, as their row ends with it.
+fn game(state: &AppState, person: &Person) -> Option<Expected> {
+    person
+        .playing()
+        .map(|playing| rows::expected(state, playing.icon))
+}
+
+/// The pictures of the games people in the server's voice channels play,
+/// which their rows show: asked for as the channels are built.
+pub(super) fn game_icons(state: &AppState) -> impl Iterator<Item = &str> {
+    state
+        .scoped_rooms()
+        .filter(|room| room.voice)
+        .flat_map(|room| &room.people)
+        .filter_map(|person| person.playing()?.icon)
+}
+
 /// The call's participants, as its channel's row lists them: speaking and
-/// connected as the call has them.
+/// connected as the call has them, with the games the channel's people
+/// play.
 fn participants(core: &Application, room: &str) -> Vec<VoicePerson> {
     let state = &core.state;
     let account = state.account.as_deref().unwrap_or("Preview");
     let movable = movable(core, room);
+    let listed = (state.rooms.iter()).find(|listed| listed.id == room);
+    let playing = |user: &str| {
+        let person = listed?.people.iter().find(|person| person.id == user)?;
+        game(state, person)
+    };
     state
         .voice
         .participants
@@ -100,6 +124,7 @@ fn participants(core: &Application, room: &str) -> Vec<VoicePerson> {
             let name = display_part(&person.user);
             let tinted = if person.local { account } else { &person.user };
             VoicePerson {
+                game: playing(&person.person),
                 id: person.id.clone(),
                 user: person.person.clone(),
                 name: name.to_owned(),

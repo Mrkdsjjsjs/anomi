@@ -78,6 +78,36 @@ fn a_row_with_a_submenu_opens_it_on_click_and_its_rows_choose() {
     );
 }
 
+/// A radio, as the suppressor in a participant's "Suppress their noise",
+/// sends its intent and the menu stays, as what it chose shows on the card.
+#[test]
+fn a_radio_sends_its_intent_and_stays_open() {
+    use anomi_vm::fixtures::voice::participant_menu as fixture;
+    let vm = fixture::their_noise();
+    let mut ui = simulate(&vm);
+    ui.click("DeepFilterNet").expect("the strong suppressor");
+    let target = format!("in-voice:discord:c3/{}", fixture::CAROL);
+    let chose = Intent::from(Choice::person(target, "their-noise:deepfilternet"));
+    let menus: Vec<Intent> = (ui.into_messages())
+        .filter(|intent| matches!(intent, Intent::Menu(_)))
+        .collect();
+    assert_eq!(menus, [chose]);
+}
+
+/// Rows under a card that don't all fit below it, as a participant's with
+/// both cleaning sliders, start where the card ends and scroll the rest,
+/// rather than moving up over it.
+#[test]
+fn rows_under_a_card_start_below_it_however_many() {
+    use anomi_vm::fixtures::voice::participant_menu as fixture;
+    let vm = fixture::cleaning();
+    let below = vm.menu.at.anchor.y;
+    let mut ui = simulate(&vm);
+    let first = ui.find("Profile").expect("the first row");
+    let top = first.visible_bounds().expect("shown").y;
+    assert!(top >= below, "the rows at {top}, the card ends at {below}");
+}
+
 #[test]
 fn hovering_a_row_opens_its_submenu() {
     let vm = samples::message_context();

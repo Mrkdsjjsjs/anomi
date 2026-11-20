@@ -89,16 +89,13 @@ fn apply(saved: &Saved) {
     for person in &saved.soundboard_muted_people {
         volume::mute_soundboard(person, true);
     }
-    // Whose voice the call cleans, as their menus in a call chose.
-    for person in &saved.denoised_people {
-        let mut cleaning = volume::cleaning(person);
-        cleaning.noise = true;
-        volume::set_cleaning(person, cleaning);
+    // Whose voice the call cleans, and how, as their menus in a call chose.
+    for (person, voice) in &saved.cleaned_voices {
+        volume::set_cleaning(person, voice.cleaning());
     }
-    for person in &saved.echo_removed_people {
-        let mut cleaning = volume::cleaning(person);
-        cleaning.own_echo = true;
-        volume::set_cleaning(person, cleaning);
+    // And whose stream's sound, from the menu of its tile.
+    for (person, sound) in &saved.cleaned_streams {
+        volume::set_stream_cleaning(person, sound.cleaning());
     }
     #[cfg(feature = "discord")]
     yapfast_core::stream_worker::set_encode_on(saved.encoder().key());

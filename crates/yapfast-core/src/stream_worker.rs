@@ -128,6 +128,10 @@ pub enum Job {
         /// How loud its sound plays; see [`crate::volume`].
         #[serde(default = "as_it_comes")]
         volume: f32,
+        /// How its sound is cleaned before it plays, as its tile's menu
+        /// chose ([`crate::stream_cleaning`]); nothing unless chosen.
+        #[serde(default)]
+        cleaning: crate::volume::Cleaning,
     },
     /// Plays the video file at `file`, which may still be downloading,
     /// writing pictures that fit `width` by `height` to the frames file at
@@ -189,6 +193,14 @@ pub enum Source {
     Camera(String),
     /// Moving colour bars, for testing without a screen to capture.
     TestPattern,
+    /// Where [`portal_picks`], a screen the system's dialog picks, offering
+    /// screens alone, as Discord's "Share entire screen" asks it; elsewhere
+    /// the first screen.
+    PortalScreen,
+    /// Where [`portal_picks`], a window the system's dialog picks, offering
+    /// windows alone, as Discord's "Share a window" asks it; elsewhere the
+    /// first window.
+    PortalWindow,
 }
 
 /// Whether the system's dialog, the screen sharing portal, picks the screen or
@@ -335,6 +347,13 @@ pub enum Control {
     Hear(bool),
     /// Play a watched stream's or a video's sound this loud.
     Volume(f32),
+    /// Clean a watched stream's sound so from now on
+    /// ([`crate::stream_cleaning`]).
+    Cleaning(crate::volume::Cleaning),
+    /// What the call sent, tick by tick, for a watched stream's echo gate:
+    /// the line's reader hands it straight to the stream's player
+    /// ([`crate::stream_cleaning::sent`]), past the job's loop.
+    Echo(Vec<crate::echo_gate::Ours>),
     /// Play the video, from the start once it has ended.
     Play,
     Pause,
@@ -479,6 +498,9 @@ fn serve_on(
             match serde_json::from_str::<Control>(&line) {
                 // The whole process's, whatever its job.
                 Ok(Control::Cpus(cpus)) => confine(cpus),
+                // Each tick keeps the echo gate's time, so it doesn't wait
+                // for the job's loop, which looks every 100 ms at most.
+                Ok(Control::Echo(ticks)) => crate::stream_cleaning::sent(ticks),
                 Ok(control) => {
                     let _ = controls.send(control);
                 }
@@ -523,6 +545,7 @@ fn serve_on(
             speakers,
             deafened,
             volume,
+            cleaning,
         } => {
             let writer = Writer::open(&frames)?;
             report(Report::Ready);
@@ -531,6 +554,7 @@ fn serve_on(
                 speakers,
                 hearing,
                 volume: Arc::new(stream_audio::Volume::new(volume)),
+                cleaning: Arc::new(crate::stream_cleaning::Chosen::new(cleaning)),
                 controls: received,
             };
             watch(server, writer, (width, height), sound, &stop, report)
@@ -1295,6 +1319,8 @@ struct Sound {
     speakers: Option<String>,
     hearing: Arc<AtomicBool>,
     volume: Arc<stream_audio::Volume>,
+    /// How it's cleaned, which the player reads once a frame.
+    cleaning: Arc<crate::stream_cleaning::Chosen>,
     controls: channel::Receiver<Control>,
 }
 
@@ -1337,6 +1363,7 @@ fn watch(
             sound.speakers,
             sound.hearing.clone(),
             sound.volume.clone(),
+            sound.cleaning.clone(),
         )
         .inspect_err(|error| tracing::warn!(error = format!("{error:#}"), "watching without sound"))
         .ok()
@@ -1353,6 +1380,7 @@ fn watch(
             match control {
                 Control::Hear(hearing) => sound.hearing.store(hearing, Ordering::Relaxed),
                 Control::Volume(volume) => sound.volume.set(volume),
+                Control::Cleaning(cleaning) => sound.cleaning.set(cleaning),
                 _ => {}
             }
         }
@@ -1488,11 +1516,13 @@ fn effort(quality: StreamQuality) -> Effort {
 }
 
 /// The largest frame shared at `resolution`; screens of another shape fit
-/// inside it.
+/// inside it, as [`fit`] scales them: a 3440 by 1440 ultrawide goes out at
+/// 1440p as 2560 by 1070, its width filling the bounds.
 fn bounds(resolution: Resolution) -> (u32, u32) {
     match resolution {
         Resolution::P720 => (1280, 720),
         Resolution::P1080 => (SHARE_WIDTH, SHARE_HEIGHT),
+        Resolution::P1440 => (2560, 1440),
         Resolution::Source => (3840, 2160),
     }
 }
@@ -1678,6 +1708,11 @@ impl Capture {
         };
         let portal = portal_picks();
         let kind = match source {
+            // The system's screen sharing dialog picks one of a kind: under
+            // Wayland libwebrtc's screen and window capturers are the
+            // portal's, asking it for screens or for windows alone.
+            Source::PortalWindow => DesktopCaptureSourceType::Window,
+            Source::PortalScreen => DesktopCaptureSourceType::Screen,
             // The system's screen sharing dialog picks a screen or window.
             // libwebrtc has the generic capturer only on Linux and macOS, and
             // `portal_picks` is false elsewhere.
@@ -2064,6 +2099,26 @@ fn tell_running(control: &Control) {
     });
 }
 
+/// Ticks of what the call sent that wait for the echo feed's thread: 2 s.
+const ECHO_QUEUE: usize = 100;
+
+/// What the call sends, on its way to a watching worker's echo gate
+/// ([`Worker::echo_feed`]).
+pub struct EchoFeed {
+    ticks: std::sync::mpsc::SyncSender<crate::echo_gate::Ours>,
+}
+
+impl EchoFeed {
+    /// Hands the feed what the call sent this tick, never waiting: a tick
+    /// the feed has no room for goes. Whether its thread is still there.
+    pub fn send(&self, ours: crate::echo_gate::Ours) -> bool {
+        !matches!(
+            self.ticks.try_send(ours),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_))
+        )
+    }
+}
+
 /// Yapfast's handle on a running worker. Dropping it stops the worker.
 pub struct Worker {
     /// Shared with the thread reading its reports, which waits on it when
@@ -2118,12 +2173,13 @@ impl Worker {
     }
 
     /// Starts watching the stream at `server`, with pictures for the UI in a
-    /// new [`Frames`].
+    /// new [`Frames`], its sound at `volume` and cleaned as `cleaning` says.
     pub fn watch(
         server: &StreamServer,
         speakers: Option<String>,
         deafened: bool,
         volume: f32,
+        cleaning: crate::volume::Cleaning,
     ) -> Result<(Self, Frames, mpsc::UnboundedReceiver<Report>)> {
         let frames = Frames::create(WATCH_WIDTH, WATCH_HEIGHT)?;
         let job = Job::Watch {
@@ -2134,6 +2190,7 @@ impl Worker {
             speakers,
             deafened,
             volume,
+            cleaning,
         };
         let (worker, reports) = Self::start(&job)?;
         Ok((worker, frames, reports))
@@ -2189,6 +2246,49 @@ impl Worker {
     /// Tells a watching worker how loud to play the stream's sound.
     pub fn volume(&mut self, volume: f32) -> Result<()> {
         self.control(&Control::Volume(volume))
+    }
+
+    /// Tells a watching worker how to clean the stream's sound.
+    pub fn cleaning(&mut self, cleaning: crate::volume::Cleaning) -> Result<()> {
+        self.control(&Control::Cleaning(cleaning))
+    }
+
+    /// A feed of what the call sends to a watching worker's echo gate,
+    /// whose stream's sound takes this account's echo out: the call's thread
+    /// hands each tick to [`EchoFeed::send`], which neither waits nor
+    /// allocates, and a thread of its own writes the ticks to the worker as
+    /// they come, a line each. The thread ends with the feed, or with the
+    /// worker; none while its input is gone.
+    pub fn echo_feed(&self) -> Option<EchoFeed> {
+        let input = Arc::downgrade(self.stdin.as_ref()?);
+        let (ticks, taken) = std::sync::mpsc::sync_channel::<crate::echo_gate::Ours>(ECHO_QUEUE);
+        let started = std::thread::Builder::new()
+            .name("yapfast-echo-feed".into())
+            .spawn(move || {
+                while let Ok(first) = taken.recv() {
+                    // Ticks that waited go with it, a line for them all.
+                    let ticks = std::iter::once(first).chain(taken.try_iter()).collect();
+                    let Ok(line) = serde_json::to_string(&Control::Echo(ticks)) else {
+                        continue;
+                    };
+                    let Some(stdin) = input.upgrade() else {
+                        return;
+                    };
+                    let mut stdin = stdin
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if writeln!(stdin, "{line}").is_err() {
+                        return;
+                    }
+                }
+            });
+        match started {
+            Ok(_) => Some(EchoFeed { ticks }),
+            Err(error) => {
+                tracing::warn!(%error, "could not feed the stream's echo gate");
+                None
+            }
+        }
     }
 
     /// Hands the worker the server Discord started the stream on.
@@ -2672,6 +2772,19 @@ mod tests {
         assert_eq!(fit(1920, 1080, 1280, 720), (1280, 720));
         assert_eq!(fit(3440, 1440, 1280, 720), (1280, 534));
         assert_eq!(fit(801, 601, 1280, 720), (800, 600), "never larger");
+    }
+
+    /// 1440p is 2560 by 1440: a 16:9 screen fills it, an ultrawide fills
+    /// its width as at the other sizes, and a smaller screen keeps its size.
+    #[test]
+    fn shares_1440p_within_2560_by_1440() {
+        let (width, height) = bounds(Resolution::P1440);
+        assert_eq!((width, height), (2560, 1440));
+        assert_eq!(fit(3840, 2160, width, height), (2560, 1440));
+        assert_eq!(fit(2560, 1440, width, height), (2560, 1440));
+        assert_eq!(fit(3440, 1440, width, height), (2560, 1070));
+        assert_eq!(fit(5120, 1440, width, height), (2560, 720));
+        assert_eq!(fit(1920, 1080, width, height), (1920, 1080), "never larger");
     }
 
     /// With the GPU, AV1 and H265 before H264 where they open, and an

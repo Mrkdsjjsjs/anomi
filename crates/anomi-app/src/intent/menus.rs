@@ -3,12 +3,15 @@
 //! its events, the bell's and a thread's More), opened where the Slint
 //! window's `open-context-menu` opens it, with its rows built as it opens
 //! (`prepare-menu`, `src/ui/callbacks.rs:1195`) and its choices carried
-//! out (`choose-menu`, `:1222`); and the message menu ([`message`]).
+//! out (`choose-menu`, `:1222`); the message menu ([`message`]); and the
+//! menu of a watched stream's tile ([`stream`]), Anomi's own.
 //!
 //! A closed menu costs nothing: its rows go once it played its way out.
 
 mod choose;
+pub(crate) mod cleaning;
 pub(crate) mod message;
+pub(crate) mod stream;
 #[cfg(test)]
 mod tests;
 
@@ -114,7 +117,8 @@ fn put(app: &mut App, target: String, person: bool, mut menu: Menu) {
 
 /// Someone's menu under a voice channel, at the pointer: their name and
 /// volumes on top, unless it's this account, then what their menu offers
-/// there (`open-voice-menu`, `ui/yapfast.slint:1611`).
+/// there (`open-voice-menu`, `ui/yapfast.slint:1611`). In a Discord call
+/// the card also has a slider for each way their voice is cleaned.
 pub(crate) fn open_voice(app: &mut App, room: String, user: String, at: Spot) -> Task<Message> {
     let target = format!("{IN_VOICE}{room}/{user}");
     let rows = rows::rows(&app.core, &app.layout, &target, true);
@@ -132,16 +136,26 @@ pub(crate) fn open_voice(app: &mut App, room: String, user: String, at: Spot) ->
         let volume = yapfast_core::volume::get(kind, &user);
         yapfast_core::volume::to_slider(volume).round() as i32
     };
-    let made = ParticipantMenu {
+    let mut made = ParticipantMenu {
         name,
         live,
+        stream: false,
         voice_volume: volume(yapfast_core::volume::Kind::Voice),
         stream_volume: volume(yapfast_core::volume::Kind::Stream),
+        noise_strength: None,
+        echo_depth: None,
         joined: !rows.is_empty(),
         width: size.width.max(card::WIDTH),
         person: user,
     };
+    let cleans = (app.core.voice_person_choices(&room, &made.person))
+        .contains(&yapfast_core::application::MenuChoice::SuppressTheirNoise);
+    if cleans {
+        let cleaning = yapfast_core::volume::cleaning(&made.person);
+        cleaning::sliders(&mut made, cleaning);
+    }
     let pointer = at.anchor.position();
+    app.shown.menus.card_at = pointer;
     let (top, below) = made.place(pointer, size, app.size);
     app.vm.voice.participant_menu = made;
     app.vm

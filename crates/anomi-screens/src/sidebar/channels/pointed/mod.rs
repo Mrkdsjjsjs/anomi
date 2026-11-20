@@ -24,7 +24,9 @@
 //!   `:703`; a heading's "+", fading in, `:922`); a card beside the row
 //!   (who is in a voice channel, `VoiceCardView`, `:741`), until a click, a
 //!   right click, a drag or a scroll hides it until the pointer leaves
-//!   (`card-dismissed`, `:456`).
+//!   (`card-dismissed`, `:456`). Or a card that takes the pointer, which
+//!   the row asks the app for once the pointer rests on it and shows while
+//!   the app gives it (what someone in a voice channel is doing; `hold`).
 //! - **A heading's chevron**, drawn after its name, turning a quarter while
 //!   its category is folded (`:871`).
 //! - **Asking.** A click (on letting go: a drag never clicks) and Space or
@@ -37,6 +39,7 @@
 //! interface holds still.
 
 mod card;
+mod hold;
 mod paint;
 mod state;
 mod widget;
@@ -192,6 +195,7 @@ pub struct Pointed<'a, M> {
     leading: Option<(Icon, Tint)>,
     trailing: Option<Element<'a, M>>,
     card: Option<Element<'a, M>>,
+    hold: Option<hold::Hold<'a, M>>,
     look: Look,
     height: f32,
     top: f32,
@@ -212,6 +216,7 @@ pub fn pointed<'a, M: 'a>(
         leading: None,
         trailing: None,
         card: None,
+        hold: None,
         look,
         height,
         top: 0.0,
@@ -239,9 +244,25 @@ impl<'a, M: 'a> Pointed<'a, M> {
         self
     }
 
-    /// A card beside the row while the pointer is on it.
+    /// A card beside the row while the pointer is on it; with
+    /// [`Self::holding`], while it's given.
     pub fn card(mut self, card: impl View<M> + 'a) -> Self {
         self.card = Some(card.boxed());
+        self
+    }
+
+    /// The card is the app's, and takes the pointer: `rested` asks for it
+    /// once the pointer has rested on the row a moment in front, and it
+    /// shows, hanging from the row's top, while the row is built with it
+    /// ([`Self::card`]); `left` lets it go once the pointer left the row
+    /// and the card a moment ago, or a click, a right click, the wheel on
+    /// the row or the window going behind another took it. Each message is
+    /// made only as it's sent.
+    pub fn holding(mut self, rested: impl Fn() -> M + 'a, left: impl Fn() -> M + 'a) -> Self {
+        self.hold = Some(hold::Hold {
+            rested: Box::new(rested),
+            left: Box::new(left),
+        });
         self
     }
 

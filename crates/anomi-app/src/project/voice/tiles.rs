@@ -1,7 +1,12 @@
-//! The call's tiles from the core's call: this account's shared screen, the
-//! streams of those who film too, then everyone (`ParticipantGrid`'s three
-//! loops, `ui/voice.slint:988`-`:1116`, over `show_voice`'s rows,
-//! `src/ui/refresh.rs:4650`).
+//! The call's tiles from the core's call, in Discord's order
+//! (`super::focus`): everyone in the call's order, each stream in a tile of
+//! its own right before its streamer's, this account's screen right before
+//! its own tile (`ParticipantGrid`'s three loops, `ui/voice.slint:988`-
+//! `:1116`, over `show_voice`'s rows, `src/ui/refresh.rs:4650`, as Discord
+//! lays them out). Someone's own tile shows their camera or their picture
+//! with their speaking ring and marks, never their stream; the stream's
+//! shows it watched, its preview behind "Watch stream", or the screen icon
+//! without one, with the LIVE badge.
 //!
 //! A tile is built again only when what it reads changed: its participant
 //! (compared with the list shown before, which the core replaces whole), or
@@ -9,20 +14,21 @@
 //! whether its camera's first frame came), kept as a hash per tile. So
 //! someone muting or starting to speak builds their tile alone. A camera's
 //! or a stream's frames reach its tile through one `Live` per feed, kept
-//! while the feed lasts; the tile holds it once its first frame came.
+//! while the feed lasts; the tile holds it once its first frame came. A
+//! stream not watched costs what it did before: its preview, or nothing.
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use yapfast_core::application::AppState;
-use yapfast_core::voice::{Participant, SharePhase};
+use yapfast_core::voice::{CameraPhase, Participant, SharePhase};
 use yapfast_lang::tr;
 
 use anomi_vm::kind::Live;
 use anomi_vm::voice::tiles::{Chip, Fill, Key, Mark, Outline, Tile, Viewers};
 
-use super::focus::Stage;
+use super::focus::{Slot, Stage};
 use super::lives::Lives;
 use crate::pictures::Requests;
 use crate::project::rows;
@@ -39,10 +45,13 @@ pub struct Shown {
 }
 
 /// The tiles of the call, in their slots; built again only where changed.
+/// This account's screen shows no picture of itself while its preview is
+/// `hidden`.
 pub fn tiles(
     state: &AppState,
     stage: Stage<'_>,
     lives: &Lives,
+    hidden: bool,
     shown: &mut Shown,
     requests: &mut Requests,
 ) -> Vec<Tile> {
@@ -58,48 +67,51 @@ pub fn tiles(
                 (key, context, build())
             }
         };
-    let mut made = Vec::with_capacity(stage.before() + stage.participants.len());
-    if let Some(sharing) = &voice.sharing {
-        let live = lives.own.as_ref().map(|own| &own.1);
-        let context = hash((
-            sharing.phase as u8,
-            live.is_some_and(Live::has_frame),
-            &sharing.viewers,
-            state.picture_changes,
-        ));
-        made.push(take(Key::OwnScreen, context, true, &|| {
-            own_screen(state, stage.participants, live)
-        }));
-    }
-    for index in stage.streams() {
-        let person = &stage.participants[index];
-        let watched = watching.filter(|watching| watching.user == person.id);
-        // The preview comes again after watching stops.
-        let context = hash((
-            watch_context(state, watched, lives),
-            &name(person),
-            state.stream_previews.get(&person.id).map(Arc::as_ptr),
-        ));
-        let key = Key::Stream(person.id.clone());
-        made.push(take(key, context, true, &|| {
-            stream(state, person, watched, lives)
-        }));
-    }
-    for person in stage.participants {
-        let before = shown.participants.iter().find(|old| old.id == person.id);
-        let same = before == Some(person);
-        let watched = watching.filter(|watching| watching.user == person.id);
-        let context = hash((
-            watch_context(state, watched, lives),
-            state.stream_previews.get(&person.id).map(Arc::as_ptr),
-            picture_at(state, person.avatar.as_deref()),
-            lives.camera(&person.id).is_some_and(Live::has_frame),
-            person.local && voice.camera_phase == yapfast_core::voice::CameraPhase::Starting,
-        ));
-        let key = Key::Person(person.id.clone());
-        made.push(take(key, context, same, &|| {
-            participant(state, person, watched, lives)
-        }));
+    let camera_starting = voice.camera_phase == CameraPhase::Starting;
+    let mut made = Vec::with_capacity(stage.count());
+    for slot in stage.slots() {
+        made.push(match slot {
+            Slot::OwnScreen => {
+                let sharing = voice.sharing.as_ref();
+                let live = (lives.own.as_ref()).map(|own| &own.1).filter(|_| !hidden);
+                let context = hash((
+                    sharing.map(|sharing| sharing.phase as u8),
+                    live.is_some_and(Live::has_frame),
+                    hidden,
+                    sharing.map(|sharing| &sharing.viewers),
+                    state.picture_changes,
+                ));
+                take(Key::OwnScreen, context, true, &|| {
+                    own_screen(state, stage.participants, live, hidden)
+                })
+            }
+            Slot::Stream(index) => {
+                let person = &stage.participants[index];
+                let watched = watching.filter(|watching| watching.user == person.id);
+                // The preview comes again after watching stops.
+                let context = hash((
+                    watch_context(state, watched, lives),
+                    &name(person),
+                    state.stream_previews.get(&person.id).map(Arc::as_ptr),
+                ));
+                let key = Key::Stream(person.id.clone());
+                take(key, context, true, &|| {
+                    stream(state, person, watched, lives)
+                })
+            }
+            Slot::Person(index) => {
+                let person = &stage.participants[index];
+                let before = shown.participants.iter().find(|old| old.id == person.id);
+                let same = before == Some(person);
+                let context = hash((
+                    picture_at(state, person.avatar.as_deref()),
+                    lives.camera(&person.id).is_some_and(Live::has_frame),
+                    person.local && camera_starting,
+                ));
+                let key = Key::Person(person.id.clone());
+                take(key, context, same, &|| participant(state, person, lives))
+            }
+        });
     }
     for person in stage.participants {
         if let Some(avatar) = person.avatar.as_deref() {
@@ -170,13 +182,20 @@ fn name(person: &Participant) -> &str {
     crate::project::account::display_part(&person.user)
 }
 
-/// This account's shared screen (`:988`).
-fn own_screen(state: &AppState, participants: &[Participant], live: Option<&Live>) -> Tile {
+/// This account's shared screen (`:988`), right before its own tile, the
+/// LIVE badge at its top right once live; without its picture while its
+/// preview is `hidden`.
+fn own_screen(
+    state: &AppState,
+    participants: &[Participant],
+    live: Option<&Live>,
+    hidden: bool,
+) -> Tile {
     let sharing = state.voice.sharing.as_ref();
     let phase = sharing.map(|sharing| sharing.phase);
     let is_live = phase == Some(SharePhase::Live);
     let frame = live.filter(|live| live.has_frame()).cloned();
-    let status = share_status(phase).to_owned();
+    let status = own_status(phase, hidden).to_owned();
     let note = if !is_live && frame.is_some() {
         status.clone()
     } else {
@@ -188,10 +207,10 @@ fn own_screen(state: &AppState, participants: &[Participant], live: Option<&Live
         fill: Fill::OwnScreen { frame, status },
         chip: Chip {
             name: tr!("Your screen").into(),
-            live: is_live,
             note,
             ..Chip::default()
         },
+        badge: is_live,
         viewers: viewers(state, participants, ids, None),
         ..Tile::default()
     }
@@ -207,6 +226,15 @@ pub fn share_status(phase: Option<SharePhase>) -> &'static str {
     }
 }
 
+/// What this account's screen says where its picture would be: how its
+/// stream goes, or, once live with its preview hidden, that it is.
+pub fn own_status(phase: Option<SharePhase>, hidden: bool) -> &'static str {
+    match phase {
+        Some(SharePhase::Live) if hidden => tr!("Your stream preview is hidden"),
+        phase => share_status(phase),
+    }
+}
+
 /// What a stream watched says until its first picture.
 pub fn watch_status(watched: &yapfast_core::voice::Watching) -> String {
     if watched.frames.is_none() {
@@ -216,28 +244,28 @@ pub fn watch_status(watched: &yapfast_core::voice::Watching) -> String {
     }
 }
 
-/// The stream watched, in a tile of its own or in theirs.
-fn watched_fill(watched: Option<&yapfast_core::voice::Watching>, lives: &Lives) -> Option<Fill> {
-    let watched = watched?;
-    let frame = lives.watched.as_ref().map(|live| &live.1);
-    Some(Fill::Watched {
-        frame: frame.filter(|live| live.has_frame()).cloned(),
-        status: watch_status(watched),
-    })
-}
-
-/// Someone's stream in a tile of its own, beside their camera's (`:1008`).
+/// Someone's stream in its own tile, right before theirs (`:1008`), the
+/// LIVE badge at its top right: watched, its picture; else its preview, or
+/// the screen icon without one, behind "Watch stream", which a click
+/// watches.
 fn stream(
     state: &AppState,
     person: &Participant,
     watched: Option<&yapfast_core::voice::Watching>,
     lives: &Lives,
 ) -> Tile {
-    let preview = state
-        .stream_previews
-        .get(&person.id)
-        .and_then(crate::pictures::shown);
-    let fill = watched_fill(watched, lives).unwrap_or(Fill::Offer { preview });
+    let fill = match watched {
+        Some(watched) => {
+            let frame = lives.watched.as_ref().map(|live| &live.1);
+            Fill::Watched {
+                frame: frame.filter(|live| live.has_frame()).cloned(),
+                status: watch_status(watched),
+            }
+        }
+        None => Fill::Offer {
+            preview: (state.stream_previews.get(&person.id)).and_then(crate::pictures::shown),
+        },
+    };
     Tile {
         key: Key::Stream(person.id.clone()),
         watch: watched.is_none(),
@@ -253,37 +281,22 @@ fn stream(
         chip: Chip {
             name: name(person).to_owned(),
             mark: Some(Mark::Screen),
-            live: true,
-            note: String::new(),
+            ..Chip::default()
         },
+        badge: true,
         ..Tile::default()
     }
 }
 
-/// Someone's own tile (`:1051`): their camera, the stream they share
-/// without one, its preview, or their picture.
-fn participant(
-    state: &AppState,
-    person: &Participant,
-    watched: Option<&yapfast_core::voice::Watching>,
-    lives: &Lives,
-) -> Tile {
-    let streams_here = person.streaming && !person.local && person.video.is_none();
-    let watched = watched.filter(|_| streams_here);
+/// Someone's own tile (`:1051`): their camera, or their picture, with
+/// their speaking ring and marks. Their stream, if they share one, has its
+/// own tile right before.
+fn participant(state: &AppState, person: &Participant, lives: &Lives) -> Tile {
     let camera = lives
         .camera(&person.id)
         .filter(|live| person.video.is_some() && live.has_frame());
-    let preview = state
-        .stream_previews
-        .get(&person.id)
-        .filter(|_| streams_here && watched.is_none())
-        .and_then(crate::pictures::shown);
     let fill = if let Some(live) = camera {
         Fill::Camera(live.clone())
-    } else if let Some(fill) = watched_fill(watched, lives) {
-        fill
-    } else if let Some(preview) = preview {
-        Fill::Preview(preview)
     } else {
         let key = if person.local {
             state.account.as_deref().unwrap_or("Preview")
@@ -308,8 +321,7 @@ fn participant(
         None if !person.connected => tr!("Connection lost").into(),
         None => String::new(),
     };
-    let starting =
-        person.local && state.voice.camera_phase == yapfast_core::voice::CameraPhase::Starting;
+    let starting = person.local && state.voice.camera_phase == CameraPhase::Starting;
     Tile {
         key: Key::Person(person.id.clone()),
         fill,
@@ -321,18 +333,9 @@ fn participant(
         chip: Chip {
             name: name(person).to_owned(),
             mark,
-            live: person.streaming && (person.local || person.video.is_none()),
+            live: false,
             note,
         },
-        viewers: watched.map_or_else(Viewers::default, |watched| {
-            viewers(
-                state,
-                &state.voice.participants,
-                &watched.viewers,
-                Some(&person.id),
-            )
-        }),
-        watch: streams_here && watched.is_none(),
         starting,
         ..Tile::default()
     }

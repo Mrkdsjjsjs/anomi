@@ -22,6 +22,7 @@ use anomi_vm::sidebar::channels::{Arrange, Channels, Intent, Move};
 
 use super::support::{SIZE, asked, front, settings};
 
+mod hover;
 mod paint;
 
 /// The middle of each row, down the list; the heading's at its "+", 28 px

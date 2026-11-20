@@ -44,6 +44,26 @@ pub fn book_club_window() -> Vm {
     window(super::book_club())
 }
 
+/// Bob's card beside his row: playing Factorio, streaming it without a
+/// still and with one, and watched by Alice in the call.
+pub fn playing_window() -> Vm {
+    window(super::playing())
+}
+
+pub fn streaming_window() -> Vm {
+    window(super::streaming())
+}
+
+pub fn streaming_preview_window() -> Vm {
+    window(super::streaming_preview())
+}
+
+pub fn watching_window() -> Vm {
+    let mut vm = with(rail::call_window(), super::watching());
+    vm.shell.voice_dock = true;
+    vm
+}
+
 /// The call's participants speaking, joining, and on another client.
 pub fn speaking_window() -> Vm {
     let mut vm = with(rail::call_window(), super::speaking());

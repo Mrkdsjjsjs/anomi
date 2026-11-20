@@ -94,7 +94,7 @@ pub fn view<'a>(dock: &'a Dock, motion: Motion) -> Element<'a, Intent> {
     if let Some(time) = dock.time {
         status = status.push(
             container(
-                clock(time, anomi_vm::voice::dock::elapsed, motion.front)
+                clock(time, anomi_vm::voice::dock::elapsed, motion.live())
                     .size(size::LABEL)
                     .style(catalog::text::muted),
             )

@@ -10,6 +10,13 @@
 //! each picture when the clock reaches it, takes Yapfast's controls and reports
 //! back. The clock is the system's, held while there's nothing to play, as
 //! when the download falls behind.
+//!
+//! While the window shows none of the pictures ([`Writer::paused`]: the
+//! video out of view, or the window not live), they're still decoded, so
+//! the video keeps its place and its sound its time, but none is converted
+//! or written, and only `UNSEEN_PICTURES` wait ahead: once the window
+//! shows them again, the next one decoded is drawn. A still video's picture
+//! missed meanwhile is drawn again then.
 
 use std::{
     collections::VecDeque,
@@ -38,6 +45,10 @@ const RATE: u32 = 48_000;
 const CHANNELS: usize = 2;
 /// How far ahead the decoder fills its queues.
 const QUEUED_PICTURES: usize = 8;
+/// And the pictures, while the window shows none: enough that the clock
+/// never waits for the next, few enough that one is drawn soon after it
+/// shows them again.
+const UNSEEN_PICTURES: usize = 2;
 const QUEUED_SOUND_MS: u64 = 2_000;
 /// How far ahead the decoder keeps sound while the pictures' queue is full.
 const SOUND_AHEAD_MS: u64 = 500;
@@ -248,6 +259,8 @@ impl Clock {
 
 struct Picture {
     time: u64,
+    /// Its pixels, `width` by `height`; none for one decoded while the
+    /// window showed no pictures.
     width: u32,
     height: u32,
     rgba: Vec<u8>,
@@ -302,6 +315,11 @@ struct State {
     stop: bool,
     opened: Option<Opened>,
     failed: Option<String>,
+    /// The window shows no pictures ([`Writer::paused`]): they're decoded
+    /// without being drawn.
+    unseen: bool,
+    /// A picture passed undrawn, and none was drawn since.
+    missed: bool,
 }
 
 struct Shared {
@@ -332,6 +350,8 @@ impl Shared {
                 stop: false,
                 opened: None,
                 failed: None,
+                unseen: false,
+                missed: false,
             }),
             changed: Condvar::new(),
             interrupt,
@@ -472,6 +492,24 @@ fn show(
                 sound: file.sound,
             });
         }
+        // The window shows the pictures again, or no more: the decoder
+        // draws them, or doesn't, from its next.
+        let unseen = writer.paused();
+        if unseen != state.unseen {
+            state.unseen = unseen;
+            shared.changed.notify_all();
+        }
+        // A still picture that passed undrawn is drawn again once the
+        // window shows it.
+        if !state.unseen
+            && state.missed
+            && !state.playing
+            && !state.show_next
+            && let Some(at) = state.shown
+        {
+            state.missed = false;
+            move_to(shared, &mut state, at);
+        }
         // The clock waits while there's nothing to play.
         let now = state.clock.now();
         let waiting = state.pictures.is_empty()
@@ -491,9 +529,18 @@ fn show(
                 !state.show_next && state.pictures.get(1).is_some_and(|next| next.time <= now);
             let picture = state.pictures.pop_front().expect("a picture");
             shown = true;
-            if !late && writer.fits(picture.width, picture.height) {
+            if late {
+                continue;
+            }
+            // Neither converted nor written for a window that shows none.
+            if state.unseen || picture.rgba.is_empty() {
                 state.show_next = false;
                 state.shown = Some(picture.time);
+                state.missed = true;
+            } else if writer.fits(picture.width, picture.height) {
+                state.show_next = false;
+                state.shown = Some(picture.time);
+                state.missed = false;
                 writer.write_timed(picture.width, picture.height, picture.time, |pixels| {
                     pixels.copy_from_slice(&picture.rgba);
                 });
@@ -631,8 +678,13 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
                     continue;
                 }
                 let sound_ms = state.sound_frames as u64 * 1000 / u64::from(RATE);
+                let ahead = if state.unseen {
+                    UNSEEN_PICTURES
+                } else {
+                    QUEUED_PICTURES
+                };
                 if !state.ended && sound_ms < QUEUED_SOUND_MS {
-                    if state.pictures.len() < QUEUED_PICTURES {
+                    if state.pictures.len() < ahead {
                         break false;
                     }
                     // Sound trails its pictures in the file: read on to it.
@@ -673,6 +725,17 @@ fn decode(download: Download, sound: bool, shared: &Shared) {
                     continue;
                 }
                 queued = true;
+                // The window shows none: the picture keeps its time, for
+                // the clock, without its pixels.
+                if state.unseen {
+                    state.pictures.push_back(Picture {
+                        time,
+                        width: 0,
+                        height: 0,
+                        rgba: Vec::new(),
+                    });
+                    continue;
+                }
                 drop(state);
                 let (width, height) = fit(video.width, video.height, size.0, size.1);
                 let mut rgba = vec![0; width as usize * height as usize * 4];
@@ -1107,6 +1170,80 @@ mod tests {
         // Moving past the last picture shows the last one.
         controls.send(Control::Seek(60_000)).unwrap();
         assert!(shown() >= 1900);
+        stop.store(true, Ordering::Relaxed);
+        player.join().unwrap().unwrap();
+    }
+
+    /// While the window shows none of its pictures, the video plays on, each
+    /// decoded but none drawn or written; shown again, the next comes at
+    /// once, where the video got to. A still video moved meanwhile shows the
+    /// picture it moved to once the window shows it.
+    #[test]
+    fn draws_no_picture_while_the_window_shows_none() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/fixtures/video-aac.mp4");
+        let size = std::fs::metadata(&path).unwrap().len();
+        let frames = crate::frames::Frames::create(160, 90).unwrap();
+        let writer = Writer::open(&frames.path().unwrap()).unwrap();
+        frames.unlink();
+        frames.pause(true);
+        let (controls, received) = channel::channel();
+        controls
+            .send(Control::Downloaded { size: Some(size) })
+            .unwrap();
+        let (reports, reported) = channel::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let job = Playing {
+            path,
+            size: Some(size),
+            width: 80,
+            height: 80,
+            sound: false,
+            speakers: None,
+            volume: 1.0,
+        };
+        let player = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                play(job, writer, received, &stop, &mut |report| {
+                    let _ = reports.send(report);
+                })
+            })
+        };
+        let opened = reported.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(opened, Report::Opened { .. }), "{opened:?}");
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(frames.take_timed(|_, _, _| ()).is_none(), "none written");
+        let shown = || {
+            let waiting = Instant::now();
+            loop {
+                if let Some((_, time)) = frames.take_timed(|_, _, _| ()) {
+                    return time;
+                }
+                assert!(
+                    waiting.elapsed() < Duration::from_secs(5),
+                    "a picture shows"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        frames.pause(false);
+        let again = Instant::now();
+        let time = shown();
+        let took = again.elapsed();
+        assert!(took < Duration::from_millis(300), "{took:?}");
+        assert!((400..1900).contains(&time), "the video went on: {time}");
+
+        controls.send(Control::Pause).unwrap();
+        frames.pause(true);
+        // The player notices within its wait while paused, 100 ms.
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = frames.take_timed(|_, _, _| ());
+        controls.send(Control::Seek(1000)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(frames.take_timed(|_, _, _| ()).is_none(), "not drawn");
+        frames.pause(false);
+        assert_eq!(shown(), 1000);
         stop.store(true, Ordering::Relaxed);
         player.join().unwrap().unwrap();
     }

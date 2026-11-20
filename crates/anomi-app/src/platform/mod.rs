@@ -115,7 +115,7 @@ pub fn start(app: &mut App, start: &Start) -> (Task<Message>, Task<Message>) {
     if start.background && start.link.is_none() && !start.preview && restores && tray {
         tracing::info!("started in the tray");
         app.hidden = true;
-        return (heard, Task::none());
+        return (heard, crate::window::sight(app));
     }
     (heard, window::open(app, None))
 }
@@ -155,7 +155,15 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             app.shown.editor.width = size.width;
             // Members' table drops a column in a narrow one (I20).
             app.shown.server_settings.window = size;
-            window::resized(app)
+            // Minimised, on Windows: a size of 0, which iced doesn't draw.
+            let minimised = size.width <= 0.0 || size.height <= 0.0;
+            let was = std::mem::replace(&mut app.sighting.minimised, minimised);
+            let sight = if was == minimised {
+                Task::none()
+            } else {
+                crate::window::sight(app)
+            };
+            Task::batch([sight, window::resized(app)])
         }
         Message::Maximized(maximized) => {
             window::maximized(app, maximized);

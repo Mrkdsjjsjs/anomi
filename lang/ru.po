@@ -10411,6 +10411,27 @@ msgstr "Сверхбитрейт"
 msgid "Lets a stream's bitrate limit be set above 9 Mbit/s, up to 50. Discord documents 9 Mbit/s as the most, and was seen to take up to about 16 Mbit/s; more may break the stream: it can be cut off, lose packets or be dropped. A higher bitrate also needs an upload that fast, and loads the encoder and the people watching."
 msgstr "Позволяет задать предел битрейта трансляции выше 9 Мбит/с, вплоть до 50. В документации Discord указан максимум 9 Мбит/с, а на деле замечено, что он принимает примерно до 16 Мбит/с; больше может сломать трансляцию: её могут оборвать, она может терять пакеты или вовсе отключиться. Кроме того, высокому битрейту нужна такая же скорость отдачи, и он сильнее нагружает кодировщик и зрителей."
 
+msgid "When the window is on screen but not focused"
+msgstr "Когда окно на виду, но не в фокусе"
+
+msgid "Everything"
+msgstr "Всё как в фокусе"
+
+msgid "What matters"
+msgstr "Только важное"
+
+msgid "Rest"
+msgstr "Замирает"
+
+msgid "With What matters, video, cameras, streams, who's typing and times keep going, while animations, GIFs and members' statuses wait until you come back to the window."
+msgstr "В режиме «Только важное» продолжают обновляться видео, камеры, трансляции, кто печатает и время, а анимации, GIF и статусы участников ждут, пока вы вернётесь к окну."
+
+msgid "Covered by other windows, minimised or in the tray, the window does nothing, whatever is chosen."
+msgstr "Когда окно закрыто другими окнами, свёрнуто или убрано в трей, оно ничего не делает при любом выборе."
+
+msgid "This system doesn't tell when a game or another window covers this one, and Everything and What matters keep going even behind them. So Rest is the default here: the window rests as soon as it loses the focus."
+msgstr "Эта система не сообщает, когда окно закрыто игрой или другим окном, так что «Всё как в фокусе» и «Только важное» работают даже за ними. Поэтому здесь по умолчанию стоит «Замирает»: окно замирает, как только теряет фокус."
+
 msgid "The graphics card's encoder failed, so the processor encodes the stream now."
 msgstr "Кодировщик видеокарты отказал, поэтому теперь трансляцию кодирует процессор."
 

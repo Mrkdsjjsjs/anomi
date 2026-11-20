@@ -122,8 +122,8 @@ the app made once (clone them, never make one in a view).
   no pointer) unless `.holding(on_leave)`: then it takes the pointer, stays
   while the pointer crosses to it and 200 ms after it left both, and sends
   `on_leave` as it goes (the card of who reacted). A click hides a tip until
-  the pointer leaves, unless `.stays()` (the rail's); the window going
-  behind another hides every tip so.
+  the pointer leaves, unless `.stays()` (the rail's); the window losing
+  the focus hides every tip so.
 - `layer::layers(base, motion)`: under a menu, picker or card (a layer
   that keeps the pointer, no dim), the base's overlays, such as a message's
   hover bar, stay drawn under the cards and take nothing.
@@ -139,8 +139,8 @@ the app made once (clone them, never make one in a view).
   moves the dragged row as `Drag::Aimed` says (above, onto or below a row,
   "onto" after `list::DWELL` and out of it at once, past the last row in
   the room under it, or `Zone::Here`: where it is, onto no row) and the
-  rows slide to their places (the
-  rail's servers); `.estimate(px)` for rows of one height,
+  rows slide to their places while `motion.playing()`, landing at once
+  otherwise (the rail's servers); `.estimate(px)` for rows of one height,
   `.report_pixels(true)`, `.reveal(..)`. `list::scroll_view(content,
   motion)` for one piece that scrolls, `List::with_rows` for a few. Tasks:
   `list::operation::{jump_to, to_end, to_start, scroll_by}`. Use it, not
@@ -153,10 +153,12 @@ the app made once (clone them, never make one in a view).
 - `composer::composer(&draft, motion).key(room)`: `.on_edit`, `.on_send`,
   `.on_suggestion`, `.on_paste`, `.marks(..)`, `.placeholder(..)`;
   `composer::place_caret(id, at)` once the app put text in.
-- `clock::clock(elapsed, format, motion.front)`: a time that runs on its
-  own, as text (the call's length in the voice dock): `.size`, `.font`,
-  `.line_height`, `.style`. It shapes its text at each frame and asks the
-  next frame at the next whole second, only while the window is in front;
+- `clock::clock(elapsed, format, motion.live())`: a time that runs on its
+  own, as text (the call's length in the voice dock, the time played on a
+  voice row's card): `.size`, `.font`, `.line_height`, `.style`. It shapes
+  its text at each frame and asks the next frame at the next whole second,
+  only while the window is live (in front, or on screen where the setting
+  keeps what matters going: [the background rule](README.md#the-background-rule));
   a new second builds no view.
 - `shake::shake(content, nudge, motion)`: Discord's bar of unsaved
   changes, 60 px on the raised ground under a line, that sways and turns
@@ -215,8 +217,9 @@ and out. Your dialog or popover is a plain view of your view-model.
 - Keys: `focus::{COMPOSER, SEARCH, TIMELINE}` are the shared ids; move the
   focus with the tasks `focus::{into, select, to, next, previous}`.
   Ctrl+K, Alt+arrows, Escape and typing anywhere are the shell's scope.
-- The window going behind another (its own `window::Event::Unfocused`,
-  nothing else) closes what hangs off it, as Discord's client does:
+- The window losing the focus (its own `window::Event::Unfocused`,
+  nothing else, whether it stays on screen or not) closes what hangs off
+  it, as Discord's client does:
   `Layer::transient()` says which layers (what hangs off a button, a row or
   the pointer: popups, popovers, cards, pickers; not dialogs, pages,
   viewers or the call), and the app's `intent::shell::unfocused` closes

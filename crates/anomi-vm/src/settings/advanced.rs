@@ -2,8 +2,9 @@
 //! (docs/iced/tasks/settings.md). The Slint side: `AdvancedSettings`
 //! (`ui/settings.slint:1881`). Anomi adds Optimization under the switches:
 //! the processor's cores the program runs on, what draws the interface,
-//! where streams encode, and whether a stream's bitrate may pass Discord's
-//! documented 9 Mbit/s.
+//! where streams encode, whether a stream's bitrate may pass Discord's
+//! documented 9 Mbit/s, and what the window keeps doing on screen but not
+//! focused.
 
 /// The Advanced settings page: what its screen draws. The window holds it as
 /// `vm.settings.advanced`.
@@ -46,6 +47,43 @@ pub struct Advanced {
     /// "Unlocked bitrate": a stream's bitrate limit may be set by hand past
     /// Discord's documented 9 Mbit/s, up to 50.
     pub bitrate_unlocked: bool,
+    /// "When the window is on screen but not focused": the choice in force,
+    /// the one kept or, until one is, this desktop's default.
+    pub background: Background,
+    /// The desktop says when a window covers this one (GNOME on Wayland), so
+    /// what matters may go on beside a game. Where it can't, a line says so,
+    /// and that the window rests unless chosen otherwise.
+    pub exact: bool,
+}
+
+/// What a window on screen but not focused keeps doing, as
+/// `anomi_theme::Background` holds it: the choices of "When the window is
+/// on screen but not focused", in their order. Hidden, it does nothing
+/// under any.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Background {
+    /// Everything, as in front.
+    Usual,
+    /// What matters: video, cameras, streams, who's typing and the times.
+    /// Animations, GIFs and the member list's statuses wait for the focus.
+    Important,
+    /// Nothing: the window rests as one behind a game would.
+    #[default]
+    Nothing,
+}
+
+impl Background {
+    pub const ALL: [Self; 3] = [Self::Usual, Self::Important, Self::Nothing];
+
+    /// Its place in [`Background::ALL`].
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&one| one == self).unwrap_or(0)
+    }
+
+    /// The choice at `index` of [`Background::ALL`], resting past its end.
+    pub fn at(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
 }
 
 /// A row of "Interface rendering": what may draw the interface.
@@ -137,6 +175,9 @@ pub enum Intent {
     /// "Unlocked bitrate" turned on or off; a stream going takes it at
     /// once.
     BitrateUnlocked(bool),
+    /// What the window keeps doing on screen but not focused; it applies at
+    /// once.
+    Background(Background),
 }
 
 #[cfg(test)]
@@ -155,5 +196,15 @@ mod tests {
         };
         assert!(page.choosing());
         assert!(!Advanced::default().choosing());
+    }
+
+    #[test]
+    fn a_background_choice_goes_by_its_place() {
+        for choice in Background::ALL {
+            assert_eq!(Background::at(choice.index()), choice);
+        }
+        assert_eq!(Background::at(7), Background::Nothing, "past the end");
+        let page = Advanced::default();
+        assert_eq!((page.background, page.exact), (Background::Nothing, false));
     }
 }

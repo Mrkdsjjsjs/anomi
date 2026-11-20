@@ -28,6 +28,10 @@ const SLOTS: u32 = 3;
 /// Set beside the middle slot's index when the worker put a frame there that
 /// the UI hasn't taken.
 const FRESH: u32 = 4;
+/// [`Header::paused`]'s bits: the UI shows no frames now ([`Frames::pause`]),
+/// and its window isn't on screen at all ([`Frames::hide`]).
+const PAUSED: u32 = 1;
+const HIDDEN: u32 = 2;
 
 /// The header at the start of the file; slots follow it.
 #[repr(C)]
@@ -36,7 +40,8 @@ struct Header {
     capacity: u32,
     /// The middle slot's index, with [`FRESH`].
     middle: AtomicU32,
-    /// The UI doesn't show frames now, so the worker may make none.
+    /// The UI doesn't show frames now, so the worker may make none
+    /// ([`PAUSED`]); and its window is hidden ([`HIDDEN`]).
     paused: AtomicU32,
     /// Each slot's frame size, as width and height in pixels.
     sizes: [[AtomicU32; 2]; SLOTS as usize],
@@ -236,10 +241,26 @@ impl Frames {
     /// preview of one's own stream in a window behind another), the worker
     /// skips the work of making them.
     pub fn pause(&self, paused: bool) {
-        self.mapping
-            .header()
-            .paused
-            .store(u32::from(paused), Ordering::Relaxed);
+        self.mark(PAUSED, paused);
+    }
+
+    /// Tells the worker whether the UI's window is hidden, not on screen at
+    /// all (in the tray, minimised, covered, on another workspace), apart
+    /// from whether it shows these frames: a watched stream nobody can see
+    /// lets its video stop sooner than one in a window that only rests
+    /// (`stream_worker`'s hold).
+    pub fn hide(&self, hidden: bool) {
+        self.mark(HIDDEN, hidden);
+    }
+
+    /// Sets `bit` of the header's word for the worker, or clears it.
+    fn mark(&self, bit: u32, on: bool) {
+        let word = &self.mapping.header().paused;
+        if on {
+            word.fetch_or(bit, Ordering::Relaxed);
+        } else {
+            word.fetch_and(!bit, Ordering::Relaxed);
+        }
     }
 
     /// Calls `show` with the newest frame's width, height and RGBA pixels,
@@ -294,6 +315,18 @@ impl Writer {
 
     /// Whether the UI asked for no frames, as [`Frames::pause`] says.
     pub fn paused(&self) -> bool {
+        self.mapping.header().paused.load(Ordering::Relaxed) & PAUSED != 0
+    }
+
+    /// Whether the UI's window is hidden, as [`Frames::hide`] says.
+    pub fn hidden(&self) -> bool {
+        self.mapping.header().paused.load(Ordering::Relaxed) & HIDDEN != 0
+    }
+
+    /// Whether nobody sees the frames: the UI asked for none, or its window
+    /// is hidden, which it says after each of its updates even where it
+    /// didn't come to pause these (frames made while it's in the tray).
+    pub fn unseen(&self) -> bool {
         self.mapping.header().paused.load(Ordering::Relaxed) != 0
     }
 
@@ -376,5 +409,25 @@ mod tests {
 
         drop((writer, frames));
         assert!(!path.exists(), "gone once both let go");
+    }
+
+    /// The window hidden is told apart from frames paused: each holds
+    /// whatever the other does.
+    #[test]
+    fn a_hidden_window_is_told_apart_from_a_pause() {
+        let frames = Frames::create(1, 1).unwrap();
+        let writer = Writer::open(&frames.path().unwrap()).unwrap();
+        frames.unlink();
+        assert!(!writer.hidden(), "shown at first");
+        frames.hide(true);
+        assert!(writer.hidden() && !writer.paused(), "frames still wanted");
+        assert!(writer.unseen(), "but nobody sees them");
+        frames.pause(true);
+        assert!(writer.hidden() && writer.paused());
+        frames.hide(false);
+        assert!(!writer.hidden() && writer.paused(), "a pause outlives it");
+        assert!(writer.unseen());
+        frames.pause(false);
+        assert!(!writer.hidden() && !writer.paused() && !writer.unseen());
     }
 }

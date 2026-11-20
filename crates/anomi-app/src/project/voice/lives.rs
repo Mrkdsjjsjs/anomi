@@ -2,9 +2,10 @@
 //! lasts: the cameras, the stream watched and this account's own screen.
 //! What decodes them is told the size they show at, or that they don't
 //! (`place_videos`, `src/ui/callbacks.rs:4172`), and the window follows
-//! only those in sight while it's in front (`crate::media::Source`): a
-//! camera of a tile scrolled away, a stream covered by Settings or the
-//! window behind take no frames for display; the call's sound goes on.
+//! only those in sight while it's live (`crate::media::Source`): a camera
+//! of a tile scrolled away, a stream covered by Settings, or the window
+//! hidden or resting unfocused take no frames for display; the call's
+//! sound goes on.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,8 +34,9 @@ pub struct Lives {
 /// Where the call shows: the grid and its tiles' places, the corner.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sight {
-    /// The window is in front and shows a window.
-    pub front: bool,
+    /// The window is live (`Chrome::live`: on screen, in front or kept
+    /// going by the setting) and in a call.
+    pub live: bool,
     /// The grid shows, in the conversation or full screen, uncovered.
     pub grid: bool,
     pub placement: Option<Placement>,
@@ -51,7 +53,7 @@ impl Sight {
     /// The size in pixels the grid's tile at `slot` shows at, while it's in
     /// sight.
     pub fn in_grid(&self, slot: usize) -> Option<(u32, u32)> {
-        let placement = self.placement.filter(|_| self.front && self.grid)?;
+        let placement = self.placement.filter(|_| self.live && self.grid)?;
         placement.shown_at(slot, self.scale)
     }
 }
@@ -90,8 +92,9 @@ impl Lives {
     }
 
     /// Tells each camera the size it shows at, or that it doesn't, and says
-    /// which pictures the window follows: those in sight, in front. Each
-    /// shows in its own tile: a camera in its person's, a stream in its own.
+    /// which pictures the window follows: those in sight, while it's live.
+    /// Each shows in its own tile: a camera in its person's, a stream in its
+    /// own.
     pub fn place(&self, voice: &voice::State, stage: Stage<'_>, sight: Sight) -> Vec<Source> {
         let mut sources = Vec::new();
         let pixels = |side: f32| (side * sight.scale).round() as u32;
@@ -105,7 +108,7 @@ impl Lives {
             let Slot::Person(index) = kind else { continue };
             let person = &stage.participants[index];
             let Some(feed) = &person.video else { continue };
-            let in_corner = sight.front && sight.pip == Some(Pip::Camera(index));
+            let in_corner = sight.live && sight.pip == Some(Pip::Camera(index));
             let at = if in_corner {
                 Some((pixels(corner.0), pixels(corner.1)))
             } else {
@@ -125,14 +128,14 @@ impl Lives {
             .map(|watching| watching.user.as_str());
         if let (Some(watched), Some(user)) = (&self.watched, watching) {
             let slot = stage.slot(&Focus::Stream(user.to_owned()));
-            let seen = sight.front
-                && (sight.pip == Some(Pip::Watched) || slot.and_then(in_grid).is_some());
+            let seen =
+                sight.live && (sight.pip == Some(Pip::Watched) || slot.and_then(in_grid).is_some());
             mapped(watched, seen, &mut sources);
         }
         if let Some(own) = &self.own {
             let slot = stage.slot(&Focus::OwnScreen);
             let seen = !sight.own_hidden
-                && sight.front
+                && sight.live
                 && (sight.pip == Some(Pip::Shared) || slot.and_then(in_grid).is_some());
             mapped(own, seen, &mut sources);
         }

@@ -17,9 +17,18 @@
 //! damage is the frame's rectangle. Only a source's first frame, which the
 //! view must hold, and a message's video moving a step of its bar
 //! (`time::STEP_MS`) answer with a message, which builds the view again.
-//! With no source (the window behind or in the tray, the video paused,
+//! With no source (the window not live or in the tray, the video paused,
 //! ended or out of view) the task waits on [`Alarm::changed`] and nothing
 //! runs.
+//!
+//! Each redraw the task asks is noted for the window's watchdog, which it
+//! also consults as each frame is made (`crate::window::seen`): frames
+//! that come while the window isn't painted find the redraw asked a second
+//! ago not drawn, and the task wakes an update, which judges the window
+//! unseen and lets go of the sources.
+//! A worker's frame isn't taken while the one before is unread, so the
+//! task wakes for each made without asking anything, as long as the window
+//! isn't painted.
 //!
 //! A worker's slot is the window's until the next frame is taken, when the
 //! worker gets it back to write into. So a source's next frame is taken
@@ -33,6 +42,7 @@ use std::ffi::c_int;
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use iced::futures::{future, stream};
 use iced::{Task, widget::image};
@@ -44,6 +54,7 @@ use anomi_vm::kind::Live;
 
 use super::time;
 use crate::message::Message;
+use crate::window::seen::{self, Heard};
 
 /// Told each time the core made a frame for the window.
 static MADE: Notify = Notify::const_new();
@@ -127,6 +138,9 @@ pub enum Found {
     Redraw,
     /// The view: a source's first frame, or a video's bar moved.
     View,
+    /// No frame: the window seems not painted, as a redraw asked a second
+    /// ago wasn't drawn; the update it wakes judges (`crate::window::seen`).
+    Unseen,
 }
 
 impl Alarm {
@@ -206,7 +220,8 @@ impl Alarm {
 }
 
 /// Follows the frames for as long as the window lives: a redraw for each,
-/// and [`Message::Frames`] where the view must change.
+/// and [`Message::Frames`] where the view must change; and, as frames come
+/// to a window that isn't painted, [`Heard::Late`].
 pub fn follow(alarm: Arc<Alarm>) -> Task<Message> {
     let found = stream::unfold(alarm, |alarm| async move {
         loop {
@@ -219,14 +234,20 @@ pub fn follow(alarm: Arc<Alarm>) -> Task<Message> {
                 let changed = pin!(alarm.changed.notified());
                 future::select(made, changed).await;
             }
+            let now = Instant::now();
+            if seen::due(now) {
+                return Some((Found::Unseen, alarm));
+            }
             let found = alarm.take();
             if found != Found::Nothing {
+                seen::asked(now);
                 return Some((found, alarm));
             }
         }
     });
     Task::run(found, |found| found).then(|found| match found {
         Found::View => Task::done(Message::Frames),
+        Found::Unseen => Task::done(Message::Sight(Heard::Late)),
         _ => iced_runtime::task::effect(iced_runtime::Action::Window(
             iced_runtime::window::Action::RedrawAll,
         )),

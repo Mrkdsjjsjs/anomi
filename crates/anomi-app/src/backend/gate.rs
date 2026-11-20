@@ -1,14 +1,15 @@
 //! Who's typing and the member list come several times a second in a busy
 //! server, and change nothing while what shows them doesn't show: the
-//! member list hidden, typing in another conversation, the window behind
-//! another or in the tray. The events' stream sifts each batch here before
-//! it becomes a message (`backend::start`): what the window doesn't show
-//! waits in the gate, each room's latest alone, and no message reaches
-//! `update`, so iced builds no view and lays nothing out for it. The core
-//! takes what waits before the next message of any kind is handled
-//! (`backend::drain`), and what shows it is shown again the moment it shows
-//! more (`backend::follow`): the member list opened, the window in front
-//! again, as the clocks are (`crate::clocks::front`).
+//! member list hidden, typing in another conversation, the window hidden,
+//! in the tray or resting unfocused (`backend::follow` says which). The
+//! events' stream sifts each batch here before it becomes a message
+//! (`backend::start`): what the window doesn't show waits in the gate,
+//! each room's latest alone, and no message reaches `update`, so iced
+//! builds no view and lays nothing out for it. The core takes what waits
+//! before the next message of any kind is handled (`backend::drain`), and
+//! what shows it is shown again the moment it shows more
+//! (`backend::follow`): the member list opened, the window live or in front
+//! again, as the clocks are (`crate::clocks::again`).
 //!
 //! Only events that ask nothing of the core but to keep them are held: both
 //! replace what came before for their room, so the latest stands for all.

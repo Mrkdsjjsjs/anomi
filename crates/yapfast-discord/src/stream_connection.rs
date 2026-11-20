@@ -17,7 +17,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Notify, mpsc, oneshot},
     time::Instant,
 };
 
@@ -243,6 +243,14 @@ struct Shared {
     peak_100ms: AtomicU64,
     peak_second: AtomicU64,
     ceiling_bps: AtomicU64,
+    /// Receiving: whether the stream's video is wanted, as
+    /// [`StreamReceiver::want_video`] last said; Discord hears it with op 15.
+    video_wanted: AtomicBool,
+    /// Receiving: told as the video's want changes, so a connection that
+    /// waits on nothing else hears it at once.
+    wants_changed: Notify,
+    /// Receiving: the packets of the stream's sound so far.
+    sounds: AtomicU64,
 }
 
 impl Shared {
@@ -270,6 +278,9 @@ impl Shared {
             peak_100ms: AtomicU64::new(0),
             peak_second: AtomicU64::new(0),
             ceiling_bps: AtomicU64::new(0),
+            video_wanted: AtomicBool::new(true),
+            wants_changed: Notify::new(),
+            sounds: AtomicU64::new(0),
         })
     }
 
@@ -572,9 +583,33 @@ impl StreamReceiver {
         self.shared.keyframe.store(true, Ordering::Relaxed);
     }
 
+    /// Asks Discord for the stream's video, or for none of it while nobody
+    /// sees its picture: op 15 then wants the video's SSRC at 0, and
+    /// everything else, the stream's sound on an SSRC of its own, in full
+    /// (`sink_wants`). Wanted again, the video is put together afresh from
+    /// a keyframe the connection asks for at once.
+    pub fn want_video(&self, wanted: bool) {
+        self.shared.video_wanted.store(wanted, Ordering::Relaxed);
+        self.shared.wants_changed.notify_one();
+    }
+
+    /// The packets of the stream's sound received so far.
+    pub fn sounds_received(&self) -> u64 {
+        self.shared.sounds.load(Ordering::Relaxed)
+    }
+
     pub fn link(&self) -> Link {
         lock(&self.shared.link).clone()
     }
+}
+
+/// Op 15's wants of a watched stream: its video at full quality, or at 0
+/// while it isn't `wanted`. `any` covers the SSRCs left out, the stream's
+/// sound among them, which always comes in full.
+fn sink_wants(video: u32, wanted: bool) -> Value {
+    let mut wants = json!({"any": 100});
+    wants[video.to_string()] = json!(if wanted { 100 } else { 0 });
+    wants
 }
 
 /// Op 12's video state for a camera, capped as Discord's client caps its
@@ -1423,6 +1458,8 @@ async fn receive_stream(
     // asks for, here everything at full quality.
     send_json(&mut connection.ws, 15, json!({"any": 100})).await?;
     *lock(&shared.link) = Link::Connected;
+    // Whether op 15 last told Discord the video is wanted.
+    let mut wanted = true;
 
     let mut incoming: HashMap<u32, Video> = HashMap::new();
     let mut asked = Instant::now() - KEYFRAME_REQUESTS;
@@ -1443,6 +1480,25 @@ async fn receive_stream(
     let mut flowing = 0;
     loop {
         let mut lost = false;
+        // The video unwanted, or wanted again, once its SSRC is known: what
+        // was put together of it goes, and wanted again it starts from a
+        // keyframe asked for at once.
+        let wants = shared.video_wanted.load(Ordering::Relaxed);
+        if wants != wanted
+            && let Some(video) = streamer.video
+        {
+            wanted = wants;
+            incoming.clear();
+            send_json(&mut connection.ws, 15, sink_wants(video, wanted)).await?;
+            if wanted {
+                shared.keyframe.store(true, Ordering::Relaxed);
+                asked = Instant::now() - KEYFRAME_REQUESTS;
+                // Their ticks stopped while it was unwanted: none piled up.
+                repairs.reset();
+                keyframes.reset();
+            }
+            tracing::debug!(wanted, "the stream's video");
+        }
         tokio::select! {
             _ = &mut stopped => {
                 let _ = connection.ws.close(None).await;
@@ -1459,8 +1515,11 @@ async fn receive_stream(
                     streamer.learn(op, &data);
                 }
             }
-            _ = keyframes.tick() => {}
-            _ = repairs.tick() => {}
+            // Without the video nothing is put together or asked for again,
+            // and the loop sleeps until a packet, or the video's wanted.
+            _ = keyframes.tick(), if wanted => {}
+            _ = repairs.tick(), if wanted => {}
+            () = shared.wants_changed.notified() => {}
             _ = reports.tick() => {
                 let Some(media) = streamer.video else { continue };
                 let Some(video) = incoming.get_mut(&media) else { continue };
@@ -1480,7 +1539,9 @@ async fn receive_stream(
             }
             _ = log.tick() => {
                 tracing::debug!(?received, "stream received");
-                if received.decoded == flowing {
+                // Without its video wanted, none reaching the decoder is
+                // as asked.
+                if received.decoded == flowing && wanted {
                     tracing::info!(
                         ?received,
                         dave = connection.dave.status(),
@@ -1525,6 +1586,7 @@ async fn receive_stream(
                 }
                 if packet.payload_type == rtp::OPUS {
                     received.sounds += 1;
+                    shared.sounds.fetch_add(1, Ordering::Relaxed);
                     match connection.dave.decrypt_opus(streamer_id, packet.payload.to_vec()) {
                         // A full queue drops sound the player can't keep up with.
                         Some(sound) => drop(sounds.try_send(sound)),
@@ -1532,7 +1594,10 @@ async fn receive_stream(
                     }
                     continue;
                 }
-                take_video(&mut incoming, &mut streamer, &packet, &mut received);
+                // Video still on its way after it was unwanted is dropped.
+                if wanted {
+                    take_video(&mut incoming, &mut streamer, &packet, &mut received);
+                }
             }
         }
         let now = std::time::Instant::now();
@@ -1572,8 +1637,10 @@ async fn receive_stream(
                 connection.udp.send(&request).await?;
             }
         }
-        // Ask for a keyframe after a loss, or when the decoder asked.
+        // Ask for a keyframe after a loss, or when the decoder asked, while
+        // the video is wanted.
         if (lost || shared.keyframe.load(Ordering::Relaxed))
+            && wanted
             && asked.elapsed() >= KEYFRAME_REQUESTS
             && let Some(media) = streamer.video
         {
@@ -2013,5 +2080,14 @@ mod tests {
         }
         assert_eq!(keyframes, [true, false, false]);
         assert_eq!(incoming[&11].assembler.codec(), Codec::Av1);
+    }
+
+    /// Unwanted, a stream's video is asked for at 0 by its SSRC, and
+    /// everything else, its sound among it, still in full; wanted again,
+    /// at 100.
+    #[test]
+    fn wants_a_streams_video_or_only_its_sound() {
+        assert_eq!(sink_wants(5001, false), json!({"any": 100, "5001": 0}));
+        assert_eq!(sink_wants(5001, true), json!({"any": 100, "5001": 100}));
     }
 }

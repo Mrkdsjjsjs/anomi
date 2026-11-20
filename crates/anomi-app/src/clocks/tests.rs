@@ -1,6 +1,8 @@
-//! The clocks: their waits run in front while something shows the time
-//! and go behind another window and in the tray; a tick writes again only
-//! what shows the time; nobody using the window for 15 s makes it idle.
+//! The clocks: their waits run while the window is live and something
+//! shows the time, and go while it rests unfocused, is hidden or is in the
+//! tray; becoming live says the time again at once; a tick writes again
+//! only what shows the time; nobody using the window for 15 s makes it
+//! idle.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -9,6 +11,7 @@ use iced::mouse;
 use yapfast_core::application::Action;
 use yapfast_core::clock::now_ms;
 
+use anomi_theme::motion::Background;
 use anomi_vm::sidebar::Place;
 
 use super::away::{self, LAST_USE, QUIET};
@@ -50,24 +53,73 @@ fn lasted(app: &App) -> &str {
     &row.expect("the lounge's row").lasted
 }
 
+/// The lounge's row says what no clock would, as one that didn't tick.
+fn stale(app: &mut App) {
+    let Place::Server(server) = &mut app.vm.sidebar.place else {
+        panic!("a server's channels");
+    };
+    let row = server
+        .channels
+        .rows
+        .iter_mut()
+        .find(|row| row.id == "lounge");
+    row.expect("the lounge's row").lasted = "stale".into();
+}
+
+/// The tests' desktop can't say what covers the window, so unfocused it
+/// rests (`Background::Nothing`), as it did before the setting.
 #[test]
-fn the_clocks_run_only_in_front_while_something_shows_the_time() {
+fn the_clocks_run_only_while_the_window_lives_and_something_shows_the_time() {
     let mut window = start("clocks-quiet", true);
     let app = &mut window.app;
     drop(app.dispatch(Action::Open("general".into())));
     assert!(running(app)[1], "the timeline's day");
     drop(app.update(Message::Focused(false)));
-    assert!(!app.clocks.running()[1], "behind another window");
+    assert!(!app.clocks.running()[1], "unfocused, at rest");
     let mut window = busy("clocks-front");
     let app = &mut window.app;
     assert!(app.shown.sidebar.timed, "the call's length shows");
     assert!(running(app)[0]);
     drop(app.update(Message::Focused(false)));
-    assert_eq!(app.clocks.running(), [false; 3], "behind another window");
+    assert_eq!(app.clocks.running(), [false; 3], "unfocused, at rest");
     drop(app.update(Message::Focused(true)));
     assert!(app.clocks.running()[0], "in front again");
     app.hidden = true;
+    drop(crate::window::sight(app));
     assert_eq!(running(app), [false; 3], "in the tray");
+}
+
+/// On screen but unfocused, where the setting keeps what matters going,
+/// the clocks run as in front; hidden, under any setting and focused or
+/// not, none does.
+#[test]
+fn the_clocks_run_on_screen_as_the_setting_says_and_never_hidden() {
+    let mut window = busy("clocks-visible");
+    let app = &mut window.app;
+    app.motion.front = false;
+    for background in [Background::Usual, Background::Important] {
+        app.motion.background = background;
+        assert!(running(app)[0], "on screen, {background:?}");
+    }
+    app.motion.background = Background::Nothing;
+    assert_eq!(running(app), [false; 3], "on screen, at rest");
+    app.motion.background = Background::Usual;
+    app.motion.unseen = true;
+    assert_eq!(running(app), [false; 3], "hidden");
+    app.motion.front = true;
+    assert_eq!(running(app), [false; 3], "focused, but covered");
+}
+
+/// Coming back live writes at once what a clock that didn't tick left.
+#[test]
+fn becoming_live_says_the_time_again_at_once() {
+    let started = now_ms() / 1000 - 600;
+    let mut window = busy_since("clocks-again", started);
+    let app = &mut window.app;
+    stale(app);
+    super::again(app);
+    let now = yapfast_core::clock::lasted(started, now_ms() / 60_000 * 60);
+    assert_eq!(lasted(app), now);
 }
 
 #[test]
@@ -81,15 +133,7 @@ fn a_minute_writes_again_only_the_words_that_changed() {
     assert_eq!(lasted(app), now());
     let due = app.clocks.minute.as_ref().expect("the minute's wait").due;
     assert_eq!(due % 60_000, 0, "a whole minute");
-    let Place::Server(server) = &mut app.vm.sidebar.place else {
-        panic!("a server's channels");
-    };
-    let row = server
-        .channels
-        .rows
-        .iter_mut()
-        .find(|row| row.id == "lounge");
-    row.expect("the lounge's row").lasted = "stale".into();
+    stale(app);
     let version = app.vm.sidebar.version;
     drop(app.update(Message::Clock(Tick::Minute(due + 1))));
     assert_eq!(lasted(app), "stale", "a wait that was set again since");

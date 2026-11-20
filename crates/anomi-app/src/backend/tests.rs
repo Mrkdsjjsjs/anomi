@@ -86,6 +86,30 @@ fn behind_another_window_typing_and_the_list_wait_for_the_front() {
     assert_eq!(listed(app), ["Ann", "Bob"]);
 }
 
+/// On screen but unfocused: typing goes on where the setting keeps what
+/// matters going, the member list only where it keeps everything going;
+/// hidden, neither.
+#[test]
+fn on_screen_typing_goes_on_and_the_list_as_the_setting_says() {
+    use anomi_theme::motion::Background;
+    let mut window = start("gate-visible", true);
+    let app = &mut window.app;
+    drop(app.dispatch(Action::Open("general".into())));
+    app.motion.front = false;
+    app.motion.background = Background::Important;
+    drop(app.update(Message::AskPictures));
+    assert!(passes(app, typing("general", "Sam")), "typing goes on");
+    assert!(!passes(app, members(&["Ann", "Bob"])), "the list waits");
+    app.motion.background = Background::Usual;
+    drop(app.update(Message::AskPictures));
+    assert_eq!(listed(app), ["Ann", "Bob"], "shown as it is now");
+    assert!(passes(app, members(&["Ann"])));
+    app.motion.unseen = true;
+    drop(app.update(Message::AskPictures));
+    assert!(!passes(app, typing("general", "Sam")), "hidden");
+    assert!(!passes(app, members(&["Ann", "Bob"])));
+}
+
 #[test]
 fn in_the_tray_nothing_passes_and_the_window_shown_again_shows_the_latest() {
     let mut window = start("gate-tray", true);

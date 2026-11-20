@@ -37,6 +37,10 @@ pub struct Kept {
     pub(crate) repaint: Repaint,
     /// A tray is there to close the window to, as Settings opened.
     pub(crate) tray: bool,
+    /// The desktop says when it paints the window, as Settings opened
+    /// (`crate::window::Sighting::exact`): Advanced's default for an
+    /// unfocused window on screen, and its line where the desktop can't.
+    pub(crate) exact: bool,
     /// The voice gate's level and the microphone test, while measured.
     #[cfg(feature = "discord")]
     pub(crate) gate: Option<crate::intent::settings::gate::Gate>,

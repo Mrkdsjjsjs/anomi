@@ -254,6 +254,64 @@ fn optimization_keeps_what_draws_the_interface() {
     assert_eq!(file["gpu_rendering"], false, "the Slint app's, as it came");
 }
 
+/// The desktop said whether it tells when it paints the window.
+fn detected(app: &mut App, exact: bool) {
+    use crate::window::seen::Heard;
+    drop(app.update(crate::message::Message::Sight(Heard::Detected(exact))));
+}
+
+/// What a window on screen but not focused keeps doing, chosen on Advanced.
+fn unfocused(app: &mut App, chosen: anomi_vm::settings::advanced::Background) {
+    use anomi_vm::settings::advanced::Intent as Advanced;
+    send(app, Intent::Advanced(Advanced::Background(chosen)));
+}
+
+/// Optimization: what the window keeps doing on screen but not focused.
+/// Until one is chosen, what matters where the desktop says when the window
+/// is covered, and nothing where it can't, with the line that says so. A
+/// choice is kept in lowercase, on any desktop, and in force at once.
+#[test]
+fn optimization_keeps_what_an_unfocused_window_does() {
+    use anomi_theme::Background as Applied;
+    use anomi_vm::settings::advanced::Background;
+    let mut window = start("settings-unfocused", true);
+    let app = &mut window.app;
+    detected(app, false);
+    drop(super::open(app, Page::Advanced));
+    let page = &app.vm.settings.advanced;
+    assert_eq!((page.background, page.exact), (Background::Nothing, false));
+    assert_eq!(app.motion.background, Applied::Nothing, "what's in force");
+    // Opened again on a desktop that tells.
+    send(app, Intent::Frame(frame::Intent::Close));
+    drop(crate::intent::handle(
+        app,
+        shell::Intent::Gone(Layer::Settings).into(),
+    ));
+    detected(app, true);
+    drop(super::open(app, Page::Advanced));
+    let page = &app.vm.settings.advanced;
+    assert_eq!((page.background, page.exact), (Background::Important, true));
+    assert_eq!(app.motion.background, Applied::Important);
+    assert_eq!(app.layout.background_updates, None, "nothing kept");
+
+    drop(app.update(crate::message::Message::Focused(false)));
+    assert!(app.vm.chrome.live, "what matters goes on");
+    assert!(!app.motion.members_live(), "the member list waits");
+    unfocused(app, Background::Usual);
+    let shown = app.vm.settings.advanced.background;
+    assert_eq!(shown, Background::Usual, "shown at once");
+    assert!(app.motion.members_live(), "and in force");
+    unfocused(app, Background::Nothing);
+    assert!(!app.vm.chrome.live, "the window rests at once");
+    assert_eq!(written(app)["background_updates"], "nothing");
+    // A choice holds where the desktop can't tell.
+    unfocused(app, Background::Important);
+    detected(app, false);
+    assert_eq!(app.motion.background, Applied::Important);
+    assert!(app.vm.chrome.live);
+    assert_eq!(written(app)["background_updates"], "important");
+}
+
 #[test]
 fn the_sections_search_and_a_copy_change_the_frame_alone() {
     let mut window = opened("settings-frame", Page::About);

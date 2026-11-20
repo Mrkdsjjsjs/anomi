@@ -331,7 +331,9 @@ sequenceDiagram
   (`anomi-app/src/backend/gate.rs`) keeps out what the window doesn't
   show: who's typing in a conversation that isn't open, and the member
   list while it's hidden (or nothing reads it), each room's latest alone;
-  behind another window or in the tray, both. A batch left empty is no
+  both while the window isn't live, and the member list also while it's on
+  screen but not focused, unless the setting keeps everything going there
+  ([the background rule](#the-background-rule)). A batch left empty is no
   message, so iced runs no `update`, `view` or layout for it. The core
   takes what waited before the next message of any kind is handled, and
   what shows it is shown again as soon as it shows (`backend::follow`,
@@ -409,95 +411,360 @@ read at draw time.
 The durations and curves of `ui/theme.slint` are `anomi_theme::motion`:
 `QUICK` 120 ms, `SLIDE` 180, `LINGER` 400, `POPUP` 150, `DIALOG` 220, `LEAVE`
 120, `ARRIVE` = `cubic-bezier(0.22, 1, 0.36, 1)`, `GLIDE` = ease-in-out.
-`Motion { front, never, idle }` says whether anything may move; every
+
+`Motion { front, unseen, background, never, idle }` says where the window
+stands and what may move or keep going there. Where it stands is
+`motion.sight()`, one of three (`anomi_theme::Sight`):
+
+- **Front**: focused, and the desktop paints it.
+- **Visible**: painted but not focused, as on a second monitor beside a
+  game.
+- **Hidden**: not painted, focused or not: in the tray, minimised, covered,
+  on another workspace, the screen off.
+
+`front` is the keyboard focus. `unseen` says the desktop doesn't paint the
+window, and `background` is the setting for a visible window as it applies
+on this desktop; the app's `window::sight` sets both
+([the background rule](#the-background-rule)). `never` is Messages' "Play
+GIFs, emoji and stickers" set to Never. `idle` is nobody using the window
+for 15 s (a key, a click or the wheel, as Discord's client counts it:
+`anomi-app/src/clocks/away.rs`, which tells the core, and so Discord). A
+view asks:
+
+| Ask | True | For |
+| --- | --- | --- |
+| `motion.front` | focused, painted or not | what asks for attention ([what follows the focus](#what-follows-the-focus)) |
+| `motion.live()` | Front; Visible unless the setting is `Nothing` | what matters: the clocks, video, cameras, who's typing, the previews of streams |
+| `motion.members_live()` | Front; Visible under `Usual` | the member list's presence |
+| `motion.playing()` | as `members_live()`, unless `never` | transitions and loops; `still()` is its opposite |
+| `motion.watched()` | `playing()`, and not `idle` | what only decorates: moving pictures, a skeleton's sweep, the typing dots |
+
+Hidden, all but `front` are false, whatever the setting. Every
 animation takes its duration from `motion.duration(token)` or
-`motion.animation(...)`, which are zero while `still()`. An animation either
-lives in the app's state, interpolated in `view` at the frame time from
-`window::frames()` (subscribed only while it plays and the window is in
-front), or in a widget's tree state, as `RailItem` keeps its pill: the widget
-asks `shell.request_redraw()` on each `RedrawRequested` only while it plays,
-and lands at once when `motion.still()`. Scrollables get
-`.smooth_scroll(motion.playing())`. The settings' "never animate" sets
-`never`; the window's focus sets `front`; nobody using the window for 15 s
-(a key, a click or the wheel, as Discord's client counts it) sets `idle`
-(`anomi-app/src/clocks/away.rs`), which the core tells Discord and which
-holds what only decorates (`motion.watched()`: moving pictures, a
-skeleton's sweep, the typing dots) and the carets, the composer's and
-every field's (`anomi_widgets::field`'s well, and `field::steady` for the
-sidebar's search), steady and shown.
+`motion.animation(...)`, which are zero while `still()`. An animation
+either lives in the app's state, interpolated in `view` at the frame time
+from `window::frames()` (subscribed only while it plays), or in a widget's
+tree state, as `RailItem` keeps its pill: the widget asks
+`shell.request_redraw()` on each `RedrawRequested` only while it plays, and
+lands at once when `motion.still()`. A list's rows sliding to their places
+(`anomi_widgets::list`) settle the same way: they glide while
+`motion.playing()` and land at once otherwise, with animations turned off
+as on a window resting or hidden. Scrollables get
+`.smooth_scroll(motion.playing())`. The composer's caret blinks only while
+`front` and not `idle`; while `idle` every caret, the composer's and every
+field's (`anomi_widgets::field`'s well, and `field::steady` for the
+sidebar's search), shows steady.
+
+`Motion::default()` is a window visible but not focused, under `Nothing`:
+nothing live, nothing moving. Tests and shots make a window in front with
+`Motion { front: true, ..Motion::default() }`; a `const` one names every
+field, `unseen: false` and `background: Background::Nothing` among them.
 
 ## The background rule
 
-While the window isn't in front nothing ticks or redraws: the owner plays
-games with this client open. Concretely:
+The owner plays games with this client open, on the game's monitor or
+beside it on another. So the window keeps going while it's seen and does
+nothing while it isn't: what keeps it alive follows its sight
+([Motion](#motion)), what asks for attention follows its focus, and while
+it's hidden nothing ticks, polls or wakes, whatever the setting.
 
-- Nothing ticks on a period: no `time::every`. Each kind of clock (the
+| | Front | Visible, Everything | Visible, What matters | Visible, Rest | Hidden |
+| --- | --- | --- | --- | --- | --- |
+| Messages, unread, the title and the tray, sounds, the call's state, who speaks, joins and mutes | yes | yes | yes | yes | yes: a view and a layout, no frame; in the tray, nothing built |
+| Notifications, the taskbar's flash | no | yes | yes | yes | yes |
+| Marking read, the composer's caret, popups kept open, Settings' microphone and camera tests, the core's `WindowFocused` | yes | no | no | no | only while focused |
+| Clocks: the minute's, the day's, the second's, the dock's call time, the time on a voice row's card | yes | yes | yes | no | no |
+| A stream watched, cameras, a message's video | yes | yes | yes | no | no |
+| Who's typing in the open conversation and thread | yes | yes | yes | no | no |
+| The previews of streams not watched | yes | yes | yes | no | no |
+| The member list's presence | yes | yes | waits for the focus | waits | waits |
+| Transitions: popups, glides, the rings' colour, a list's rows | yes | yes | land at once | land | land |
+| Loops: GIFs, emoji, stickers, the typing dots, a skeleton, a spinner | until 15 s idle | until 15 s idle | no | no | no |
+
+### The setting
+
+What a visible window that isn't focused keeps doing is
+`anomi_theme::Background`. Settings' Advanced offers it under Optimization,
+"When the window is on screen but not focused" («Когда окно на виду, но не
+в фокусе»): Everything (`Usual`, «Всё как в фокусе»), What matters
+(`Important`, «Только важное») and Rest (`Nothing`, «Замирает»).
+`layout.json` keeps it as `background_updates`, `"usual"`, `"important"`
+or `"nothing"`, absent until chosen. Unchosen, `window::background` takes
+What matters where the desktop says when it paints the window
+(`Sighting.exact`, [what each desktop can tell](#what-each-desktop-can-tell),
+the test display alone) and Rest where it can't, GNOME's included, so that
+by default a window a game covers rests on every desktop; the page shows that value as chosen and, where the
+desktop can't tell, says so under the choice. A choice works the sight out
+again (`window::sight`). Hidden, no choice counts.
+
+What matters keeps a call, a stream and the clocks going on a second
+monitor; the member list's presence, the dearest in a busy server, waits
+for the focus and shows as it comes, and transitions and loops rest.
+Messages' "Play GIFs, emoji and stickers" says "While Yapfast is focused",
+which holds under the default; under Everything they also play on a
+visible window, until it idles.
+
+### Where the window stands
+
+`anomi-app/src/window.rs` keeps the window's sight. `window::sight(app)`
+works it out again from:
+
+- the focus: `Message::Focused` reaches `window::focused`, which sets
+  `motion.front` and `Chrome.focused` and does what follows the focus;
+- the tray, `App::hidden`: closing to it (`platform::forget::window`),
+  starting in it (`platform::start`), and a window made again out of it
+  (`platform::forget::shown_again`, which starts it painted and not
+  minimised: `window::made`);
+- `App::sighting`, a `window::Sighting`: `minimised`, a size of 0, as
+  Windows says it in `Message::Resized`; `unpainted`, from the frame
+  watchdog; `covered`, for a watcher of the desktop's own, which nothing
+  sets yet; and `exact`, whether the frames can tell.
+
+It sets `motion.unseen` (in the tray, minimised, unpainted or covered),
+`motion.background` and `Chrome.live`, and logs "the window's sight" with
+`sight` and `live` (`YAPFAST_LOG=debug`). When `live`
+changes, a window turning live has every clock say the time again
+(`clocks::again`), and either way the call's feeds are placed again and the
+message's video followed or let go (`Reach::VOICE | Reach::VIDEO`). The
+clocks' waits (`clocks::arm`) and the backend's gate (`backend::follow`)
+run after every update and follow with no call of their own.
+
+`Chrome.live` is `motion.live()` in the view-model, for the projections,
+which have no `Motion`: `media::show` follows a message's video only while
+it's set, and `project::voice::place` hands it to the call's
+`lives::Sight.live`. `Chrome.focused` stays the focus, for the title's ink.
+
+### The frame watchdog
+
+Nothing tells an iced window at this pin whether it's seen: iced's window
+events have no occlusion, winit reports none on Wayland or Windows, and it
+leaves Wayland's `suspended` out. But on Wayland winit draws a frame only
+once the compositor's frame callback for the one before came, and a
+compositor may send none to a window it doesn't paint; and iced hands every
+frame it drew to the subscriptions as `window::Event::RedrawRequested(at)`.
+So `anomi-app/src/window/seen.rs` reads the window's sight from its frames,
+with no timer of its own.
+
+- **What it watches.** Three atomics: the time of the last frame drawn, the
+  first redraw asked after it, and a probe. The window's one event filter
+  is `event::listen_raw`, as `listen_with` drops frames; it hands each
+  frame to `seen::drawn` before the keybinds and `away` see any event, and
+  while the window counts as painted a frame brings no message.
+  `seen::asked` notes a redraw asked: at the end of every update
+  (`window::asked`; iced redraws every window after one), and for each
+  frame the media task takes in (`media/frames.rs`, which asks a redraw
+  with no update). It notes one no earlier than a millisecond after the
+  last frame drawn, as iced stamps a frame with the display's next refresh,
+  up to a refresh ahead.
+- **Its two thresholds.** `UNPAINTED`, 1 s: a redraw asked that long ago
+  and still not drawn means the desktop doesn't paint the window. `AGAIN`,
+  0.5 s: two frames drawn that close together mean it's painted again.
+- **Judging.** Every update starts with `window::judge`, which turns the
+  probe and sets `Sighting.unpainted` in one step, then works the sight
+  out again. The media task takes frames without an update, so it only
+  looks (`seen::due`) and, when a redraw is late, sends
+  `Message::Sight(Heard::Late)`, a message that does nothing but bring
+  that update. So the window hears it's unseen in the same update that
+  turned the probe, and a "painted" from a frame drawn meanwhile can't come
+  before it, which would leave the window hidden for good. A worker's frame
+  isn't taken while the one before is unread, so under a held draw the
+  task wakes for each frame made and asks nothing: that's how a window
+  covered during a video, a stream or a camera is caught.
+- **Painted again.** While unseen, every frame drawn is heard: the first is
+  `Heard::First`, only logged, and the update it brings asks a redraw; a
+  second within `AGAIN` of it is `Heard::Seen`, which clears `unpainted`.
+  One frame isn't enough: mutter hands even a window it doesn't paint one
+  frame for each configure (as it suspends a covered window, about 3 s
+  after it was covered), and only a painted window draws the redraw that
+  frame's update asks. A frame further than `AGAIN` from the one before is
+  a first again, which brings an update only `REPROBE` (2 s) after the
+  first before it: where the GPU draws straight into a hidden window
+  (`vendor/iced_wgpu`), each frame waits a second for an image the
+  compositor keeps, and an update for each would ask the next for good. A
+  window uncovered less than 2 s after a configure's lone frame is painted
+  again with the next thing that draws it: input, a message, the focus.
+- **Why it needs no timer.** It judges only where something asks to draw:
+  an update (a clock's wait ending, a batch of the backend's that the gate
+  let through, input) or a frame made for a video or a camera. A window
+  with nothing to draw asks nothing and costs nothing, judged or not, and
+  `anomi_widgets::clock` stops by itself under a held draw, as it asks its
+  next second only from a frame drawn.
+- **How long it takes.** Covering a window doesn't hold the first redraw
+  asked after it: the compositor answered the last frame's callback while
+  it still painted the window, so winit draws that one at once, and only
+  the next waits. The window turns hidden at the first thing that asks to
+  draw `UNPAINTED` or more after that second ask: a second and a frame
+  during a video, a stream or a camera; with nothing on screen but a
+  minute's clock, at its third tick, each tick meanwhile a view and a
+  layout but no frame.
+- **Mistaken.** An update longer than a second, or a compositor stalled
+  for a second, make the window hidden until two frames come close
+  together: a moment frozen, and the call's feeds placed again. A frame
+  counts as the window's filter hears of it, not by iced's stamp, which
+  rounds up to the display's refresh, so two frames within one refresh
+  can't leave a redraw asked between them waiting for good; and nothing is
+  judged before a renderer's first frame (a window made, out of the tray,
+  or another renderer), as making one blocks iced's loop.
+- **In tests.** No frame is drawn in a test, so `judge` and `asked` do
+  nothing under `cfg!(test)`: `seen.rs` tests its pure `late` and `again`,
+  and `window/tests.rs` sets the sighting through `window::heard`.
+
+### What each desktop can tell
+
+| Desktop | Covered by another window | Shown on another monitor | Minimised, another workspace, locked | `exact` |
+| --- | --- | --- | --- | --- |
+| GNOME's mutter, on Wayland | frames stop: Hidden; a maximised window under a fullscreen one: frames go on, Visible | frames go on: Visible | frames stop: Hidden | no |
+| Weston (`scripts/ui-session`'s display) | frames stop: Hidden | one output only | minimised: frames stop, Hidden | yes |
+| KWin | frames go on: Visible | Visible | frames stop: Hidden | no |
+| Other Wayland compositors | not known | Visible | not known | no |
+| X11 | drawn at once: Visible | Visible | drawn at once: Visible | no |
+| Windows | drawn at once: Visible | Visible | minimised: a size of 0, Hidden | no |
+
+`exact` is set as the window opens (`platform::window::detect`): the test
+display alone (`YAPFAST_FRAMEWORK_ISOLATED_DISPLAY=1`). mutter 51 on its
+headless monitors stopped the frames of a covered window, but went on at
+60 a second for a maximised one under a fullscreen window, as a game would
+cover it, so GNOME counts as a desktop that can't tell. Until it answers,
+and on every desktop but the test display, the window counts as on one
+that can't tell, whose default is Rest: there a window that isn't focused
+rests, as before the sight, and only Everything or What matters, chosen by
+hand, keep it going on a second monitor, and behind a game where the
+frames don't stop. The frames still make it Hidden where they stop:
+minimised, on another workspace, covered where mutter culls. A watcher of
+its own for X11 or Windows would set `Sighting.covered` and make the
+desktop exact; none is written.
+
+What the frames can't tell, even on mutter:
+
+- mutter culls only a cover that's opaque, untransformed and without
+  effects, and not a maximised window under a fullscreen one; a game
+  whose surface has an alpha channel, or one shown by direct scanout,
+  may leave the window Visible;
+- it goes on sending frames to a window being cast or recorded, or that
+  has clones, as in the overview, which then stays Visible;
+- two configures less than `AGAIN` apart to a hidden window read as
+  painted until the next judge, a second on;
+- a compositor that paces a hidden window's frames at less than two a
+  second keeps it hidden, at the cost of an update and a frame for each.
+
+### What follows the focus
+
+`motion.front` and `Chrome.focused` are the focus alone, painted or not,
+and gate what asks for attention, as Discord's client does:
+
+- the core's `WindowFocused`, which asks Discord for the Activity panel's
+  feed only in front;
+- marking the newest messages read (`intent::chat::reading`, and the
+  timeline's report of the rows in view);
+- notifications and the taskbar's flash, only while unfocused
+  (`effects::notify`);
+- what hangs off the window, closed on `Unfocused`
+  (`intent::shell::unfocused`): menus, popovers, cards and pickers; tips
+  hidden, a held press let go, a list's drag put back;
+- the composer's caret blinking, a selection's drag, a list's autoscroll
+  under the pointer, its wheel, its drag edge and its reports of the rows
+  in view, a channel row holding its hover;
+- Settings' Voice & video: the gate's meter, the microphone test and the
+  camera test run only while the page shows, focused and out of the tray;
+  another page, Settings closed, the focus gone or the tray drop them, and
+  the microphone and the camera close;
+- the title's brighter ink (`Chrome.focused`).
+
+A window that's focused but hidden, under a full screen window that didn't
+take the focus or with the screen blanked, keeps these and nothing else.
+
+### Piece by piece
+
+- **Nothing ticks on a period**: no `time::every`. Each kind of clock (the
   minute, the day, the second) is one wait set for the moment its words
-  next change (`anomi-app/src/clocks.rs`), running only while the window is
-  in front and something shows it, dropped behind another window or in the
-  tray, and every clock is said again the moment the window comes back. A
-  tick reaches only what shows the time (`Reach::MINUTE`, `Reach::DAY`).
-  `window::frames()` is subscribed only while an animation in the app's
-  state plays in front; test it with `subscription().units()`.
-- Widgets request frames only while an animation plays, and none while
-  `still`.
-- A video's or a camera's frames reach the window through one task waiting
-  on the core's frame wake (`anomi-app/src/media/frames.rs`): each frame is
-  put in its `kind::Live` and asks for a redraw with no message, so the
-  damage is its rectangle and no view is built; only a source's first frame
-  and a video's bar moving a step (four times a second) build the view.
-  The task follows sources only while they can be seen: in front, not
-  paused or ended, full screen or with their row in view.
-- A call (`anomi-app/src/project/voice`): its cameras and streams go
-  through the same task, each feed told the size its tile shows at or
-  that it doesn't (scrolled away, covered by Settings, the window behind
-  or in the tray), so nothing is decoded for display that can't be seen;
-  the input menu's level is a `kind::Level` a task off the window's thread
-  stores 20 times a second while the menu shows in front, asking a redraw
-  only when a segment lit or went out; the dock's time is
-  `anomi_widgets::clock`, which shapes it as it draws and asks a frame at
-  the next whole second in front, building no view; who speaks, mutes or
-  joins builds that tile's view-model alone. The previews of streams not
-  watched are asked for again every five minutes, as their streamers'
-  clients upload them, only while their tiles are in sight in front
+  next change (`anomi-app/src/clocks.rs`), running only while
+  `motion.live()` and something shows it, dropped as the window stops being
+  live, and every clock is said again the moment it's live again
+  (`clocks::again`). A tick reaches only what shows the time
+  (`Reach::MINUTE`, `Reach::DAY`). `window::frames()` is subscribed only
+  while an animation in the app's state plays; test it with
+  `subscription().units()`.
+- **Widgets** request frames only while an animation plays, and none while
+  `still`. `anomi_widgets::clock` (the dock's call time, the time played on
+  a voice row's card) shapes its text as it draws and asks a frame at the
+  next whole second while `motion.live()`, building no view.
+- **Video and cameras.** A video's or a camera's frames reach the window
+  through one task waiting on the core's frame wake
+  (`anomi-app/src/media/frames.rs`): each frame is put in its `kind::Live`
+  and asks for a redraw with no message, so the damage is its rectangle
+  and no view is built; only a source's first frame and a video's bar
+  moving a step (four times a second) build the view. The task follows
+  sources only while they can be seen: the window live (`Chrome.live`), not
+  paused or ended, full screen or with their row in view; with none it
+  waits and nothing runs. A worker's mapping no longer followed (a
+  message's video, a stream watched, this account's own) is told
+  `Frames::pause`: a stream's worker then goes on decoding but makes no
+  picture for the window, and a message video's player keeps its clock and
+  its sound and writes no frame.
+- **A call** (`anomi-app/src/project/voice`): its cameras and streams go
+  through the same task, each feed told the size its tile shows at or that
+  it doesn't (scrolled away, covered by Settings, the window not live or in
+  the tray), so nothing is decoded for display that can't be seen; who
+  speaks, mutes or joins builds that tile's view-model alone. A stream
+  watched while the window stays hidden 5 s, or rests unfocused 30 s, is
+  asked of Discord with no video and its decoder dropped; its sound goes
+  on, and coming back asks for the video again with a keyframe
+  ([Go Live](../discord/go-live.md)). The previews of streams not watched
+  are asked for again every five minutes, as their streamers' clients
+  upload them, only while their tiles are in sight and the window is live
   (`intent/voice/previews.rs`), or a streamer's card shows beside their row
-  in the channel list: one wait for the next due, none behind another window
-  or in the tray, and one ask on coming back for those that fell due
+  in the channel list: one wait for the next due, none while the window
+  isn't live, and one ask on coming back for those that fell due
   meanwhile.
-- The card beside someone's row under a voice channel
+- **The card beside someone's row** under a voice channel
   (`intent/sidebar/hover.rs`): the row waits once, 300 ms, for the pointer
   to rest, and once, 200 ms, after it left the row and the card; the app
-  builds the card only while it shows, and its time played is an
-  `anomi_widgets::clock` that asks a frame at each whole second in front.
-  The window going behind another takes it away.
-- Settings' Voice & video (`anomi-app/src/intent/settings/{gate,camera}.rs`):
-  the voice gate's meter, the microphone test and the camera test run only
-  while the page shows in front; the gate's level is a `kind::Level` its
-  task stores 20 times a second, asking a redraw only when it moved a whole
-  dB, and the camera's frames reach the preview's `kind::Live` through the
-  media task. Another page, Settings closed or the window behind drop them,
-  and the microphone and the camera close.
-- Keybinds (`anomi-app/src/platform/keybinds`): the watcher blocks on the
-  X server or waits on the session bus for the portal, and the window's own
-  keys reach it from the event filter with no message, so nothing wakes
-  for them until a bound key goes down.
-- Backend events that change only what doesn't show reach no `update`
-  (the gate, under "From a click to the core and back"): behind another
-  window or in the tray, who's typing and the member list's presence
-  wait, as the clocks do, and show as the window comes in front again.
-  The rest still updates the window, once a batch, as Slint did: messages
-  and the account's snapshots (which mark read, notify and count unread
-  for the tray and the title) and the call (whose changes play sounds),
-  each a `view` and a layout of the window, which tiny-skia then redraws
-  only where it changed (wgpu redraws all of it).
-- Measured under `scripts/ui-session` on the fake Discord: at rest, behind
-  another window and in the tray, 0 CPU, and the main thread and iced's
-  executor wake only for a clock that shows (in front, once a minute for a
-  busy voice channel's row). Three threads wake on their own: the test
-  session's control-file reader (its private display only), the core's
-  network (the gateway's heartbeats) and the `blocking` crate's pool, which
-  zbus starts and whose idle thread wakes twice a second for good
-  (`docs/measurements/README.md` says what would end it).
+  builds the card only while it shows, and its time played ticks while the
+  window is live. The focus going takes it away with the other cards.
+- **Keybinds** (`anomi-app/src/platform/keybinds`): the watcher blocks on
+  the X server or waits on the session bus for the portal, and the window's
+  own keys reach it from the event filter with no message, so nothing
+  wakes for them until a bound key goes down.
+- **The backend's gate.** Backend events that change only what doesn't
+  show reach no `update` (the gate, under "From a click to the core and
+  back"): who's typing waits while the window isn't live, and the member
+  list's presence unless `motion.members_live()`; each shows as soon as the
+  window shows it again. The rest still updates the window, once a batch,
+  as Slint did: messages and the account's snapshots (which mark read,
+  notify and count unread for the tray and the title) and the call (whose
+  changes play sounds), each a `view` and a layout of the window, which
+  tiny-skia then redraws only where it changed (wgpu redraws all of it).
+  Hidden, the view and the layout are still made but the frame is held;
+  a window the desktop can't tell is covered (KWin, X11, Windows) draws
+  it as well.
+- **Measured** under `scripts/ui-session` on the fake Discord: a window at
+  rest that isn't live (unfocused under Rest, or in the tray) takes 0 CPU,
+  and the main thread and iced's executor wake only for a clock that shows
+  (while live, once a minute for a busy voice channel's row). Three threads
+  wake on their own: the test session's control-file reader (its private
+  display only), the core's network (the gateway's heartbeats) and the
+  `blocking` crate's pool, which zbus starts and whose idle thread wakes
+  twice a second for good. What each state costs, and what would end that
+  last thread: `docs/measurements/README.md`.
+
+### Seeing it
+
+`YAPFAST_LOG=debug scripts/ui-session start --anomi --discord --desktop
+--tray` (`--layout '{"background_updates": "usual"}'` for another
+setting; Anomi's log knows only debug, for every target): the test display
+is exact, so the log says `exact=true`,
+then "the window's sight" with `sight=Front`. Another client's window
+taking the focus beside it makes it `sight=Visible live=true`; one covering
+it makes it "the window isn't painted" and `sight=Hidden` about a second
+after the next draw asked (a stream's frame, a clock's tick, a message),
+and uncovered, "a frame drawn while unpainted", "the window is painted
+again" and `live=true`. `scripts/ui-session do 'window minimize'` and
+`'window close'` (to the tray, with `--tray`; without one it quits) make it
+hidden too; Weston's switcher (`'keydown 125' 'key tab' 'key tab' 'keyup
+125'`) brings a minimised window back, as a Wayland window can't itself. Record nothing
+meanwhile: Weston repaints the display for each capture. The rule's tests:
+`cargo test --profile fast -p anomi-theme motion`, and `-p anomi-app` with
+`window`, `clocks` or `backend`.
 
 ## Translation
 

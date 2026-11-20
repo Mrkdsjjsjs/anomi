@@ -1241,6 +1241,109 @@ async fn asks_again_when_address_discovery_is_lost() {
     assert_eq!(asks(), serde_json::json!({"dropped": 10, "answered": 2}));
 }
 
+/// The last viewer of Bob's stream to connect, as the fake's
+/// `/_control/video` lists it: what it was sent and asked for.
+fn stream_viewer(server: &str) -> serde_json::Value {
+    let video: serde_json::Value =
+        serde_json::from_str(&control(server, "GET", "/_control/video", "")).unwrap();
+    video["watchers"]
+        .as_array()
+        .and_then(|watchers| watchers.last())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Watches Bob's stream at `watched`, then wants none of its video, as the
+/// stream worker does while nobody sees its picture: the video stops
+/// coming and its sound goes on; wanted again, the video comes back from a
+/// keyframe the viewer asked for.
+fn hold_the_video(watched: &yapfast_discord::stream::StreamServer, server: &str) {
+    let wait_until = |what: &str, check: &dyn Fn() -> bool| {
+        let started = std::time::Instant::now();
+        while !check() {
+            assert!(started.elapsed() < WAIT, "timed out waiting until {what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let count = |viewer: &serde_json::Value, key: &str| viewer[key].as_u64().unwrap_or(0);
+    let decodes = vec![Codec::H264, Codec::Vp8];
+    let mut receiver = StreamReceiver::start(watched.clone(), decodes).unwrap();
+    let sounds = receiver.take_sounds().unwrap();
+    let started = std::time::Instant::now();
+    let mut came = 0;
+    while came < 3 {
+        assert!(started.elapsed() < WAIT, "{came} frames came");
+        came += usize::from(receiver.next(Duration::from_millis(100)).is_some());
+    }
+
+    receiver.want_video(false);
+    wait_until("the video was no longer wanted", &|| {
+        stream_viewer(server)["videoWanted"] == false
+    });
+    // What was on its way, then nothing.
+    while receiver.next(Duration::from_millis(300)).is_some() {}
+    let before = stream_viewer(server);
+    let heard = receiver.sounds_received();
+    while sounds.try_recv().is_ok() {}
+    std::thread::sleep(Duration::from_millis(700));
+    let after = stream_viewer(server);
+    let sent = |key| (count(&before, key), count(&after, key));
+    let (frames, later) = sent("framesSent");
+    assert_eq!(frames, later, "no video while it isn't wanted: {after}");
+    let (sound, later) = sent("soundsSent");
+    assert!(later >= sound + 25, "its sound went on: {after}");
+    assert!(receiver.sounds_received() >= heard + 25, "and came");
+    assert!(sounds.try_iter().count() >= 5, "to be played");
+    assert!(receiver.next(Duration::from_millis(100)).is_none());
+
+    // Wanted again: from a keyframe, which the viewer asked for at once.
+    receiver.want_video(true);
+    let started = std::time::Instant::now();
+    let frame = loop {
+        assert!(started.elapsed() < WAIT, "no video: {:?}", receiver.link());
+        if let Some(frame) = receiver.next(Duration::from_millis(100)) {
+            break frame;
+        }
+    };
+    assert!(frame.keyframe, "the video comes back from a keyframe");
+    let asked = count(&after, "keyframeRequests");
+    wait_until("the viewer asked for a keyframe", &|| {
+        count(&stream_viewer(server), "keyframeRequests") > asked
+    });
+    assert_eq!(receiver.link(), Link::Connected);
+}
+
+/// A watched stream nobody sees: its viewer asks Discord for none of its
+/// video, and its sound still comes; wanted again, the video comes back.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn holds_a_watched_streams_video_and_keeps_its_sound() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        lounge,
+        bob,
+        ..
+    } = Fixture::start("holds_a_watched_streams_video_and_keeps_its_sound").await;
+    let assigned = discord.join(&guild, &lounge).await.unwrap();
+    let _call = timeout(
+        WAIT,
+        Call::connect(&assigned, &guild, &lounge, Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to voice")
+    .unwrap();
+    let watched = discord
+        .watch(&stream::key(&guild, &lounge, &bob))
+        .await
+        .unwrap();
+    tokio::task::spawn_blocking(move || hold_the_video(&watched, server))
+        .await
+        .unwrap();
+}
+
 /// A call's audio, as [`Hearer`] hears it, why its connection dropped, and
 /// how often it connected where it moved.
 #[derive(Default)]

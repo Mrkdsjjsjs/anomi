@@ -3,10 +3,10 @@
 //! an [`Elapsed`] the view-model holds once, so a new second builds no view
 //! and lays nothing out: the text is shaped again when the frame's
 //! `RedrawRequested` comes, and the next frame is asked for at the next
-//! whole second, only while the window is in front. Behind another window
-//! nothing ticks; coming to the front draws the time it is then. It's laid
-//! out again only when the text grows past the room it was given, as at
-//! ten minutes and at an hour.
+//! whole second, only while the window is live (`Motion::live`). Hidden,
+//! or resting unfocused, nothing ticks; coming back draws the time it is
+//! then. It's laid out again only when the text grows past the room it was
+//! given, as at ten minutes and at an hour.
 
 use std::time::{Duration, Instant};
 
@@ -23,12 +23,12 @@ use anomi_vm::kind::Elapsed;
 
 type Paragraph = paragraph::Plain<<Renderer as core_text::Renderer>::Paragraph>;
 
-/// `elapsed` as `shown` writes it, ticking while `front`.
-pub fn clock(elapsed: Elapsed, shown: fn(Duration) -> String, front: bool) -> Clock {
+/// `elapsed` as `shown` writes it, ticking while `live`.
+pub fn clock(elapsed: Elapsed, shown: fn(Duration) -> String, live: bool) -> Clock {
     Clock {
         elapsed,
         shown,
-        front,
+        live,
         size: None,
         font: None,
         line_height: None,
@@ -39,7 +39,7 @@ pub fn clock(elapsed: Elapsed, shown: fn(Duration) -> String, front: bool) -> Cl
 pub struct Clock {
     elapsed: Elapsed,
     shown: fn(Duration) -> String,
-    front: bool,
+    live: bool,
     size: Option<Pixels>,
     font: Option<Font>,
     line_height: Option<text::LineHeight>,
@@ -165,7 +165,7 @@ impl<Message> widget::Widget<Message, Theme, Renderer> for Clock {
                 shell.invalidate_layout();
             }
         }
-        if self.front
+        if self.live
             && let Some(next) = self.elapsed.next_second(*now)
         {
             shell.request_redraw_at(next);

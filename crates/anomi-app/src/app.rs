@@ -65,6 +65,8 @@ pub struct App {
     /// No window shows (started in the tray, or closed to it): nothing is
     /// projected until one does (`platform::forget`).
     pub(crate) hidden: bool,
+    /// Whether the desktop paints the window (`crate::window::sight`).
+    pub(crate) sighting: crate::window::Sighting,
     /// The clocks' waits, and whether someone uses the window.
     pub(crate) clocks: crate::clocks::Clocks,
     /// What the effects asked of the desktop, which a test doesn't reach.
@@ -121,6 +123,7 @@ impl App {
             shift: false,
             desktop: platform::Desktop::default(),
             hidden: false,
+            sighting: crate::window::Sighting::default(),
             clocks: crate::clocks::Clocks::default(),
             #[cfg(test)]
             asked: effects::Asked::default(),
@@ -150,6 +153,7 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let unseen = crate::window::judge(self);
         // What waited in the backend's gate reaches the core first.
         let waited = backend::drain(self);
         let task = match message {
@@ -180,6 +184,7 @@ impl App {
             | Message::Recorded(_)
             | Message::CloseRequested(_)) => platform::update(self, message),
             Message::Focused(front) => crate::window::focused(self, front),
+            Message::Sight(heard) => crate::window::heard(self, heard),
             Message::Shift(held) => {
                 self.shift = held;
                 intent::chat::shift(self, held);
@@ -218,6 +223,7 @@ impl App {
         // before the pictures it wants are asked for.
         let shows = backend::follow(self);
         let task = Task::batch([
+            unseen,
             waited,
             task,
             timeline,
@@ -230,6 +236,7 @@ impl App {
             intent::settings::after(self),
             intent::people::profile::after(self),
         ]);
+        crate::window::asked(self);
         match self.layout.wait() {
             Some(wait) => Task::batch([task, later(layout::WRITE_AFTER, Message::LayoutDue(wait))]),
             None => task,

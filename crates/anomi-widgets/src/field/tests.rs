@@ -242,6 +242,8 @@ fn a_focused_fields_caret_stops_blinking_in_an_idle_window() {
 
     let front = anomi_theme::Motion {
         front: true,
+        unseen: false,
+        background: anomi_theme::motion::Background::Nothing,
         never: true,
         idle: false,
     };

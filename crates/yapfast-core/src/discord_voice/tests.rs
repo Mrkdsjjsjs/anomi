@@ -358,3 +358,181 @@ async fn measures_a_shared_screen_on_the_wire() {
     }
     println!("fake {video}");
 }
+
+/// Bob's stream in the Lounge, watched by a stream worker as the UI starts
+/// one, its pictures in frames the test pauses and hides as a window would:
+/// the frames, the feed that stops the worker, and the worker's thread.
+fn watch_bobs_stream(
+    server: &StreamServer,
+) -> (
+    crate::frames::Frames,
+    std::io::PipeWriter,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{BufReader, Write};
+    let frames = crate::frames::Frames::create(320, 180).unwrap();
+    let job = stream_worker::Job::Watch {
+        server: server.clone(),
+        frames: frames.path().unwrap(),
+        width: 320,
+        height: 180,
+        speakers: None,
+        deafened: true,
+        volume: 1.0,
+        cleaning: crate::volume::Cleaning::default(),
+    };
+    let (input, mut feed) = std::io::pipe().unwrap();
+    writeln!(feed, "{}", serde_json::to_string(&job).unwrap()).unwrap();
+    let worker = std::thread::spawn(move || {
+        stream_worker::serve(Box::new(BufReader::new(input)), &mut |report| {
+            if let Report::Ended { error: Some(error) } = report {
+                panic!("the worker ended: {error}");
+            }
+        });
+    });
+    (frames, feed, worker)
+}
+
+/// The fake's newest viewer of a stream, as `/_control/video` lists it.
+async fn stream_viewer(discord: &Discord) -> serde_json::Value {
+    let fake = yapfast_discord::client::test_server().unwrap();
+    let video = format!("{}/_control/video", fake.trim_end_matches('/'));
+    let body = discord.download(&video, 1 << 20).await.unwrap();
+    let all: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    all["watchers"].as_array().unwrap().last().cloned().unwrap()
+}
+
+/// Waits up to `within` until the fake's viewer satisfies `check`; how
+/// long that took.
+async fn viewer_until(
+    discord: &Discord,
+    within: Duration,
+    what: &str,
+    check: impl Fn(&serde_json::Value) -> bool,
+) -> Duration {
+    let started = std::time::Instant::now();
+    loop {
+        let viewer = stream_viewer(discord).await;
+        if check(&viewer) {
+            return started.elapsed();
+        }
+        assert!(started.elapsed() < within, "{what}: {viewer}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Waits up to `within` for a picture of the stream in `frames`.
+async fn picture(frames: &crate::frames::Frames, within: Duration) -> Duration {
+    let started = std::time::Instant::now();
+    while frames.take(|_, _, _| ()).is_none() {
+        assert!(started.elapsed() < within, "no picture");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    started.elapsed()
+}
+
+/// A watched stream nobody sees, through the stream worker: hidden, it
+/// makes no picture at once, and after 5 s it wants the video at 0 at
+/// Discord, whose sound goes on; shown again, a picture comes within a
+/// second, from the keyframe it asked for (the fake sends none before).
+/// Where Discord stops the sound along with the video
+/// (`/_control/stream-sound-with-video`), the worker asks for the video
+/// again at once, hears the sound come back with it, and holds it no more.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs testing/fake_discord.ts and YAPFAST_DISCORD_TEST_SERVER"]
+async fn holds_a_hidden_streams_video_and_its_sound_goes_on() {
+    use std::io::Write;
+    let _alone = ONE_AT_A_TIME.lock().await;
+    assert!(
+        std::env::var_os("PULSE_SERVER").is_some(),
+        "scripts/test-fake-discord sets PULSE_SERVER, so the stream's sound plays nowhere"
+    );
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let discord = Discord::start(yapfast_discord::token::load().unwrap()).unwrap();
+    let mut online = discord.snapshots();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        online.wait_for(|snapshot| snapshot.status == Status::Online),
+    )
+    .await
+    .expect("the fake Discord answers")
+    .unwrap();
+    let (guild, lounge, bob) = (
+        "1400000000000000100",
+        "1400000000000000103",
+        "1400000000000000002",
+    );
+    let assigned = discord.join(guild, lounge).await.unwrap();
+    let _call = tokio::time::timeout(
+        Duration::from_secs(10),
+        DiscordCall::connect(&assigned, guild, lounge, Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to voice")
+    .unwrap();
+    let server = discord
+        .watch(&stream::key(guild, lounge, bob))
+        .await
+        .unwrap();
+    let count = |viewer: &serde_json::Value, key: &str| viewer[key].as_u64().unwrap();
+
+    let (frames, mut feed, worker) = watch_bobs_stream(&server);
+    picture(&frames, Duration::from_secs(10)).await;
+    frames.pause(true);
+    frames.hide(true);
+    let hidden = std::time::Instant::now();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    frames.take(|_, _, _| ());
+    let held = viewer_until(&discord, Duration::from_secs(8), "held", |viewer| {
+        viewer["videoWanted"] == false
+    })
+    .await;
+    assert!(
+        hidden.elapsed() >= Duration::from_millis(4_900),
+        "held after {held:?}"
+    );
+    assert!(
+        frames.take(|_, _, _| ()).is_none(),
+        "no picture made hidden"
+    );
+    let before = stream_viewer(&discord).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let after = stream_viewer(&discord).await;
+    assert_eq!(count(&before, "framesSent"), count(&after, "framesSent"));
+    assert!(
+        count(&after, "soundsSent") >= count(&before, "soundsSent") + 40,
+        "the sound goes on: {after}"
+    );
+    frames.hide(false);
+    frames.pause(false);
+    let back = picture(&frames, Duration::from_secs(2)).await;
+    eprintln!("held after {held:?} hidden, a picture {back:?} after shown");
+    assert!(
+        count(&stream_viewer(&discord).await, "keyframeRequests")
+            > count(&after, "keyframeRequests")
+    );
+    writeln!(feed, "stop").unwrap();
+    worker.join().unwrap();
+
+    control("/_control/stream-sound-with-video").await;
+    let (frames, mut feed, worker) = watch_bobs_stream(&server);
+    picture(&frames, Duration::from_secs(10)).await;
+    frames.pause(true);
+    frames.hide(true);
+    viewer_until(&discord, Duration::from_secs(8), "held", |viewer| {
+        viewer["videoWanted"] == false
+    })
+    .await;
+    let again = viewer_until(&discord, Duration::from_secs(3), "wanted again", |viewer| {
+        viewer["videoWanted"] == true
+    })
+    .await;
+    eprintln!("the sound stopped with the video: wanted again {again:?} after");
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    let viewer = stream_viewer(&discord).await;
+    assert_eq!(viewer["videoWanted"], true, "not held again: {viewer}");
+    control("/_control/stream-sound-with-video?off").await;
+    writeln!(feed, "stop").unwrap();
+    worker.join().unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), discord.shut_down()).await;
+}

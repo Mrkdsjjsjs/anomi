@@ -8,7 +8,9 @@
 //! there at once. Advanced's Optimization moves the program onto the cores
 //! chosen, switches what draws the interface (`crate::gpu::choose`) and
 //! tells the stream workers where to encode and whether their bitrate may
-//! pass Discord's documented 9 Mbit/s, at once.
+//! pass Discord's documented 9 Mbit/s, at once; and what the window keeps
+//! doing on screen but not focused applies at once too
+//! (`crate::window::sight`).
 
 use iced::Task;
 use yapfast_core::application::Action;
@@ -277,10 +279,31 @@ pub(super) fn advanced(app: &mut App, intent: advanced::Intent) -> Task<Message>
             app.show(Reach::SETTINGS);
             return switched;
         }
+        // Kept whatever the desktop, and in force at once: the clocks, the
+        // call's pictures and the video follow or rest.
+        I::Background(shown) => {
+            let chosen = applied(shown);
+            app.layout
+                .edit(|saved| saved.background_updates = Some(chosen));
+            app.show(Reach::SETTINGS);
+            return crate::window::sight(app);
+        }
         intent => tracing::debug!(?intent, "nothing to change"),
     }
     app.show(Reach::SETTINGS);
     Task::none()
+}
+
+/// What a window on screen but not focused keeps doing, as chosen on
+/// Advanced, as the layout keeps it and the window applies it.
+fn applied(shown: advanced::Background) -> anomi_theme::Background {
+    use advanced::Background as Shown;
+    use anomi_theme::Background as Applied;
+    match shown {
+        Shown::Usual => Applied::Usual,
+        Shown::Important => Applied::Important,
+        Shown::Nothing => Applied::Nothing,
+    }
 }
 
 /// What choosing a way to spread over the cores keeps: choosing by hand

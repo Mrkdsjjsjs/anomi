@@ -91,7 +91,16 @@
 // FAKE_DISCORD_UDP_PORT binds
 // the voice servers' UDP socket to a port, and FAKE_DISCORD_VOICE_PORT has
 // op 2 name another, so a relay in front of the fake can see every datagram
-// a client sends (docs/discord/go-live.md, "Keeping the ceiling"). GET
+// a client sends (docs/discord/go-live.md, "Keeping the ceiling"). A
+// viewer of Bob's stream that wants its video at 0 with op 15 (by its SSRC,
+// or `any`) gets only its sound until it wants it again; then no video
+// comes until it asks for a keyframe (RTCP PLI), as a server forwards a
+// stream again from the keyframe its streamer sends when asked, and the
+// recording starts over from its first frame, a keyframe. Each viewer in
+// /_control/video's `watchers` says `videoWanted`, `framesSent` and
+// `soundsSent`. POST /_control/stream-sound-with-video has a viewer that
+// wants the video at 0 get none of the stream's sound either, as Discord's
+// server might (?off: the sound goes on, as by default). GET
 // /_control/video lists what each stream received, the previews streamers
 // uploaded (`previews`), and the streams whose preview was asked for with GET
 // /streams/{key}/preview, oldest first (`previewReads`), with how many times
@@ -4418,6 +4427,9 @@ let streamCodec: "vp8" | "h264" | "h265" | "av1" = "vp8";
  *  payload type 96 on the video's SSRC before each frame, with op 4 naming
  *  H264 whatever the stream is in (`stray`). */
 let streamQuirks = { unmarked: false, stray: false };
+/** A viewer that wants a stream's video at 0 gets none of its sound either
+ *  (POST /_control/stream-sound-with-video). */
+let soundWithVideo = false;
 
 /** A viewer of Bob's stream and what it was sent. */
 type Watcher = {
@@ -4429,6 +4441,15 @@ type Watcher = {
   repairs: typeof repairs;
   /** Sends Bob's packet with this sequence number again, as RTX. */
   resend?: (sequence: number) => void;
+  /** A stream's video SSRC, which op 15 names to want the video at 0 or
+   *  again, and whether its viewer wants it: at 0 the video stops and the
+   *  sound goes on. Wanted again, it waits for the viewer's keyframe
+   *  request (`awaitingKeyframe`), then the recording starts over from its
+   *  first frame, a keyframe (`restart`). */
+  videoSsrc?: number;
+  videoWanted?: boolean;
+  awaitingKeyframe?: boolean;
+  restart?: boolean;
 };
 const watchers = new Map<number, Watcher>();
 /** Each viewer's transport key, by its SSRC, to read its RTCP. */
@@ -4513,12 +4534,28 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
   const fps = camera ? 30 : (watcher.recording?.fps ?? 10);
   // Which 100 ms of sound comes next: one each tick at 10 frames a second.
   let sound = 0;
+  // The frame the recording starts from: again from its first, a keyframe,
+  // when a stream's viewer wants the video again (op 15).
+  let first = 0;
   watcher.timer = setInterval(() => {
     const timestamp = frame * (90000 / fps);
     const recorded = watcher.recording ?? recordings;
-    if (streamQuirks.stray && !camera) send(Buffer.alloc(0), false, timestamp, 96);
-    if (watcher.codec === "vp8") {
-      const { data } = recorded.vp8[frame % recorded.vp8.length]!;
+    // A stream's viewer that wants its video at 0 gets its sound alone, or
+    // nothing with /_control/stream-sound-with-video; wanted again, no
+    // video until it asks for a keyframe.
+    const held = !camera && (watcher.videoWanted === false || watcher.awaitingKeyframe === true);
+    const quiet = !camera && watcher.videoWanted === false && soundWithVideo;
+    if (watcher.restart && !held) {
+      watcher.restart = false;
+      first = frame;
+    }
+    // Which of the recording's frames goes now.
+    const nth = frame - first;
+    if (streamQuirks.stray && !camera && !held) send(Buffer.alloc(0), false, timestamp, 96);
+    if (held) {
+      // No video: the sound below goes on.
+    } else if (watcher.codec === "vp8") {
+      const { data } = recorded.vp8[nth % recorded.vp8.length]!;
       for (let at = 0; at < data.length; at += 1100) {
         const descriptor = Buffer.from([at === 0 ? 0x90 : 0x80, 0x80, 0x80 | (picture >> 8), picture & 0xff]);
         send(Buffer.concat([descriptor, data.subarray(at, at + 1100)]), at + 1100 >= data.length, timestamp, 105);
@@ -4529,7 +4566,7 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
       // one in fragments: W of 1, Z and Y marking fragments, and N on a
       // keyframe's first packet, which starts with its sequence header,
       // unless the stream leaves N out.
-      const { elements, keyframe } = av1Recording[frame % av1Recording.length]!;
+      const { elements, keyframe } = av1Recording[nth % av1Recording.length]!;
       const marked = keyframe && !streamQuirks.unmarked;
       elements.forEach((element, index) => {
         const last = index === elements.length - 1;
@@ -4542,7 +4579,7 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
     } else if (watcher.codec === "h265") {
       // RFC 7798: whole NAL units, or fragmentation units (type 49) with
       // the unit's type in their header.
-      const { units } = h265Recording[frame % h265Recording.length]!;
+      const { units } = h265Recording[nth % h265Recording.length]!;
       units.forEach((unit, index) => {
         const last = index === units.length - 1;
         if (unit.length <= 1100) return send(unit, last, timestamp, 103);
@@ -4555,7 +4592,7 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
       });
     } else {
       const h264 = camera ?? recorded.h264;
-      const { units } = h264[frame % h264.length]!;
+      const { units } = h264[nth % h264.length]!;
       units.forEach((unit, index) => {
         const last = index === units.length - 1;
         if (unit.length <= 1100) return send(unit, last, timestamp, 101);
@@ -4567,12 +4604,13 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
         }
       });
     }
-    watcher.framesSent++;
+    if (!held) watcher.framesSent++;
     // Each 100 ms of sound from Bob's audio SSRC, just before his video's:
     // five Opus frames of silence, plain RTP as a call's audio goes, as the
     // frames reach it. A camera has no sound of its own.
     const due = watcher.stream === "call" ? 0 : Math.floor(((frame + 1) * 10) / fps) - sound;
     for (let block = 0; block < due; block++, sound++) {
+      if (quiet) continue;
       for (let index = 0; index < 5; index++) {
         const header = Buffer.alloc(12);
         header[0] = 0x80;
@@ -5221,6 +5259,11 @@ const udp = await Bun.udpSocket({
         if (data.length >= 8 && data[1] === 206 && (data[0]! & 0x1f) === 1) {
           const watcher = watcherOf();
           if (watcher) watcher.keyframeRequests++;
+          // A stream's video wanted again comes from the keyframe asked for.
+          if (watcher?.awaitingKeyframe) {
+            watcher.awaitingKeyframe = false;
+            watcher.restart = true;
+          }
         }
         // A viewer's generic NACK: the packets it asks for again.
         const asking = data.length >= 8 && data[1] === 205 && (data[0]! & 0x1f) === 1 ? watcherOf() : undefined;
@@ -5349,7 +5392,7 @@ function voiceMessage(ws: Socket, text: string) {
         });
         watchers.set(ws.data.ssrc, {
           stream: ws.data.stream!, codec, framesSent: 0, soundsSent: 0, keyframeRequests: 0, repairs,
-          recording: world?.recordings.get(ws.data.stream!),
+          recording: world?.recordings.get(ws.data.stream!), videoSsrc: bob + 1, videoWanted: true,
         });
         viewerKeys.set(ws.data.ssrc, key);
         ws.data.waiting = { key, ssrc: bob + 1 };
@@ -5359,6 +5402,15 @@ function voiceMessage(ws: Socket, text: string) {
     }
     case 15: { // Media sink wants: Discord forwards video only to those who ask.
       const waiting = ws.data.waiting;
+      // A stream's viewer wants its video by SSRC, or by `any`: at 0 only
+      // its sound comes, and wanted again its video starts from a keyframe.
+      const watcher = ws.data.ssrc ? watchers.get(ws.data.ssrc) : undefined;
+      if (watcher?.videoSsrc) {
+        const wanted = Number(d[String(watcher.videoSsrc)] ?? d.any ?? 100) > 0;
+        if (wanted && watcher.videoWanted === false) watcher.awaitingKeyframe = true;
+        if (!wanted) watcher.awaitingKeyframe = false;
+        watcher.videoWanted = wanted;
+      }
       if (waiting && Number(d.any) > 0) {
         ws.data.waiting = undefined;
         streamTo(ws, waiting.key, waiting.ssrc);
@@ -9557,6 +9609,10 @@ const server = Bun.serve<SocketData>({
     }
     if (req.method === "GET" && path === "/_control/discovery-drop") {
       return Response.json({ dropped: discovery.dropped, answered: discovery.answered });
+    }
+    if (req.method === "POST" && path === "/_control/stream-sound-with-video") {
+      soundWithVideo = !url.searchParams.has("off");
+      return new Response(`a held stream's sound ${soundWithVideo ? "stops with its video" : "goes on"}\n`);
     }
     if (req.method === "POST" && path === "/_control/stream-reports") {
       streamReports = !url.searchParams.has("off");

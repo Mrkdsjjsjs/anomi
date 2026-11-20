@@ -10,8 +10,8 @@
 //! panel, its top corners rounded) so the account card goes on from it.
 //!
 //! The call's length is `anomi_widgets::clock`, which reads it as it draws
-//! and asks a frame at each whole second while the window is in front: a
-//! new second builds no view.
+//! and asks a frame at each whole second while the window is live
+//! (`Motion::live`): a new second builds no view.
 //!
 //! Known gaps, from the pinned iced: the camera button doesn't pulse while
 //! the camera starts (no layer opacity; it is tinted with the accent and its

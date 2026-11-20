@@ -263,6 +263,7 @@ fn unset_own_keys_arent_written() {
         "interface_renderer",
         "renderer_failures",
         "renderer_trying",
+        "background_updates",
     ] {
         assert!(file.get(key).is_none(), "{key}");
     }
@@ -351,6 +352,26 @@ fn the_renderer_is_chosen_beside_the_slint_apps_switch() {
         "kept while unset here"
     );
     assert_eq!(kept["interface_renderer"], json!(7));
+}
+
+/// What an unfocused window on screen keeps doing reads and writes in
+/// lowercase; a value it doesn't know is kept as it came, unchosen here.
+#[test]
+fn the_unfocused_windows_choice_is_kept_in_lowercase() {
+    use anomi_theme::Background;
+    let read =
+        |text: &str| Layout::from_values(PathBuf::new(), serde_json::from_str(text).unwrap());
+    let usual = read(r#"{"background_updates": "usual"}"#);
+    assert_eq!(usual.background_updates, Some(Background::Usual));
+    let odd = read(r#"{"background_updates": "sometimes", "members_hidden": true}"#);
+    assert_eq!(odd.background_updates, None);
+    assert!(odd.members_hidden, "nothing else lost");
+    let file: Value = serde_json::from_slice(&odd.bytes().unwrap()).unwrap();
+    assert_eq!(file["background_updates"], json!("sometimes"));
+    let mut layout = read("{}");
+    layout.edit(|saved| saved.background_updates = Some(Background::Important));
+    let file: Value = serde_json::from_slice(&layout.bytes().unwrap()).unwrap();
+    assert_eq!(file["background_updates"], json!("important"));
 }
 
 #[test]

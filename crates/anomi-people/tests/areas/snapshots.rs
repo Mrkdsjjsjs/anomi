@@ -23,6 +23,8 @@ use super::support;
 /// What a shot is drawn under: in front, nothing animating.
 const MOTION: Motion = Motion {
     front: true,
+    unseen: false,
+    background: anomi_theme::motion::Background::Nothing,
     never: true,
     idle: false,
 };

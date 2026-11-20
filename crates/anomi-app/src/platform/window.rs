@@ -14,6 +14,7 @@ use anomi_vm::shell::Layer;
 use crate::app::App;
 use crate::layout::Layout;
 use crate::message::Message;
+use crate::window::seen::Heard;
 
 /// Where the bar's help button goes (`ui/yapfast.slint:5623`).
 const HELP: &str = "https://support.discord.com";
@@ -82,14 +83,15 @@ pub fn open(app: &mut App, token: Option<String>) -> Task<Message> {
     let settings = super::placement::settings(app);
     let (id, opened) = window::open(settings);
     app.window = Some(id);
-    super::forget::shown_again(app);
+    let sight = super::forget::shown_again(app);
     tracing::info!("window opened");
-    opened.map(Message::Opened)
+    Task::batch([sight, opened.map(Message::Opened)])
 }
 
 /// The window opened: it takes the focus with the token it was made for,
 /// comes to the size it was left at on this display, and the timeline
-/// back to the messages it was closed on.
+/// back to the messages it was closed on; and whether the desktop says
+/// when it paints the window is asked.
 pub fn opened(app: &mut App, id: window::Id) -> Task<Message> {
     app.window = Some(id);
     let token = anomi_desktop::instance::take_next_token();
@@ -102,7 +104,24 @@ pub fn opened(app: &mut App, id: window::Id) -> Task<Message> {
         token.map_or_else(Task::none, |token| activate(id, token)),
         reading,
         super::drop::watch(app, id),
+        detect(),
     ])
+}
+
+/// Whether the desktop stops drawing a window it doesn't paint, so that its
+/// frames tell a window covered from one on another monitor
+/// (`crate::window::seen`): only the test display's Weston, which sends no
+/// frame callbacks to a window it covers, minimises or hides. GNOME's
+/// mutter sends none to one minimised or on another workspace, nor mostly
+/// to one covered, but goes on at the display's rate for a maximised window
+/// under a fullscreen one, as a game covers it (mutter 51, seen on its
+/// headless monitors): a window there would go on behind a game. KWin goes
+/// on for any covered window, and X11 and Windows draw any at once.
+/// Everywhere but the test display the window rests when it isn't focused,
+/// unless chosen otherwise; the frames still stop what they can.
+fn detect() -> Task<Message> {
+    let exact = std::env::var("YAPFAST_FRAMEWORK_ISOLATED_DISPLAY").as_deref() == Ok("1");
+    Task::done(Message::Sight(Heard::Detected(exact)))
 }
 
 /// Brings a shown window forward on Wayland, where focusing it asks

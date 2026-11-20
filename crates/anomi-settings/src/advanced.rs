@@ -8,9 +8,13 @@
 //! chosen by hand; what draws the interface (`drawing`), which switches
 //! at once and so has no restart line (the Slint app's "Render with the
 //! GPU" changes nothing here); where streams encode, with what that
-//! choice does now; and "Unlocked bitrate", which lets a stream's limit be
+//! choice does now; "Unlocked bitrate", which lets a stream's limit be
 //! typed past Discord's documented 9 Mbit/s, up to 50, saying what that
-//! risks.
+//! risks; and what the window keeps doing on screen but not focused, such
+//! as on a second monitor beside a game: everything, what matters, or
+//! nothing, with what "what matters" keeps going and, on a desktop that
+//! can't say when a game covers the window, a line saying so and that the
+//! window rests there until chosen otherwise.
 
 mod drawing;
 
@@ -19,7 +23,7 @@ use iced::widget::{column, container, row, text};
 
 use anomi_theme::prelude::*;
 use anomi_theme::{catalog, typography};
-use anomi_vm::settings::advanced::{Advanced, CoreGroup, Intent};
+use anomi_vm::settings::advanced::{Advanced, Background, CoreGroup, Intent};
 use anomi_widgets::button::{Kind, action_button};
 use yapfast_lang::tr;
 
@@ -113,6 +117,7 @@ pub fn view(page: &Advanced, motion: Motion) -> impl View<Intent> + '_ {
             .on_toggle(Intent::BitrateUnlocked)
             .view(),
     );
+    parts.push(unfocused(page, motion));
     parts.push(
         text(tr!(
             "Icons from Solar by 480 Design (CC BY 4.0), many of them adapted, and from Lucide (ISC)."
@@ -194,16 +199,50 @@ fn encoders(page: &Advanced, motion: Motion) -> Element<'_, Intent> {
     column(parts).spacing(GROUP).width(Fill).boxed()
 }
 
+/// What the window keeps doing on screen but not focused, the choice in
+/// force raised; what "what matters" keeps going; and whether the desktop
+/// says when the window is hidden, where nothing goes under any choice.
+fn unfocused(page: &Advanced, motion: Motion) -> Element<'_, Intent> {
+    let options = words(&[tr!("Everything"), tr!("What matters"), tr!("Rest")]);
+    let hidden = if page.exact {
+        tr!(
+            "Covered by other windows, minimised or in the tray, the window does nothing, whatever is chosen."
+        )
+    } else {
+        tr!(
+            "This system doesn't tell when a game or another window covers this one, and Everything and What matters keep going even behind them. So Rest is the default here: the window rests as soon as it loses the focus."
+        )
+    };
+    column![
+        name(tr!("When the window is on screen but not focused")),
+        choices(options, page.background.index(), motion)
+            .wrap(true)
+            .on_pick(|at| Intent::Background(Background::at(at)))
+            .view(),
+        note(tr!(
+            "With What matters, video, cameras, streams, who's typing and times keep going, while animations, GIFs and members' statuses wait until you come back to the window."
+        )),
+        note(hidden),
+    ]
+    .spacing(GROUP)
+    .width(Fill)
+    .boxed()
+}
+
 /// Its shots for `anomi-shots`: `settings/advanced.png` as the Slint app
 /// showed it, with Optimization under it, and without the system's extras;
 /// the cores chosen by hand, also in the small window; the interface drawn
 /// on the integrated graphics, and on the processor after the card chosen
 /// failed (without the system's extras, so the rows show in the window);
-/// and "Unlocked bitrate" on, in a window tall enough to show it at the
-/// page's end.
+/// "Unlocked bitrate" on, in a window tall enough to show it at the
+/// page's end; and, in windows taller still, what an unfocused window on
+/// screen keeps doing where the desktop says when a game covers it, and, as
+/// wide as the small window, on one that can't, as on GNOME's.
 #[cfg(feature = "shots")]
 pub fn shots() -> Vec<crate::shots::Shot> {
-    use anomi_vm::fixtures::settings::advanced::{bare, cores, fell_back, gpu, page, unlocked};
+    use anomi_vm::fixtures::settings::advanced::{
+        bare, coarse, cores, fell_back, gpu, page, unlocked,
+    };
 
     use crate::shots::{GOLDEN, SMALL, Shot};
 
@@ -215,6 +254,8 @@ pub fn shots() -> Vec<crate::shots::Shot> {
         ("advanced_gpu", gpu, GOLDEN),
         ("advanced_fell_back", fell_back, GOLDEN),
         ("advanced_unlocked", unlocked, (1400.0, 1400.0)),
+        ("advanced_unfocused", bare, (1400.0, 1700.0)),
+        ("advanced_unfocused_coarse", coarse, (SMALL.0, 1900.0)),
     ]
     .into_iter()
     .map(|(name, vm, size)| Shot {

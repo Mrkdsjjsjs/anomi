@@ -7,12 +7,14 @@
 //! activity's time on a profile card and Active Now's rows, the call's
 //! connection's numbers; the call's own time in the dock is a clock that
 //! reads it as it draws, `anomi_widgets::clock`).
-//! They run only while the window is in front and something shows them:
-//! going behind another window, or to the tray, drops them (each wait is
-//! an abortable task), and coming back writes every clock again at once
-//! ([`front`]). A tick reaches only what shows the time
-//! ([`Reach::MINUTE`], [`Reach::DAY`]), which writes again only the rows
-//! whose words changed.
+//! They run only while the window is live and something shows them: in
+//! front, or on screen unfocused where the setting keeps what matters
+//! going (`Motion::live`). Going hidden (covered, minimised, on another
+//! workspace, in the tray), or unfocused where the setting rests the
+//! window, drops them (each wait is an abortable task), and becoming live
+//! again writes every clock again at once ([`again`]). A tick reaches only
+//! what shows the time ([`Reach::MINUTE`], [`Reach::DAY`]), which writes
+//! again only the rows whose words changed.
 //!
 //! Whether someone uses the window is [`away`]'s: idle after 15 s, which
 //! the core tells Discord, and which holds what only decorates
@@ -117,9 +119,9 @@ pub fn update(app: &mut App, tick: Tick) -> Task<Message> {
     Task::none()
 }
 
-/// The window came to the front: every clock says the time again at once,
-/// and [`arm`] sets their waits after.
-pub fn front(app: &mut App) {
+/// The window became live: every clock says the time again at once, and
+/// [`arm`] sets their waits after.
+pub fn again(app: &mut App) {
     app.shown.timeline.gave_up(now_ms() / SECOND);
     app.shown.aside.gave_up(now_ms() / SECOND);
     crate::project::people::tick(&mut app.vm);
@@ -130,10 +132,11 @@ pub fn front(app: &mut App) {
 }
 
 /// Sets each clock's wait for when its words next change while the window
-/// is in front and something shows them, and drops the rest. It runs after
-/// every update, so what it reads was noted as the rows were built.
+/// is live and something shows them, and drops the rest. It runs after
+/// every update, so what it reads was noted as the rows were built. The
+/// tray is hidden too (`crate::window::sight`).
 pub fn arm(app: &mut App) -> Task<Message> {
-    let awake = app.motion.front && !app.hidden;
+    let awake = app.motion.live();
     let minute = awake.then(|| minute_due(app)).flatten();
     let day = awake.then(|| day_due(app)).flatten();
     let seconds = crate::intent::sign_in::counting(app)

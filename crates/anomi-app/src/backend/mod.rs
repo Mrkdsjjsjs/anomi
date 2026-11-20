@@ -109,13 +109,16 @@ pub fn drain(app: &mut App) -> Task<Message> {
 
 /// Tells the gate what the window shows now, after a message was handled:
 /// the member list, or the draft and the suggestions that read the
-/// members; and the rooms whose typing shows. Behind another window or in
-/// the tray, none. When that's more than before, what waited is taken and
-/// what shows it is shown again, as it is now.
+/// members; and the rooms whose typing shows. Typing shows while the
+/// window is live (`Motion::live`); the member list, the dearest in a busy
+/// server, only in front or where the setting keeps everything going
+/// unfocused (`Motion::members_live`). Hidden or in the tray, neither.
+/// When that's more than before, what waited is taken and what shows it is
+/// shown again, as it is now.
 pub fn follow(app: &mut App) -> Task<Message> {
     let state = &app.core.state;
-    let front = app.motion.front && !app.hidden;
-    let members = front
+    let live = app.motion.live();
+    let members = app.motion.members_live()
         && (app.vm.conversation.beside.members
             || !state.draft().is_empty()
             || state.mention_query.is_some());
@@ -123,7 +126,7 @@ pub fn follow(app: &mut App) -> Task<Message> {
         state.selected.as_deref(),
         state.aside.as_ref().map(|aside| aside.room.as_str()),
     ]
-    .map(|room| room.filter(|_| front));
+    .map(|room| room.filter(|_| live));
     let Some(waited) = app.backend.gate.follow(members, typing) else {
         return Task::none();
     };

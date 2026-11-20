@@ -124,6 +124,7 @@ pub fn open(app: &mut App, page: Page) -> Task<Message> {
     app.vm.settings.frame.page = page;
     app.vm.shell.open(Layer::Settings);
     app.shown.settings.kept.tray = app.desktop.tray_shows();
+    app.shown.settings.kept.exact = app.sighting.exact;
     entered(app, page)
 }
 

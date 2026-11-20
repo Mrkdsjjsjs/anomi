@@ -382,8 +382,8 @@ fn frame<'a, Message: 'a>(
             drag::follow(list, state, bounds, pointer, now, shell);
         }
     }
-    // Rows gliding to their places, while in front; behind, they land.
-    if !motion.front {
+    // Rows gliding to their places while animations play; still, they land.
+    if !motion.playing() {
         state.slides.land();
     } else if state.slides.step(now) {
         shell.request_redraw();

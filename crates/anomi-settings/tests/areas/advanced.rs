@@ -9,7 +9,7 @@ use iced_test::simulator::Simulator;
 
 use anomi_settings::advanced::view;
 use anomi_vm::fixtures::settings::advanced as sample;
-use anomi_vm::settings::advanced::{Advanced, CpuMode, Intent};
+use anomi_vm::settings::advanced::{Advanced, Background, CpuMode, Intent};
 
 use super::support::{SIZE, asked, front, settings};
 
@@ -24,7 +24,7 @@ fn simulate_at(
     page: &Advanced,
     width: f32,
 ) -> Simulator<'_, Intent, anomi_theme::Theme, anomi_theme::Renderer> {
-    let tall = iced::Size::new(width, 1800.0);
+    let tall = iced::Size::new(width, 2400.0);
     Simulator::with_size(settings(), tall, view(page, front()).boxed())
 }
 
@@ -157,6 +157,41 @@ fn the_bitrate_unlock_is_a_switch_that_says_what_it_risks() {
     let mut ui = simulate(&on);
     ui.click("Unlocked bitrate").expect("the switch is there");
     assert_eq!(asked(ui), [Intent::BitrateUnlocked(false)]);
+}
+
+/// What the window keeps doing on screen but not focused: three choices,
+/// the one in force raised, and what "what matters" keeps going. GNOME's
+/// desktop says when a game covers the window; where the desktop can't, a
+/// line says so, and that the window rests there until chosen otherwise.
+#[test]
+fn an_unfocused_window_does_what_is_chosen_and_the_page_says_where_it_cant_tell() {
+    const CANT: &str = "This system doesn't tell when a game or another window covers this one, and Everything and What matters keep going even behind them. So Rest is the default here: the window rests as soon as it loses the focus.";
+    const COVERED: &str = "Covered by other windows, minimised or in the tray, the window does nothing, whatever is chosen.";
+    let page = sample::advanced();
+    assert_eq!((page.background, page.exact), (Background::Important, true));
+    let mut ui = simulate(&page);
+    let named = "When the window is on screen but not focused";
+    assert!(ui.find(named).is_ok());
+    assert!(ui.find(COVERED).is_ok() && ui.find(CANT).is_err());
+    ui.click("Everything").expect("as in front");
+    ui.click("Rest").expect("as behind a game");
+    assert_eq!(
+        asked(ui),
+        [
+            Intent::Background(Background::Usual),
+            Intent::Background(Background::Nothing),
+        ]
+    );
+    let coarse = Advanced {
+        exact: false,
+        background: Background::Nothing,
+        ..sample::advanced()
+    };
+    // The page's column in the small window, as above.
+    let mut ui = simulate_at(&coarse, 670.0);
+    assert!(ui.find(CANT).is_ok() && ui.find(COVERED).is_err());
+    ui.click("What matters").expect("in the small window too");
+    assert_eq!(asked(ui), [Intent::Background(Background::Important)]);
 }
 
 #[test]

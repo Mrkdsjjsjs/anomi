@@ -1,13 +1,15 @@
 //! Samples of the Advanced settings page for tests and shots, after the fake
 //! Discord's data: task S10's, and Optimization on this repository's
 //! owner's machine, a Ryzen 9 9950X3D with a Radeon 610M and an RTX 3080,
-//! the monitor on the 3080, Vulkan's driver for the Radeon not installed.
+//! the monitor on the 3080, Vulkan's driver for the Radeon not installed;
+//! and a desktop that says when a game covers the window, as only the test
+//! display does, or one that can't.
 
 use yapfast_lang::tr;
 
 use crate::Vm;
 use crate::fixtures::settings::frame::settings;
-use crate::settings::advanced::{Advanced, Core, CoreGroup, CpuMode, DrawOn};
+use crate::settings::advanced::{Advanced, Background, Core, CoreGroup, CpuMode, DrawOn};
 use crate::settings::frame::Page;
 
 /// The two chiplets' physical cores, the second's ticked.
@@ -81,8 +83,10 @@ fn renderers(radeon_draws: bool) -> Vec<DrawOn> {
 }
 
 /// The golden screenshot's: no system tray, link handling and autostart
-/// offered; Auto on the second chiplet and on the integrated graphics, and
-/// Automatic drawing the interface on the processor, as the Radeon can't.
+/// offered; Auto on the second chiplet and on the integrated graphics,
+/// Automatic drawing the interface on the processor, as the Radeon can't,
+/// and an unfocused window on screen keeping what matters going, the
+/// default where the desktop says when a game covers the window.
 pub fn advanced() -> Advanced {
     Advanced {
         close_to_tray: true,
@@ -132,6 +136,8 @@ pub fn advanced() -> Advanced {
             "AMD Radeon 610M"
         ),
         bitrate_unlocked: false,
+        background: Background::Important,
+        exact: true,
     }
 }
 
@@ -180,6 +186,18 @@ pub fn gpu() -> Vm {
 pub fn unlocked() -> Vm {
     let mut vm = bare();
     vm.settings.advanced.bitrate_unlocked = true;
+    vm
+}
+
+/// A desktop that can't say when a game covers the window (KDE, X11,
+/// Windows), nothing chosen: an unfocused window rests, and a line under
+/// the choice says why. The switches the system lacks are left out, so the
+/// page's end shows in a tall window.
+pub fn coarse() -> Vm {
+    let mut vm = bare();
+    let page = &mut vm.settings.advanced;
+    page.exact = false;
+    page.background = Background::Nothing;
     vm
 }
 

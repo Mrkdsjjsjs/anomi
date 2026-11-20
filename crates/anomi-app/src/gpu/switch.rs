@@ -38,8 +38,10 @@ fn backend_settings(backend: Backend) -> backend::Settings {
     }
 }
 
-/// Has iced make the window's renderer again on `backend`.
+/// Has iced make the window's renderer again on `backend`: the window's
+/// watchdog judges nothing before its first frame.
 pub(super) fn remake(backend: Backend) -> Task<Message> {
+    crate::window::seen::anew();
     backend::configure(backend_settings(backend)).map(|made: Result<(), backend::Error>| {
         Message::Gpu(Due::Switched(made.err().map(|error| error.to_string())))
     })

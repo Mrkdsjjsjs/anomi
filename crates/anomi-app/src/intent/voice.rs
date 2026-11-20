@@ -34,14 +34,34 @@ pub use devices::open as open_devices;
 pub use popups::{close, noise_suppression};
 
 /// After each update: the input menu's meter, joining as set, the wait of
-/// an empty private call, the previews in sight, and the stream's menu.
+/// an empty private call, the previews in sight, the stream's menu, and
+/// whether the window is hidden, for the stream watched.
 pub fn after(app: &mut App) -> Task<Message> {
+    hidden(app);
     Task::batch([
         popups::after(app),
         alone::after(app),
         previews::after(app),
         share::follow(app),
     ])
+}
+
+/// Tells the stream watched, and the preview of one's own, whether the
+/// window is hidden, not on screen at all (`Motion::unseen`), apart from
+/// whether it shows their pictures: their workers make none then, frames
+/// opened in the tray, which the window never paused, among them, and the
+/// watched stream's video stops at Discord after 5 s unseen rather than 30
+/// (`yapfast_core::stream_worker`'s hold).
+fn hidden(app: &App) {
+    let voice = &app.core.state.voice;
+    let watched = voice
+        .watching
+        .as_ref()
+        .and_then(|watching| watching.frames.as_ref());
+    let own = voice.sharing.as_ref().map(|sharing| &sharing.frames);
+    for frames in watched.into_iter().chain(own) {
+        frames.hide(app.motion.unseen);
+    }
 }
 
 /// What the call's waits brought back.

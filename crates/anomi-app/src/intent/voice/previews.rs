@@ -1,12 +1,12 @@
 //! Asking again for the previews of others' streams in sight, as often as
 //! their clients upload them (`yapfast_core::application::stream_previews`).
 //! The call's projection notes which are in sight (`project::voice::place`):
-//! their tiles in the grid, uncovered, the window in front. After each
-//! update the core hears of a change (`Action::VisibleStreams`), and asks at
-//! once for a preview that fell due while it didn't show; one wait is set
-//! for the moment the next one falls due, and nothing ticks meanwhile.
-//! Behind another window, minimised, in the tray or with the call off
-//! screen none is in sight, so no wait runs; coming back asks once for
+//! their tiles in the grid, uncovered, the window live. After each update
+//! the core hears of a change (`Action::VisibleStreams`), and asks at once
+//! for a preview that fell due while it didn't show; one wait is set for
+//! the moment the next one falls due, and nothing ticks meanwhile. Hidden
+//! (covered, minimised, in the tray), resting unfocused, or with the call
+//! off screen none is in sight, so no wait runs; coming back asks once for
 //! those that fell due.
 
 use std::time::Duration;

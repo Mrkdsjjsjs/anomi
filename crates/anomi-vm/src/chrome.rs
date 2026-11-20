@@ -19,6 +19,10 @@ pub struct Chrome {
     pub full_screen: bool,
     /// The window has the focus: the title shows in its brighter ink.
     pub focused: bool,
+    /// The window keeps going: on screen, and in front or kept going by the
+    /// setting while it isn't (`Motion::live`). The call's moving pictures
+    /// and a message's video are followed only while it is.
+    pub live: bool,
     /// The button in the middle restores rather than maximizes, and the
     /// window has no resize edges.
     pub maximized: bool,

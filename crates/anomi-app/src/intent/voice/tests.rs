@@ -99,6 +99,7 @@ fn a_preview_in_sight_waits_for_the_next_upload_and_none_behind() {
     let asked = yapfast_core::clock::now_ms();
     drop(app.core.apply(Event::Voice(voice)));
     app.vm.chrome.focused = true;
+    app.vm.chrome.live = true;
     app.motion.front = true;
     let after = |app: &mut crate::app::App| {
         drop(super::after(app));

@@ -4,7 +4,10 @@
 //! is built again only after the layout changed. Advanced's Optimization
 //! also reads the processor and the graphics cards from the system then,
 //! and what draws the interface (`super::drawing`); its bitrate's unlock is
-//! the layout's.
+//! the layout's. What the window keeps doing on screen but not focused is
+//! the choice in force, as `crate::window::sight` works it out: the one
+//! kept, else this desktop's default, by whether the desktop says when the
+//! window is covered (`Kept::exact`).
 
 use anomi_vm::settings::{about, advanced, messages, notifications, sounds};
 use yapfast_core::new_tags;
@@ -103,6 +106,7 @@ pub(super) fn advanced(layout: &Layout, kept: &Kept, page: &mut advanced::Advanc
         CpuChoice::All => advanced::CpuMode::All,
         CpuChoice::Cores(_) => advanced::CpuMode::Chosen,
     };
+    let background = crate::window::background(layout.background_updates, kept.exact);
     let built = advanced::Advanced {
         close_to_tray: layout.close_to_tray.unwrap_or(true),
         multiple_windows: layout.multiple_windows,
@@ -123,8 +127,22 @@ pub(super) fn advanced(layout: &Layout, kept: &Kept, page: &mut advanced::Advanc
         encoder: encoding.chosen,
         encoder_line: encoding.line,
         bitrate_unlocked: layout.stream_bitrate_unlocked,
+        background: shown(background),
+        exact: kept.exact,
     };
     set(page, built);
+}
+
+/// What a window on screen but not focused keeps doing, as Advanced offers
+/// it.
+fn shown(applied: anomi_theme::Background) -> advanced::Background {
+    use advanced::Background as Shown;
+    use anomi_theme::Background as Applied;
+    match applied {
+        Applied::Usual => Shown::Usual,
+        Applied::Important => Shown::Important,
+        Applied::Nothing => Shown::Nothing,
+    }
 }
 
 /// A logical CPU as the page needs it: its physical core's number, its L3

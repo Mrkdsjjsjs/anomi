@@ -1,9 +1,10 @@
 //! Which streams' previews are in sight: the tiles of others' streams this
 //! account doesn't watch, which show their preview behind "Watch stream",
-//! where the grid shows them uncovered with the window in front. The core
-//! asks for those again as they fall due (`crate::intent::voice::previews`);
-//! none is in sight behind another window, in the tray, or while the call
-//! is off screen, where the corner shows only a stream watched.
+//! where the grid shows them uncovered with the window live. The core asks
+//! for those again as they fall due (`crate::intent::voice::previews`);
+//! none is in sight while the window is hidden, in the tray or resting
+//! unfocused, or while the call is off screen, where the corner shows only
+//! a stream watched.
 
 use yapfast_core::voice;
 

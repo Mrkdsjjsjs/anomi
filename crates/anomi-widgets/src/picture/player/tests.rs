@@ -17,6 +17,8 @@ fn square(side: f32) -> Rectangle {
 
 const PLAYING: Motion = Motion {
     front: true,
+    unseen: false,
+    background: anomi_theme::motion::Background::Nothing,
     never: false,
     idle: false,
 };

@@ -3,10 +3,11 @@
 //! header, "Streaming now" with the LIVE tag or "Playing now"; the stream's
 //! latest still, or word that it started until one came; the game's icon,
 //! name and how long they've played, ticking once a second only while the
-//! card shows in front (`anomi_widgets::clock`); Watch Stream, or Watching
-//! Stream disabled while this account watches it; and the store the game is
-//! sold at. Discord's "Ask to Stream" isn't offered: its request isn't
-//! documented (`anomi_vm::sidebar::channels::hover`).
+//! card shows and the window is live (`anomi_widgets::clock`,
+//! `Motion::live`); Watch Stream, or Watching Stream disabled while this
+//! account watches it; and the store the game is sold at. Discord's "Ask
+//! to Stream" isn't offered: its request isn't documented
+//! (`anomi_vm::sidebar::channels::hover`).
 //!
 //! The row's [`Pointed`](super::pointed) asks for it and places it, hanging
 //! from the row's top, 8 px right of it.
@@ -171,7 +172,7 @@ fn playing(game: &Game, motion: Motion) -> Element<'_, Intent> {
         .width(Fill);
     let mut words = column![name].width(Fill);
     if let Some(elapsed) = game.elapsed {
-        let time = clock(elapsed, anomi_vm::voice::dock::elapsed, motion.front)
+        let time = clock(elapsed, anomi_vm::voice::dock::elapsed, motion.live())
             .size(typography::size::LABEL)
             .style(live_ink);
         let pad =

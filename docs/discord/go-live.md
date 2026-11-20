@@ -562,6 +562,64 @@ leaves out, so a stream you watch never reaches one you share. Watching a
 stream from Discord's own client works: H264 with DAVE. Discord's client shows
 Yapfast's stream at 1080p with its sound, without the call's.
 
+### A stream nobody sees
+
+The iced window tells a watch worker, in the frames file's header, when it
+shows no picture of the stream (`Frames::pause`: the window not live, or
+the stream's tile out of sight, as under Settings) and, apart from that,
+whether the window is hidden, not on screen at all (`Frames::hide`, from
+`Motion::unseen` after each update: in the tray, minimised, covered, on
+another workspace). The Slint window pauses only the preview of one's own
+stream. While the picture isn't shown, or the window is hidden (frames opened in
+the tray, as when Discord moves the stream meanwhile, aren't paused by the
+window, which projects nothing there), the worker still decodes every
+frame, so the reference chain holds and the next frame shows as soon as
+the window does, but converts and writes none (`Writer::unseen`,
+`stream_worker::Showing`); the preview of one's own stream likewise.
+A message's video does the same in its player: it plays on, its clock and
+sound going, each picture decoded and none converted or written, two
+waiting ahead instead of eight; the window showing again gets the next
+one decoded, and a still video's picture missed meanwhile is drawn again.
+
+After 5 s unseen in a hidden window, or 30 s in a window on screen (resting
+unfocused under "Rest", or with Settings over the call), the worker asks
+Discord for none of the stream's video (`StreamReceiver::want_video`):
+op 15 wants the video's SSRC at 0 and `any` at 100, which keeps the
+stream's sound, on an SSRC of its own. Discord's documentation says 0
+disables a stream and that viewers update their wants between foreground
+and background. The longer wait on screen keeps switching windows from
+dropping the video and asking for it again each time. The decoder and its
+buffers go; frames still on their way are dropped, and nothing is asked
+again or reported lost while the video is unwanted: the connection's
+repairs and keyframe ticks stop, and it wakes for the sound's packets, its
+receiver reports once a second, or the video wanted again. As soon as the
+picture shows again, op 15 wants the video at 100, the connection puts
+frames together afresh, and the worker asks for a keyframe at once (also
+when the connection never got to tell Discord of the hold) and skips frames
+until one: the tile shows its last picture meanwhile, never a broken one.
+The worker logs "nobody sees the stream" and "the stream shows again".
+
+Nobody has checked that Discord's servers keep a stream's sound flowing
+while its video is unwanted, so the worker listens (`stream_worker::Hold`).
+When the sound's packets came in the second before the video stopped and
+stop within 2 s after it, a second passing without any, it asks for the
+video again at once; if the sound comes back with it within 2 s, it
+stopped with the video, and the worker holds that stream no more while
+it's watched, logging "the stream's sound came back with its video" as a
+warning. If it doesn't, it was the stream's own silence (Yapfast's senders,
+like Discord's client, send nothing while nothing plays), and the wait
+starts over. A hold that falls due in a quiet moment, sound heard within
+30 s, waits for the next packet, so that it's listened to as well; once a
+hold heard the sound go on, later ones don't wait. The fake honours op 15
+for a stream's viewer by SSRC: at 0 it sends the sound alone; wanted again,
+it sends no video until the viewer asks for a keyframe, then starts the
+recording over from its keyframe. `/_control/stream-sound-with-video` has
+it stop the sound too while the video is unwanted, as Discord might
+(`holds_a_watched_streams_video_and_keeps_its_sound` in
+`crates/yapfast-discord/tests/fake_server/calls.rs`, and, through the
+worker, `holds_a_hidden_streams_video_and_its_sound_goes_on` in
+`crates/yapfast-core/src/discord_voice/tests.rs`).
+
 ### Cleaning a stream's sound
 
 A right click on the tile of a stream this account watches opens its menu

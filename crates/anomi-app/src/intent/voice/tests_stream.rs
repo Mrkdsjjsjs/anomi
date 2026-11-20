@@ -172,6 +172,34 @@ fn stop_streaming_closes_the_menu() {
     let _ = std::fs::remove_dir_all(folder);
 }
 
+/// The stream watched hears after each update whether the window is
+/// hidden, which lets its worker stop the stream's video sooner.
+#[test]
+fn the_stream_watched_hears_whether_the_window_is_hidden() {
+    use yapfast_core::frames::{Frames, Writer};
+    use yapfast_core::voice::Watching;
+    let (mut app, folder) = in_call("watched-hidden");
+    let frames = Arc::new(Frames::create(4, 2).expect("frames"));
+    let path = frames.path().expect("its file");
+    let writer = Writer::open(&path).expect("the worker's side");
+    frames.unlink();
+    app.core.state.voice.watching = Some(Box::new(Watching {
+        user: "1400000000000000002".into(),
+        name: "Bob".into(),
+        opening: false,
+        frames: Some(frames),
+        viewers: Vec::new(),
+    }));
+    app.motion.unseen = true;
+    super::hidden(&app);
+    assert!(writer.hidden());
+    app.motion.unseen = false;
+    super::hidden(&app);
+    assert!(!writer.hidden());
+    drop(app);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
 /// Before the stream is live, "Change Windows" waits; once live it can be
 /// chosen; when the stream ends the menu closes.
 #[test]

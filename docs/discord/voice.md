@@ -600,8 +600,10 @@ call's thread can't take in time is dropped, and the next one is a keyframe.
 
 The others' cameras arrive the same way round. Op 12 says who films on which
 SSRC, and Discord forwards a camera only to those who ask for it with op 15
-("media sink wants"): `{"any": 0, "<video SSRC>": quality, "pixelCounts":
-{...}}`, quality from 0 to 100. The sender films at the quality asked of it, on a
+("media sink wants"): `{"any": 100, "<video SSRC>": quality, "pixelCounts":
+{...}}`, quality from 0 to 100. `any` covers every SSRC left out, everyone's
+sound among them, so it stays at 100, and each camera is named, one not
+wanted at 0. The sender films at the quality asked of it, on a
 ladder Discord's clients work out from 1280×720: 100 is 1280×720 at up to
 2.5 Mbit/s, 90 896×504, 80 672×378, 70 640×360, 60 512×288, 50 416×234 at
 264 kbit/s, down to 20. Yapfast asks for each camera whose tile is in

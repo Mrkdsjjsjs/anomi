@@ -86,6 +86,7 @@ fn general(folder: &Folder) -> App {
         vec![photo("a.png"), photo("b.png")],
     ));
     app.vm.chrome.focused = true;
+    app.vm.chrome.live = true;
     app.motion.front = true;
     app.refresh();
     app
@@ -195,11 +196,12 @@ fn a_video_plays_in_its_cell_and_its_frames_change_no_view_model() {
     assert_eq!(moved.time, "0:01 / 0:06");
     assert!((moved.progress - 1.25 / 6.0).abs() < 1e-3);
 
-    // Behind another window nothing is followed, and in front again it is.
-    app.vm.chrome.focused = false;
+    // Not live (hidden, or resting unfocused) nothing is followed, and live
+    // again it is.
+    app.vm.chrome.live = false;
     app.show(Reach::STATE);
-    assert!(app.shown.media.alarm.idle(), "behind");
-    app.vm.chrome.focused = true;
+    assert!(app.shown.media.alarm.idle(), "not live");
+    app.vm.chrome.live = true;
     app.show(Reach::STATE);
     assert!(!app.shown.media.alarm.idle());
     // Scrolled out of view, neither.

@@ -136,7 +136,7 @@ let mapped = area_view.map(Intent::from);                  // into the parent's 
 | 9 | `tooltip(item, tip).position(..)`, `mouse_area(..).on_right_press(..)` | tips, context menus |
 | 10 | `stack![base, container(..).align_right(Fill).align_bottom(Fill)]` | badges and overlays |
 | 11 | `Task::perform`, `Task::run(stream, f)`, `Task::batch`, `.chain`, `.abortable()` + `handle.abort_on_drop()` | effects, backend streams |
-| 12 | `event::listen_with(fn)`; a wait as `later(d, m).abortable()`, never `time::every` | focus, input, clocks |
+| 12 | `event::listen_with(fn)`, or `event::listen_raw(fn)` to see frames too; a wait as `later(d, m).abortable()`, never `time::every` | focus, input, frames, clocks |
 | 13 | `motion.animation(v, motion::SLIDE, motion::ARRIVE).go(t, now)`, `.interpolate(a, b, now)` | animations in state |
 | 14 | `image::Handle::from_rgba(w, h, bytes::Bytes::from_owner(arc))` | pictures without a copy |
 
@@ -155,6 +155,12 @@ Notes on them:
 - iced doesn't re-export `bytes::Bytes`; add `bytes = "1"` where needed.
 - `time::every` exists only with the `tokio` (or `smol`) executor feature,
   which the workspace enables; the app doesn't use it (`clocks.rs`).
+- `event::listen_with` drops `window::Event::RedrawRequested` before its
+  function sees it; `event::listen_raw` hands it on. The window's one
+  filter (`anomi-app/src/window.rs`) is raw, so the frame watchdog sees
+  each frame drawn ([README](README.md#the-frame-watchdog)). Answer a frame
+  with `None` unless it says something new: a message for each frame brings
+  an update, which asks the next frame, for ever.
 
 ## A widget of our own
 

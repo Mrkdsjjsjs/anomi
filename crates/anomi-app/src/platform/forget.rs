@@ -68,6 +68,10 @@ pub fn window(app: &mut App) -> Task<Message> {
     let shown = &mut app.shown;
     crate::project::voice::hide(&app.core, &mut app.vm, &mut shown.voice, &mut shown.media);
     app.hidden = true;
+    // Nothing keeps going in the tray, and nothing is projected there: the
+    // video playing in a message stops being followed now.
+    tasks.push(crate::window::sight(app));
+    crate::media::show(&app.core.state, &mut app.vm, &mut app.shown.media);
     let vm = &mut app.vm;
     vm.rail = Default::default();
     vm.sidebar = Default::default();
@@ -90,12 +94,17 @@ pub fn release(app: &App) {
 }
 
 /// The window is shown again: everything it shows is made again from the
-/// core's state, in one refresh.
-pub fn shown_again(app: &mut App) {
-    if std::mem::take(&mut app.hidden) {
-        app.shown.forget();
-        app.refresh();
+/// core's state, in one refresh, and it starts painted, until its frames
+/// say otherwise (`crate::window::made`).
+pub fn shown_again(app: &mut App) -> Task<Message> {
+    if !std::mem::take(&mut app.hidden) {
+        return Task::none();
     }
+    app.shown.forget();
+    crate::window::made(app);
+    let sight = crate::window::sight(app);
+    app.refresh();
+    sight
 }
 
 /// The message at the top of the timeline as it closes, unless the newest

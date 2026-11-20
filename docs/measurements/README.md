@@ -197,6 +197,75 @@ for a second.
 
 </details>
 
+### The window's sight: on screen, hidden
+
+What the iced window costs as it stands toward the desktop
+(`docs/iced/README.md`, "The background rule"): in front, on screen but not
+focused under each setting, and hidden. `anomi`'s CPU with its main
+thread's in brackets, its wakeups a second (main / all threads), and the
+stream worker's and the compositor's CPU, sampled together for 20 s.
+
+Under `scripts/ui-session` (Weston, the processor drawing, 1400 by 860),
+on the fake Discord, whose stream is 10 frames a second; "on screen" is
+another client's 320 by 240 window beside it taking the focus, redrawn 60
+times a second, which costs Weston 0.75 points of its own; "covered" a
+fullscreen one over it, redrawn as a game would be, 4.5 to 5 points of
+Weston's.
+
+| | Idle on a DM | In a call, at rest | Watching a stream: anomi | the worker | Weston |
+| --- | --- | --- | --- | --- | --- |
+| In front | 0.20% (0.20), 4.3 / 22 | | 4.5% (1.6), 31 / 709 | 0.65%, 265 | 0.30% |
+| On screen, What matters | 0.15% (0.10), 2.4 / 18 | 2.95% (0.10), 2.5 / 581 | 5.2% (1.65), 28 / 700 | 0.70%, 263 | 1.00% |
+| On screen, Everything | 0.15% (0.15), 2.4 / 18 | 2.80% (0.10), 2.6 / 583 | 4.2% (1.5), 28 / 699 | 0.65%, 265 | 0.75% |
+| On screen, Rest | | | 3.1% (0.00), 0 / 636¹ | 0.45%, 225 | 0.70% |
+| Covered, its first 5 s | | | 3.0% (0.00), 0 / 576 | 0.67%, 265 | 5.0% |
+| Covered | 0.00% (0.00), 0 / 4 | 2.95% (0.00), 0 / 575 | 2.95% (0.00), 0 / 575 | 0.30%, 193 | 4.85% |
+| Minimised | 0.00% (0.00), 0 / 4 | 2.75% (0.00), 0 / 575 | 3.1% (0.00), 0 / 576 | 0.35%, 194 | 0.80% |
+| In the tray | 0.00% (0.00), 0 / 4 | 3.10% (0.00), 0 / 574 | 3.15% (0.00), 0 / 575 | 0.30%, 194 | 0.00% |
+
+¹ With the busy server's churn and typing going: they wake the core's
+network thread, and nothing past the gate.
+
+Hidden, the window's thread doesn't wake at all; what's left is the core:
+the call's `yapfast-discord` threads and its sound (`threaded-ml`, 340
+wakeups a second), as in the tray before, and the four wakeups a second
+at rest are the test display's control-file reader and the `blocking`
+pool. The stream worker before the window's sight converted every frame
+whatever the window showed (0.65%, as in front); now, hidden, it decodes
+without converting at once, and 5 s on asks Discord for none of the video:
+then its decoder is gone and it wakes for the stream's sound alone
+(`threaded-ml` plays it, the receiving thread 50 wakeups a second, its
+main loop 10), 0.30% at this stream's size. A covered window turned hidden
+1.15 s after the cover appeared, its stream held 5.1 s after that; the
+cover gone, it was painted again in 0.1 s and asked for its stream's video
+at once, whose next picture shows within 0.15 s on the fake
+(`holds_a_hidden_streams_video_and_its_sound_goes_on`). In a quiet call
+nothing asks to draw, so a covered window is judged only at its next
+event, its sight still "on screen" meanwhile, at no cost: the same 0
+wakeups.
+
+GNOME Shell 51 (mutter, headless, two 1400 by 900 monitors, the processor
+drawing), the busy server³ in #general, no call (no sound server there):
+
+| | anomi | gnome-shell |
+| --- | --- | --- |
+| On screen, What matters, a window beside it focused | 2.05% (1.40), 19 / 192 | 2.2% |
+| On screen, What matters, a fullscreen window on the other monitor | 1.75% (1.15), 12 / 152 | 7.3%² |
+| Covered on its own monitor | 0.80% (0.15), 1.0 / 114 | 7.1%² |
+| Minimised | 0.80% (0.15), 1.1 / 110 | 0.05% |
+| On another workspace | 0.80% (0.20), 1.0 / 108 | 0.10% |
+| Before the sight, behind another window (above) | 0.65% (0.13), 1.0 / 115 | |
+
+² The fullscreen window's own redraws.
+
+What matters on screen costs a busy server 1.2 points on the window's
+thread over hidden: the typing line and a message a second, each a view
+and a frame; the member list waits. Hidden is the same as behind another
+window was: one wakeup a second, for the message that passes the gate.
+A maximised window under a fullscreen one kept getting mutter's frames
+there, 60 a second, and stayed on screen, so GNOME counts as a desktop
+that can't tell (`docs/iced/README.md`, "What each desktop can tell").
+
 ### Drawing on a graphics adapter
 
 The iced window on the processor (tiny-skia), on the integrated Radeon 610M

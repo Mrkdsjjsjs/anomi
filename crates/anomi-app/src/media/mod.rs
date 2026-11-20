@@ -7,8 +7,9 @@
 //! The projection ([`show`]) runs after the timeline's, as it fills the
 //! rows that play in place, under `Reach::VIDEO` for what the core says of
 //! the players and the viewer. A frame costs a redraw of its rectangle and
-//! nothing else; nothing runs while the window is behind or in the tray,
-//! or what plays is paused, ended or out of view.
+//! nothing else; nothing runs while the window isn't live (hidden, in the
+//! tray, or resting unfocused: `Chrome::live`), or what plays is paused,
+//! ended or out of view.
 
 mod frames;
 mod time;
@@ -72,13 +73,13 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
 }
 
 /// Shows the video, the viewer and the voice messages, after the rows were
-/// built, and follows the frames of what can be seen: with the window in
-/// front, the video full screen or its row in view.
+/// built, and follows the frames of what can be seen: with the window live,
+/// the video full screen or its row in view.
 pub fn show(state: &AppState, vm: &mut Vm, media: &mut Media) {
     let video = video::show(state, vm, &mut media.video);
     voice::show(state, vm);
     viewer::show(state, &mut vm.shell, &mut vm.chat.viewer, &mut media.viewer);
-    media.playing = video.filter(|_| vm.chrome.focused);
+    media.playing = video.filter(|_| vm.chrome.live);
     follow_all(media);
 }
 

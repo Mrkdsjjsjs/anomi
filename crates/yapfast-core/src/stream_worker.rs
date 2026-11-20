@@ -35,7 +35,7 @@ use yapfast_discord::{
     congestion,
     rtp::Codec,
     stream::StreamServer,
-    stream_connection::{self, Link, StreamReceiver, StreamSender},
+    stream_connection::{self, Link, ReceivedFrame, StreamReceiver, StreamSender},
 };
 
 use livekit::webrtc::{
@@ -847,9 +847,10 @@ impl Sink {
     fn frame(&mut self, picture: &mut I420Buffer) -> Result<()> {
         let (width, height) = (picture.width(), picture.height());
         let thumbnail_due = self.preview_due.is_some_and(|due| due <= Instant::now());
-        // With the window behind another nobody sees the preview, so it
-        // isn't scaled and converted at all, but for a thumbnail that's due.
-        if !self.writer.paused() || thumbnail_due {
+        // With the window behind another, or hidden, nobody sees the
+        // preview, so it isn't scaled and converted at all, but for a
+        // thumbnail that's due.
+        if !self.writer.unseen() || thumbnail_due {
             let preview = fit(width, height, PREVIEW_WIDTH, PREVIEW_HEIGHT);
             let mut smaller = (preview != (width, height))
                 .then(|| picture.scale(preview.0 as i32, preview.1 as i32));
@@ -1451,11 +1452,13 @@ fn show_stream_picture(
 }
 
 /// Shows someone's stream: whole frames from the connection, decoded, then
-/// scaled down if they don't fit, and plays its sound.
+/// scaled down if they don't fit, and plays its sound. While the window
+/// shows no picture of it the frames are decoded and not shown
+/// ([`Showing`]), and after a while its video stops at Discord ([`Hold`]).
 fn watch(
     server: StreamServer,
     mut writer: Writer,
-    (max_width, max_height): (u32, u32),
+    maximum: (u32, u32),
     sound: Sound,
     stop: &AtomicBool,
     report: &mut dyn FnMut(Report),
@@ -1472,13 +1475,9 @@ fn watch(
         .inspect_err(|error| tracing::warn!(error = format!("{error:#}"), "watching without sound"))
         .ok()
     });
-    let mut decoder: Option<Decoder> = None;
-    // A frame that doesn't fit scales through `scratch`, a picture of the
-    // size shown; one that does goes straight into the shared frame. One a
-    // phone sends turned goes through `strip`, a few rows of it.
-    let (mut scratch, mut strip) = (vec![], vec![]);
+    let mut showing = Showing::default();
+    let mut hold = Hold::default();
     let mut shown = false;
-    let mut failures = 0u64;
     while !stop.load(Ordering::Relaxed) {
         while let Ok(control) = sound.controls.try_recv() {
             match control {
@@ -1491,55 +1490,302 @@ fn watch(
         if let Link::Ended(reason) = receiver.link() {
             bail!(tr!("Lost the stream: {}", reason));
         }
+        // At least every 100 ms, as the wait for a frame below. A hidden
+        // window shows nothing, though it may not have paused frames made
+        // while it's in the tray.
+        let sounds = receiver.sounds_received();
+        let (unseen, never) = (writer.unseen(), hold.never);
+        match hold.step(unseen, writer.hidden(), sounds, Instant::now()) {
+            HoldStep::Keep => {}
+            HoldStep::Hold => {
+                tracing::info!("nobody sees the stream: its video stops until it shows");
+                receiver.want_video(false);
+                showing.release();
+            }
+            // Asked here too: a hold the connection didn't get to tell
+            // Discord of has its video still coming, from no keyframe.
+            HoldStep::Want => {
+                tracing::info!("the stream shows again: its video is asked for");
+                receiver.want_video(true);
+                receiver.request_keyframe();
+            }
+            HoldStep::Silenced => {
+                tracing::info!(
+                    "the stream's sound stopped as its video did: the video is asked for, \
+                     to hear whether the sound comes back with it"
+                );
+                receiver.want_video(true);
+                receiver.request_keyframe();
+            }
+        }
+        if hold.never && !never {
+            tracing::warn!(
+                "the stream's sound came back with its video: it stays wanted while watched"
+            );
+        }
         let Some(frame) = receiver.next(Duration::from_millis(100)) else {
             continue;
         };
-        if decoder
+        // Still on its way as the video stopped.
+        if hold.held() {
+            continue;
+        }
+        match showing.take(&frame, &mut writer, maximum)? {
+            Took::Failed => receiver.request_keyframe(),
+            Took::Shown(width, height) if !shown => {
+                shown = true;
+                tracing::info!(width, height, codec = ?frame.codec, "showing the stream");
+                report(Report::Streaming);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// How long a watched stream's picture goes unseen in a hidden window,
+/// not on screen at all ([`Writer::hidden`]), before its video stops at
+/// Discord ([`Hold`]).
+const HOLD_HIDDEN: Duration = Duration::from_secs(5);
+/// And in a window on screen that shows none of it: resting unfocused, or
+/// with Settings over the call. Longer, so switching windows doesn't drop
+/// the video and ask for it again each time.
+const HOLD_RESTING: Duration = Duration::from_secs(30);
+/// How long after the video stopped its sound may stop with it, and how
+/// long after the video is asked for again its sound may come back with it.
+const HOLD_SOUND_CHECK: Duration = Duration::from_secs(2);
+/// The sound flows while a packet of it came within this, and has stopped
+/// once none came for as long.
+const SOUND_FLOWING: Duration = Duration::from_secs(1);
+/// Sound heard within this, quiet as a hold falls due: the hold waits for
+/// its next packet, so that whether it stops with the video can be heard.
+const SOUND_LATELY: Duration = Duration::from_secs(30);
+
+/// What showing a watched stream keeps from frame to frame. While the
+/// window shows none of its frames ([`Writer::unseen`]) each is still
+/// decoded, so the reference chain holds and the next shows as soon as the
+/// window does, but none is converted or written.
+#[derive(Default)]
+struct Showing {
+    decoder: Option<Decoder>,
+    /// A frame that doesn't fit scales through `scratch`, a picture of the
+    /// size shown; one that does goes straight into the shared frame. One a
+    /// phone sends turned goes through `strip`, a few rows of it.
+    scratch: Vec<u8>,
+    strip: Vec<u8>,
+    /// The video stopped at Discord: the frames before the next keyframe
+    /// can't be decoded, so the tile keeps its last picture until then.
+    keyframe_due: bool,
+    /// Frames that wouldn't decode.
+    failures: u64,
+}
+
+/// What became of a frame of a watched stream.
+#[derive(Debug, PartialEq, Eq)]
+enum Took {
+    /// Dropped undecoded: it came before the keyframe the video starts from
+    /// again.
+    Skipped,
+    /// It wouldn't decode: the streamer should send a keyframe.
+    Failed,
+    /// Decoded, keeping the decoder's place, and not shown: the window
+    /// shows none of the stream's frames, or the decoder holds it back.
+    Decoded,
+    /// Shown, at this size.
+    Shown(u32, u32),
+}
+
+impl Showing {
+    /// Decodes `frame`, and while the window shows the stream's frames,
+    /// writes its picture into the shared frame, turned upright and scaled
+    /// down to fit `maximum`.
+    fn take(
+        &mut self,
+        frame: &ReceivedFrame,
+        writer: &mut Writer,
+        maximum: (u32, u32),
+    ) -> Result<Took> {
+        if self.keyframe_due {
+            if !frame.keyframe {
+                return Ok(Took::Skipped);
+            }
+            self.keyframe_due = false;
+        }
+        if self
+            .decoder
             .as_ref()
             .is_none_or(|decoder| decoder.codec() != frame.codec)
         {
-            decoder = Some(Decoder::new(frame.codec)?);
+            self.decoder = Some(Decoder::new(frame.codec)?);
         }
-        let Some(decoder) = decoder.as_mut() else {
-            continue;
+        let Some(decoder) = self.decoder.as_mut() else {
+            return Ok(Took::Skipped);
         };
         let picture = match decoder.decode(&frame.data) {
             Ok(Some(picture)) => picture,
-            Ok(None) => continue,
+            Ok(None) => return Ok(Took::Decoded),
             Err(error) => {
-                failures += 1;
+                self.failures += 1;
                 // The first of a run, and then now and again.
-                if failures == 1 || failures.is_multiple_of(100) {
+                if self.failures == 1 || self.failures.is_multiple_of(100) {
                     tracing::warn!(
                         error = format!("{error:#}"),
-                        failures,
+                        failures = self.failures,
                         keyframe = frame.keyframe,
                         size = frame.data.len(),
                         "a stream frame didn't decode"
                     );
                 }
-                receiver.request_keyframe();
-                continue;
+                return Ok(Took::Failed);
             }
         };
-        let (width, height) = show_stream_picture(
-            &mut writer,
-            picture.i420(),
-            Turn {
-                turns: frame.orientation.turns,
-                flip: frame.orientation.flip,
-            },
-            (max_width, max_height),
-            &mut scratch,
-            &mut strip,
-        );
-        if !shown {
-            shown = true;
-            tracing::info!(width, height, codec = ?frame.codec, "showing the stream");
-            report(Report::Streaming);
+        if writer.unseen() {
+            return Ok(Took::Decoded);
         }
+        let turn = Turn {
+            turns: frame.orientation.turns,
+            flip: frame.orientation.flip,
+        };
+        let (width, height) = show_stream_picture(
+            writer,
+            picture.i420(),
+            turn,
+            maximum,
+            &mut self.scratch,
+            &mut self.strip,
+        );
+        Ok(Took::Shown(width, height))
     }
-    Ok(())
+
+    /// The video stopped at Discord: the decoder and the buffers go, and
+    /// the next frame shown is a keyframe.
+    fn release(&mut self) {
+        *self = Self {
+            keyframe_due: true,
+            failures: self.failures,
+            ..Self::default()
+        };
+    }
+}
+
+/// What [`Hold`] asks of Discord.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldStep {
+    /// Nothing changes.
+    Keep,
+    /// None of the video: nobody has seen its picture for long enough.
+    Hold,
+    /// The video again: its picture shows.
+    Want,
+    /// The video again: its sound stopped as it did, and whether the sound
+    /// comes back with it is heard.
+    Silenced,
+}
+
+/// Whether a watched stream's video stops at Discord
+/// ([`StreamReceiver::want_video`]), its sound going on: after
+/// [`HOLD_HIDDEN`] unseen in a hidden window, or [`HOLD_RESTING`] in one on
+/// screen, and back as soon as its picture shows. Nobody has checked that
+/// Discord's servers keep a stream's sound flowing without its video, so
+/// the hold listens. Sound that came just before the video stopped and
+/// stops within [`HOLD_SOUND_CHECK`] after, no packet for
+/// [`SOUND_FLOWING`], has the video asked for again at once; if the sound
+/// then comes back within [`HOLD_SOUND_CHECK`], it stopped with the video,
+/// and the stream isn't held again while it's watched. If it doesn't, it
+/// was the stream's own silence, and the wait starts over. A hold that
+/// falls due in a quiet moment, with sound heard within [`SOUND_LATELY`],
+/// waits for the next packet, so it's listened to as well; once a hold
+/// heard the sound go on, later ones don't wait.
+#[derive(Debug, Default)]
+struct Hold {
+    /// Since when the window shows no picture of the stream, and since when
+    /// it's hidden too.
+    unseen: Option<Instant>,
+    hidden: Option<Instant>,
+    /// When the video stopped, while it's stopped.
+    held: Option<Instant>,
+    /// The sound's packets counted so far, and when the count last grew.
+    sounds: u64,
+    heard: Option<Instant>,
+    /// The sound flowed as the video stopped: whether it stops is listened
+    /// for.
+    checking: bool,
+    /// When the video was asked for again as the sound stopped, while
+    /// whether the sound comes back with it is listened for.
+    probing: Option<Instant>,
+    /// The sound went on through a hold: Discord keeps it without the video.
+    proven: bool,
+    /// The sound stopped with the video and came back with it: the stream
+    /// isn't held again.
+    never: bool,
+}
+
+impl Hold {
+    /// Whether the video is stopped at Discord: frames still on their way
+    /// are dropped.
+    fn held(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// Notes at `now` whether the window shows none of the stream's frames
+    /// (`paused`) and whether it's hidden, with the count of the stream's
+    /// sound packets so far; says what to ask of Discord.
+    fn step(&mut self, paused: bool, hidden: bool, sounds: u64, now: Instant) -> HoldStep {
+        if sounds != self.sounds {
+            self.sounds = sounds;
+            self.heard = Some(now);
+        }
+        let since = |was: Option<Instant>, so: bool| so.then_some(was.unwrap_or(now));
+        self.unseen = since(self.unseen, paused);
+        self.hidden = since(self.hidden, paused && hidden);
+        let past = |at: Option<Instant>, wait: Duration| {
+            at.is_some_and(|at| now.saturating_duration_since(at) >= wait)
+        };
+        let flowing = !past(self.heard, SOUND_FLOWING) && self.heard.is_some();
+        if let Some(probe) = self.probing {
+            // Back with the video: it stopped with it.
+            if self.heard.is_some_and(|heard| heard > probe) {
+                self.probing = None;
+                self.never = true;
+            } else if past(Some(probe), HOLD_SOUND_CHECK) {
+                // Not back with the video either: the stream's own silence.
+                // The wait for a hold starts over.
+                self.probing = None;
+                self.unseen = paused.then_some(now);
+                self.hidden = (paused && hidden).then_some(now);
+            }
+            return HoldStep::Keep;
+        }
+        let Some(held) = self.held else {
+            let due = past(self.unseen, HOLD_RESTING) || past(self.hidden, HOLD_HIDDEN);
+            let lately = self.heard.is_some() && !past(self.heard, SOUND_LATELY);
+            if !due || self.never || (lately && !flowing && !self.proven) {
+                return HoldStep::Keep;
+            }
+            self.held = Some(now);
+            self.checking = flowing && !self.proven;
+            return HoldStep::Hold;
+        };
+        if !paused {
+            self.held = None;
+            self.checking = false;
+            return HoldStep::Want;
+        }
+        if self.checking {
+            if !flowing {
+                self.checking = false;
+                self.held = None;
+                self.probing = Some(now);
+                return HoldStep::Silenced;
+            }
+            // Still flowing a second after the time it could stop in.
+            if past(Some(held), HOLD_SOUND_CHECK + SOUND_FLOWING) {
+                self.checking = false;
+                self.proven = true;
+            }
+        }
+        HoldStep::Keep
+    }
 }
 
 /// Sleeps until the next frame is due, or returns false once told to stop.
@@ -2857,6 +3103,242 @@ mod tests {
                 assert_eq!(shown, (expected, turns >= 2, turns < 2));
             }
         }
+    }
+
+    /// The recorded VP8 stream's frames, as the connection hands them on.
+    fn vp8_frames() -> Vec<ReceivedFrame> {
+        let file = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testing/fixtures/stream-vp8.ivf"),
+        )
+        .unwrap();
+        let mut at = usize::from(u16::from_le_bytes([file[6], file[7]]));
+        let mut frames = vec![];
+        while at + 12 <= file.len() {
+            let size = u32::from_le_bytes(file[at..at + 4].try_into().unwrap()) as usize;
+            let data = file[at + 12..at + 12 + size].to_vec();
+            frames.push(ReceivedFrame {
+                codec: Codec::Vp8,
+                // A VP8 frame's first bit is 0 on a keyframe.
+                keyframe: data[0] & 1 == 0,
+                data,
+                orientation: yapfast_discord::rtp::Orientation::default(),
+            });
+            at += 12 + size;
+        }
+        frames
+    }
+
+    /// While the window shows no picture of a watched stream, its frames are
+    /// decoded but none is converted or written, and the next shows as soon
+    /// as the window does; after its video stopped at Discord, frames wait
+    /// for a keyframe, the decoder gone meanwhile.
+    #[test]
+    fn decodes_a_stream_but_writes_nothing_while_unseen() {
+        let frames = vp8_frames();
+        assert!(frames.len() > 5);
+        assert!(frames[0].keyframe && !frames[1].keyframe);
+        let shared = Frames::create(320, 180).unwrap();
+        let mut writer = Writer::open(&shared.path().unwrap()).unwrap();
+        shared.unlink();
+        let (mut showing, maximum) = (Showing::default(), (320, 180));
+        shared.pause(true);
+        for frame in &frames[..3] {
+            let took = showing.take(frame, &mut writer, maximum).unwrap();
+            assert_eq!(took, Took::Decoded);
+        }
+        assert!(shared.take(|_, _, _| ()).is_none(), "nothing written");
+        shared.pause(false);
+        let took = showing.take(&frames[3], &mut writer, maximum).unwrap();
+        assert_eq!(took, Took::Shown(320, 180), "a delta frame, at once");
+        let size = shared.take(|width, height, _| (width, height));
+        assert_eq!(size, Some((320, 180)));
+        // A hidden window shows nothing, though it didn't pause the frames
+        // (made while it's in the tray).
+        shared.hide(true);
+        let took = showing.take(&frames[4], &mut writer, maximum).unwrap();
+        assert_eq!(took, Took::Decoded);
+        assert!(
+            shared.take(|_, _, _| ()).is_none(),
+            "nothing written hidden"
+        );
+        shared.hide(false);
+
+        showing.release();
+        assert!(showing.decoder.is_none());
+        let took = showing.take(&frames[5], &mut writer, maximum).unwrap();
+        assert_eq!(took, Took::Skipped);
+        assert!(shared.take(|_, _, _| ()).is_none());
+        let took = showing.take(&frames[0], &mut writer, maximum).unwrap();
+        assert_eq!(took, Took::Shown(320, 180), "from the keyframe");
+    }
+
+    /// A time `ms` milliseconds after `start`.
+    fn after(start: Instant, ms: u64) -> Instant {
+        start + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn holds_a_streams_video_after_5_s_hidden_and_30_s_resting() {
+        let start = Instant::now();
+        let mut hold = Hold::default();
+        let mut step = |paused, hidden, ms| hold.step(paused, hidden, 0, after(start, ms));
+        assert_eq!(step(true, true, 0), HoldStep::Keep);
+        assert_eq!(step(true, true, 4_900), HoldStep::Keep);
+        assert_eq!(step(true, true, 5_000), HoldStep::Hold);
+        assert_eq!(step(true, true, 9_000), HoldStep::Keep);
+        assert_eq!(step(false, false, 9_100), HoldStep::Want);
+        assert!(!hold.held());
+
+        // Unfocused under "Rest", or the tile out of sight: 30 s.
+        let mut hold = Hold::default();
+        let mut step = |paused, hidden, ms| hold.step(paused, hidden, 0, after(start, ms));
+        assert_eq!(step(true, false, 0), HoldStep::Keep);
+        assert_eq!(step(true, false, 29_900), HoldStep::Keep);
+        assert_eq!(step(true, false, 30_000), HoldStep::Hold);
+        assert_eq!(step(true, false, 30_100), HoldStep::Keep);
+        assert!(hold.held());
+    }
+
+    /// Switching windows back and forth starts the wait over each time; a
+    /// window that rests, then hides, waits 5 s from when it hid.
+    #[test]
+    fn a_streams_wait_starts_over_each_time_its_picture_shows() {
+        let start = Instant::now();
+        let mut hold = Hold::default();
+        let mut step = |paused, hidden, ms| hold.step(paused, hidden, 0, after(start, ms));
+        for round in 0..4 {
+            let from = round * 25_000;
+            assert_eq!(step(true, false, from), HoldStep::Keep);
+            assert_eq!(step(true, false, from + 24_000), HoldStep::Keep);
+            assert_eq!(step(false, false, from + 24_500), HoldStep::Keep);
+        }
+        assert_eq!(step(true, false, 100_000), HoldStep::Keep);
+        assert_eq!(step(true, true, 110_000), HoldStep::Keep);
+        assert_eq!(step(true, true, 114_900), HoldStep::Keep);
+        assert_eq!(step(true, true, 115_000), HoldStep::Hold);
+    }
+
+    /// Steps a hidden window every 100 ms from `from` to `to`, the stream's
+    /// sound coming at 50 packets a second while `sounding`: what the steps
+    /// said but `Keep`, and when.
+    fn hidden_steps(
+        hold: &mut Hold,
+        start: Instant,
+        (from, to): (u64, u64),
+        sounding: bool,
+        sounds: &mut u64,
+    ) -> Vec<(u64, HoldStep)> {
+        let mut said = vec![];
+        for ms in (from..=to).step_by(100) {
+            if sounding {
+                *sounds += 5;
+            }
+            let step = hold.step(true, true, *sounds, after(start, ms));
+            if step != HoldStep::Keep {
+                said.push((ms, step));
+            }
+        }
+        said
+    }
+
+    /// Sound that stops with the video, at once or within 2 s, has it asked
+    /// for again as a second passes without any; sound that then comes back
+    /// with it stopped with it, and the stream isn't held again. Sound that
+    /// goes on, or stops later, keeps it held, and a stream without sound
+    /// is held as well.
+    #[test]
+    fn a_streams_video_comes_back_when_its_sound_stops_with_it() {
+        let start = Instant::now();
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let mut steps =
+            |range, sounding| hidden_steps(&mut hold, start, range, sounding, &mut sounds);
+        assert_eq!(steps((0, 5_000), true), [(5_000, HoldStep::Hold)]);
+        assert_eq!(steps((5_100, 6_000), false), [(6_000, HoldStep::Silenced)]);
+        assert!(
+            steps((6_100, 7_000), true).is_empty(),
+            "back with the video"
+        );
+        let said = steps((7_100, 60_000), true);
+        assert!(said.is_empty(), "never held again: {said:?}");
+        assert!(!hold.held() && hold.never);
+
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let mut steps =
+            |range, sounding| hidden_steps(&mut hold, start, range, sounding, &mut sounds);
+        assert_eq!(steps((0, 5_000), true), [(5_000, HoldStep::Hold)]);
+        assert!(steps((5_100, 6_500), true).is_empty());
+        assert_eq!(steps((6_600, 9_000), false), [(7_500, HoldStep::Silenced)]);
+
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let mut steps =
+            |range, sounding| hidden_steps(&mut hold, start, range, sounding, &mut sounds);
+        assert_eq!(steps((0, 5_000), true), [(5_000, HoldStep::Hold)]);
+        assert!(steps((5_100, 7_900), true).is_empty());
+        let said = steps((8_000, 30_000), false);
+        assert!(said.is_empty(), "the stream's own silence: {said:?}");
+        assert!(hold.held());
+
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let mut steps =
+            |range, sounding| hidden_steps(&mut hold, start, range, sounding, &mut sounds);
+        assert_eq!(steps((0, 5_000), true), [(5_000, HoldStep::Hold)]);
+        let said = steps((5_100, 20_000), true);
+        assert!(said.is_empty(), "the sound went on: {said:?}");
+        assert!(hold.held());
+        let step = hold.step(false, false, sounds, after(start, 20_100));
+        assert_eq!(step, HoldStep::Want);
+
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let said = hidden_steps(&mut hold, start, (0, 20_000), false, &mut sounds);
+        assert_eq!(said, [(5_000, HoldStep::Hold)], "no sound to look at");
+        assert!(hold.held());
+    }
+
+    /// Sound that stops as the video does, and doesn't come back with it
+    /// asked for again, was the stream's own silence: the stream is held
+    /// again, once it's been quiet for 30 s or at its next packet.
+    #[test]
+    fn a_streams_own_silence_lets_it_be_held_again() {
+        let start = Instant::now();
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let mut steps =
+            |range, sounding| hidden_steps(&mut hold, start, range, sounding, &mut sounds);
+        assert_eq!(steps((0, 5_000), true), [(5_000, HoldStep::Hold)]);
+        assert_eq!(steps((5_100, 8_000), false), [(6_000, HoldStep::Silenced)]);
+        // Quiet since 5 s: heard lately, so the next hold waits for sound,
+        // or for 30 s of quiet.
+        assert_eq!(steps((8_100, 40_000), false), [(35_000, HoldStep::Hold)]);
+        assert!(!hold.never);
+
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let mut steps =
+            |range, sounding| hidden_steps(&mut hold, start, range, sounding, &mut sounds);
+        assert_eq!(steps((0, 5_000), true), [(5_000, HoldStep::Hold)]);
+        assert_eq!(steps((5_100, 8_000), false), [(6_000, HoldStep::Silenced)]);
+        assert!(steps((8_100, 12_000), false).is_empty());
+        assert_eq!(steps((12_100, 14_000), true), [(13_000, HoldStep::Hold)]);
+    }
+
+    /// A hold that falls due in a quiet moment, sound heard lately, waits
+    /// for its next packet, so whether the sound stops with the video is
+    /// heard; once a hold heard it go on, later ones don't wait.
+    #[test]
+    fn a_hold_waits_for_the_sound_until_one_heard_it_go_on() {
+        let start = Instant::now();
+        let (mut hold, mut sounds) = (Hold::default(), 0);
+        let mut steps =
+            |range, sounding| hidden_steps(&mut hold, start, range, sounding, &mut sounds);
+        assert!(steps((0, 3_000), true).is_empty());
+        assert!(steps((3_100, 7_000), false).is_empty(), "quiet at 5 s");
+        assert_eq!(steps((7_100, 12_000), true), [(7_100, HoldStep::Hold)]);
+        assert!(hold.proven, "the sound went on through it");
+        assert_eq!(
+            hold.step(false, false, sounds, after(start, 12_100)),
+            HoldStep::Want
+        );
+        let said = hidden_steps(&mut hold, start, (20_000, 26_000), false, &mut sounds);
+        assert_eq!(said, [(25_000, HoldStep::Hold)], "quiet, and held at once");
     }
 
     /// A worker that dies without a [`Report::Ended`] logs a warning with

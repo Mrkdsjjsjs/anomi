@@ -42,6 +42,8 @@ fn main() {
     // Drawn as a window in front would be, with nothing still moving.
     let motion = Motion {
         front: true,
+        unseen: false,
+        background: anomi_theme::motion::Background::Nothing,
         never: true,
         idle: false,
     };

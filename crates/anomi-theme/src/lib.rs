@@ -8,7 +8,8 @@
 //!   widget's style catalog is implemented for it in [`catalog`], so a style
 //!   closure reads `theme.palette()`.
 //! - [`metrics`] and [`typography`]: sizes and type, as `ClientStyle` has them.
-//! - [`motion`]: durations and easings, and the switch that stops them all.
+//! - [`motion`]: durations and easings, and the switch that stops them all,
+//!   from where the window stands ([`Sight`]) and the [`Background`] setting.
 //! - [`View`] and [`Element`]: the widget types every view returns.
 //! - [`Renderer`] and [`renderer`]: what draws, on a graphics adapter or the
 //!   processor, and a renderer that always draws on the processor.
@@ -27,7 +28,7 @@ pub mod renderer;
 mod theme;
 pub mod typography;
 
-pub use motion::Motion;
+pub use motion::{Background, Motion, Sight};
 pub use palette::{Palette, rgb, rgba};
 pub use theme::Theme;
 

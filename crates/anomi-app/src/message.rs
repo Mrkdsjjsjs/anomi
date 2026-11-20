@@ -41,6 +41,9 @@ pub enum Message {
     Release,
     /// The window came in front, or went behind another.
     Focused(bool),
+    /// Whether the desktop paints the window, as its frames say, and
+    /// whether the desktop can say (`crate::window::seen`).
+    Sight(crate::window::seen::Heard),
     /// The window's size changed, in the view's pixels.
     Resized(Size),
     /// Shift was pressed or let go.

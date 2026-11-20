@@ -8,9 +8,10 @@
 //!
 //! A frame changes nothing here: it goes to its `Live` and asks a redraw
 //! (`crate::media`). Only the tiles whose inputs changed are built again,
-//! and nothing runs for the call while the window is behind or gone: the
-//! feeds are told they don't show, the frames aren't followed, the clock
-//! holds, and coming back says it all once.
+//! and nothing runs for the call while the window isn't live (hidden, or
+//! resting unfocused: `Chrome::live`) or is gone: the feeds are told they
+//! don't show, the frames aren't followed, the clock holds, and coming
+//! back says it all once.
 
 pub mod devices;
 mod dock;
@@ -270,9 +271,9 @@ fn corner(
     }
 }
 
-/// Tells the feeds where they show and follows the pictures in sight, in
-/// front (`place_videos`); the grid's placement and the corner say where.
-/// Notes the previews in sight too.
+/// Tells the feeds where they show and follows the pictures in sight while
+/// the window is live (`place_videos`); the grid's placement and the
+/// corner say where. Notes the previews in sight too.
 pub fn place(core: &Application, vm: &Vm, shown: &mut Shown, media: &mut Media) {
     let voice = &core.state.voice;
     let participants = if voice.active() {
@@ -299,7 +300,7 @@ pub fn place(core: &Application, vm: &Vm, shown: &mut Shown, media: &mut Media) 
         anomi_vm::conversation::Call::Here { .. }
     );
     let sight = lives::Sight {
-        front: vm.chrome.focused && voice.active(),
+        live: vm.chrome.live && voice.active(),
         grid: full || (in_call && !covered),
         placement: shown.placement,
         pip: shown

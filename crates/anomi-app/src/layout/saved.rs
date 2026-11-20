@@ -9,8 +9,8 @@
 //!
 //! Anomi's own keys, which the Slint app doesn't have (the processor's
 //! cores, what draws the interface, where streams encode and their
-//! bitrate's unlock, echo cancellation, the people whose voice is cleaned
-//! and the streams muted),
+//! bitrate's unlock, echo cancellation, the people whose voice is cleaned,
+//! the streams muted and what a window on screen but unfocused keeps doing),
 //! are written only once set, so a file the Slint app wrote reads and
 //! writes back unchanged; it keeps them through its own catch-all.
 
@@ -67,6 +67,10 @@ pub struct Saved {
     /// Discord shows this account idle after 10 minutes unused; on unless
     /// turned off.
     pub show_idle: Option<bool>,
+    /// What a window on screen but not focused keeps doing; unset, this
+    /// desktop's default (`crate::window::background`). Written once chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_updates: Option<anomi_theme::Background>,
     /// Games this device names itself: an executable, by file name or full
     /// path, and the game to show for it.
     pub game_executables: Vec<(String, String)>,

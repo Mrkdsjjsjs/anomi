@@ -298,6 +298,8 @@ fn main() {
     picture::set_scale(options.scale);
     let motion = Motion {
         front: true,
+        unseen: false,
+        background: anomi_theme::motion::Background::Nothing,
         never: !options.lines,
         idle: false,
     };

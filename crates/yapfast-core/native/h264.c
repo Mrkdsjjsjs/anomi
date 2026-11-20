@@ -14,11 +14,26 @@ struct yapfast_h264 {
   x264_param_t param;
 };
 
-/* Aims for `kbps`, never above it over half a second's buffer. */
-static void set_rate(x264_param_t *param, unsigned kbps) {
+/* The rate control's buffer at `fps` frames a second, in milliseconds:
+ * `ms`, and at least three frames. Over any span the encoder sends at most
+ * its rate for that long and the buffer, so a keyframe or a scene cut goes
+ * past the rate by that much at most, which the stream connection's limiter
+ * (yapfast_discord::pacer) sends within it: a fifth of a second for a
+ * stream held under a ceiling past Discord's documented 9 Mbit/s, half a
+ * second otherwise and for the camera, whose keyframes keep more detail.
+ * hwenc.c sizes the GPU encoders' alike. */
+static unsigned rc_buffer_ms(unsigned fps, unsigned ms) {
+  unsigned frames = fps ? 3000 / fps : 3000;
+  return frames > ms ? frames : ms;
+}
+
+/* Aims for `kbps`, never above it over the buffer of rc_buffer_ms. */
+static void set_rate(x264_param_t *param, unsigned kbps, unsigned ms) {
+  unsigned fps = param->i_fps_den ? param->i_fps_num / param->i_fps_den : 0;
+  unsigned long long buffer = (unsigned long long)kbps * rc_buffer_ms(fps, ms) / 1000;
   param->rc.i_bitrate = (int)kbps;
   param->rc.i_vbv_max_bitrate = (int)kbps;
-  param->rc.i_vbv_buffer_size = kbps > 1 ? (int)(kbps / 2) : 1;
+  param->rc.i_vbv_buffer_size = buffer > 1 ? (int)buffer : 1;
 }
 
 /* A realtime encoder, as measured on screen recordings and games (see
@@ -26,9 +41,15 @@ static void set_rate(x264_param_t *param, unsigned kbps) {
  * 1, with zero latency: a frame out for each frame in, no B-frames or
  * lookahead, and a slice for each thread. Main profile, which Discord's own client
  * sends; adaptive quantization off, which kept text sharper and games no
- * worse; parameter sets before each IDR. */
+ * worse; parameter sets before each IDR. The bitrate is capped over a buffer
+ * of `buffer_ms` (set_rate), in average bitrate mode with the VBV's peak at the
+ * target: no filler, so a calm screen sends less, and no HRD in the stream,
+ * which a VBV changed while encoding would make wrong. Keyframes stay IDRs,
+ * whole: Discord's viewers start decoding only at one, and ask for one when
+ * they join, so periodic intra refresh would spare none of them. */
 struct yapfast_h264 *yapfast_h264_new(unsigned width, unsigned height, unsigned fps,
-                                      unsigned kbps, unsigned threads, unsigned effort) {
+                                      unsigned kbps, unsigned threads, unsigned effort,
+                                      unsigned buffer_ms) {
   struct yapfast_h264 *h264 = calloc(1, sizeof *h264);
   if (!h264) return NULL;
   x264_param_t *param = &h264->param;
@@ -51,7 +72,7 @@ struct yapfast_h264 *yapfast_h264_new(unsigned width, unsigned height, unsigned 
   param->b_repeat_headers = 1;
   param->b_annexb = 1;
   param->rc.i_rc_method = X264_RC_ABR;
-  set_rate(param, kbps);
+  set_rate(param, kbps, buffer_ms);
   param->rc.i_aq_mode = X264_AQ_NONE;
   /* libyuv converts captured pixels with BT.601's limited range. */
   param->vui.i_colorprim = 6;
@@ -103,10 +124,10 @@ long yapfast_h264_encode(struct yapfast_h264 *h264, const unsigned char *y,
   return size;
 }
 
-/* Changes the bitrate the encoder aims for, as the network allows. Returns
- * 0, or nonzero on failure. */
-int yapfast_h264_set_bitrate(struct yapfast_h264 *h264, unsigned kbps) {
-  set_rate(&h264->param, kbps);
+/* Changes the bitrate the encoder aims for, as the network allows, and its
+ * buffer, as the stream's ceiling asks. Returns 0, or nonzero on failure. */
+int yapfast_h264_set_bitrate(struct yapfast_h264 *h264, unsigned kbps, unsigned buffer_ms) {
+  set_rate(&h264->param, kbps, buffer_ms);
   return x264_encoder_reconfig(h264->encoder, &h264->param) < 0;
 }
 

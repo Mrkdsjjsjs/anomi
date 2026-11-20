@@ -19,7 +19,7 @@ use anomi_voice::share::{self, built, gear, own_menu};
 use super::support::{asked, front, settings};
 
 /// Room for the dialog, and for the stream's menu with its long submenu.
-const ROOM: Size = Size::new(1000.0, 1100.0);
+const ROOM: Size = Size::new(1000.0, 1300.0);
 
 fn simulate(vm: &Share) -> Simulator<'_, Intent, Theme, Renderer> {
     Simulator::with_size(settings(), ROOM, share::view(vm, front()))
@@ -87,8 +87,11 @@ fn unlocked_the_steps_go_to_50_and_the_summary_says_the_limit() {
             "6 Mbit/s",
             "8 Mbit/s",
             "9 Mbit/s",
+            "10 Mbit/s",
             "12 Mbit/s",
+            "14 Mbit/s",
             "15 Mbit/s",
+            "16 Mbit/s",
             "20 Mbit/s",
             "30 Mbit/s",
             "50 Mbit/s",
@@ -176,6 +179,37 @@ fn the_entry_shows_in_the_dialogs_place_and_says_why_it_refuses() {
         asked(ui),
         [Intent::BitrateText("7".into()), Intent::ApplyBitrate]
     );
+    // Past the 16 Mbit/s Discord was seen to take, a value is allowed,
+    // and the dialog says what it risks under the field; at 16, nothing.
+    let warning = "Discord was seen to take up to about 16 Mbit/s. More may break the stream: it can be cut off or dropped.";
+    let past = built(Share {
+        entry: Some(Entry {
+            text: "20".into(),
+            refused: None,
+        }),
+        ..samples::unlocked()
+    });
+    let mut ui = simulate(&past);
+    let title = ui.find("Bitrate limit").unwrap().bounds();
+    let said = ui
+        .find(warning)
+        .expect("the warning, under the field")
+        .bounds();
+    let apply = ui.find("Apply").unwrap().bounds();
+    assert!(
+        title.y < said.y && said.y < apply.y,
+        "between the field and the buttons"
+    );
+    ui.click("Apply").unwrap();
+    assert_eq!(asked(ui), [Intent::ApplyBitrate], "still allowed");
+    let at = built(Share {
+        entry: Some(Entry {
+            text: "16".into(),
+            refused: None,
+        }),
+        ..samples::unlocked()
+    });
+    assert!(simulate(&at).find(warning).is_err());
     // Each refusal says why in words of its own.
     for refused in [Refusal::Empty, Refusal::NotANumber] {
         let vm = built(Share {

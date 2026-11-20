@@ -9,11 +9,12 @@
 //! server received when the round trip climbs well over that or packets are
 //! lost, then holds. It doesn't rise far past what the encoder sends, so a
 //! calm picture can't take it to a rate the uplink never carried, and near
-//! the rate it last backed off from it rises slowly. The cap is Discord's
-//! for the stream's height, or the bitrate limit the person chose when
-//! that's lower, or, with the unlock, up to 50 Mbit/s
-//! (`stream_connection::cap`), or the server's estimate (REMB) when that's
-//! lower still. The cap only ever bounds the target: it is never a floor
+//! the rate it last backed off from it rises slowly. The cap is what the
+//! stream's ceiling on the wire leaves the video (`pacer::encoder_ceiling`):
+//! the ceiling is Discord's for the stream's height, or the bitrate limit
+//! the person chose when that's lower, or, with the unlock, up to 50 Mbit/s
+//! (`stream_connection::cap`). The server's estimate (REMB) bounds it when
+//! that's lower still. The cap only ever bounds the target: it is never a floor
 //! the target is held at. Each rise is a share of the target, so it climbs
 //! to a higher cap in more steps, never at once.
 
@@ -120,7 +121,8 @@ struct Received {
 
 pub struct Controller {
     target: u64,
-    /// Discord's cap for the stream's height, or the person's limit below it.
+    /// What the stream's ceiling on the wire leaves the video: Discord's cap
+    /// for the stream's height, or the person's limit, less the overhead.
     cap: u64,
     /// The server's estimate (REMB), once it sent one.
     estimate: Option<u64>,

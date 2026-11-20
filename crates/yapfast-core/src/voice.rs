@@ -197,9 +197,12 @@ pub struct LinkStats {
 
 /// How this account's shared screen goes out, as its stream worker reports
 /// it each second: the encoder ("h264_nvenc", "x264"), the codec Discord
-/// chose ("H264"), the size and frame rate sent, the kbit/s aimed for and
-/// sent in the last second, and the keyframes viewers asked for and the
-/// packets resent to them since the stream started.
+/// chose ("H264"), the size and frame rate sent, the kbit/s the encoder aims
+/// for, and what the stream connection put on the wire, everything counted
+/// (`yapfast_discord::pacer`): over the last second, the most any second
+/// and any 100 ms of the last five carried, and the ceiling it's held
+/// under; then the keyframes viewers asked for, the packets resent to them
+/// and the frames dropped whole since the stream started.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct StreamStats {
     pub engine: String,
@@ -209,8 +212,16 @@ pub struct StreamStats {
     pub fps: u32,
     pub target_kbps: u32,
     pub sent_kbps: u32,
+    #[serde(default)]
+    pub peak_kbps: u32,
+    #[serde(default)]
+    pub peak_100ms_kbps: u32,
+    #[serde(default)]
+    pub limit_kbps: u32,
     pub keyframe_requests: u64,
     pub resent: u64,
+    #[serde(default)]
+    pub dropped: u64,
 }
 
 /// Reads the call's [`LinkStats`], which the call measures all along and

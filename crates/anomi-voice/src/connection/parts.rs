@@ -104,6 +104,7 @@ pub(super) fn stream<'a, M: 'a>(stream: &'a Stream) -> impl View<M> + 'a {
         line(tr!("Codec:"), &stream.codec).boxed(),
         line(tr!("Resolution:"), &stream.picture).boxed(),
         line(tr!("Sending:"), &stream.sent).boxed(),
+        line(tr!("Peak over 5 s:"), &stream.peak).boxed(),
         line(tr!("Aiming for:"), &stream.target).boxed(),
         line(tr!("Keyframes viewers asked for:"), &stream.keyframes).boxed(),
         line(tr!("Packets resent:"), &stream.resent).boxed(),

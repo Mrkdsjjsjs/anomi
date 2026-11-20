@@ -92,8 +92,11 @@ fn unlocked_the_steps_go_to_50_and_a_limit_is_typed_by_hand() {
             "6 Mbit/s",
             "8 Mbit/s",
             "9 Mbit/s",
+            "10 Mbit/s",
             "12 Mbit/s",
+            "14 Mbit/s",
             "15 Mbit/s",
+            "16 Mbit/s",
             "20 Mbit/s",
             "30 Mbit/s",
             "50 Mbit/s",
@@ -186,7 +189,9 @@ fn from_the_tiles_menu_the_entry_opens_alone_and_goes_with_its_layer() {
 /// The menus' numbers for the limit are the core's.
 #[test]
 fn the_menus_numbers_are_the_cores() {
-    use anomi_vm::voice::share::{DOCUMENTED_KBPS, UNLOCKED_KBPS};
+    use anomi_vm::voice::share::{ACCEPTED_KBPS, DOCUMENTED_KBPS, UNLOCKED_KBPS};
+    use yapfast_core::yapfast_discord::stream_connection::OBSERVED_MAX;
     assert_eq!(DOCUMENTED_KBPS, yapfast_core::voice::DOCUMENTED_KBPS);
     assert_eq!(UNLOCKED_KBPS, yapfast_core::voice::UNLOCKED_KBPS);
+    assert_eq!(ACCEPTED_KBPS * 1000, OBSERVED_MAX);
 }

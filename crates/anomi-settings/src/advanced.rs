@@ -108,7 +108,7 @@ pub fn view(page: &Advanced, motion: Motion) -> impl View<Intent> + '_ {
     parts.push(
         switch(tr!("Unlocked bitrate"), page.bitrate_unlocked, motion)
             .description(tr!(
-                "Lets a stream's bitrate limit be set by hand above 9 Mbit/s, up to 50. Discord documents 9 Mbit/s as the most; what its servers do with more isn't known: the stream may be cut off, lose packets or be dropped. A higher bitrate also needs an upload that fast, and loads the encoder and the people watching."
+                "Lets a stream's bitrate limit be set above 9 Mbit/s, up to 50. Discord documents 9 Mbit/s as the most, and was seen to take up to about 16 Mbit/s; more may break the stream: it can be cut off, lose packets or be dropped. A higher bitrate also needs an upload that fast, and loads the encoder and the people watching."
             ))
             .on_toggle(Intent::BitrateUnlocked)
             .view(),

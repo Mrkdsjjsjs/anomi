@@ -90,8 +90,11 @@ long yapfast_vp8_encode(struct yapfast_vp8 *encoder, const unsigned char *y,
 }
 
 /* Changes the bitrate the encoder aims for, as the network allows. Returns
- * 0, or nonzero on failure. */
-int yapfast_vp8_set_bitrate(struct yapfast_vp8 *encoder, unsigned kbps) {
+ * 0, or nonzero on failure. The buffer asked for, as h264.c's, goes unused:
+ * libvpx's CBR holds a keyframe to three frames' worth
+ * (VP8E_SET_MAX_INTRA_BITRATE_PCT) and the rest within 15% of the rate. */
+int yapfast_vp8_set_bitrate(struct yapfast_vp8 *encoder, unsigned kbps, unsigned buffer_ms) {
+  (void)buffer_ms;
   vpx_codec_enc_cfg_t config = encoder->config;
   config.rc_target_bitrate = kbps;
   if (vpx_codec_enc_config_set(&encoder->codec, &config)) return 1;

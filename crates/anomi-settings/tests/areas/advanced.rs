@@ -132,7 +132,8 @@ fn optimization_chooses_where_streams_encode_by_key() {
 }
 
 /// "Unlocked bitrate" is a switch under Optimization, off unless turned on,
-/// saying in plain words what passing Discord's 9 Mbit/s risks.
+/// saying in plain words what passing Discord's 9 Mbit/s risks, and that
+/// Discord was seen to take up to about 16.
 #[test]
 fn the_bitrate_unlock_is_a_switch_that_says_what_it_risks() {
     let page = sample::advanced();
@@ -141,7 +142,7 @@ fn the_bitrate_unlock_is_a_switch_that_says_what_it_risks() {
     assert!(ui.find("Unlocked bitrate").is_ok());
     let risks = ui
         .find(
-            "Lets a stream's bitrate limit be set by hand above 9 Mbit/s, up to 50. Discord documents 9 Mbit/s as the most; what its servers do with more isn't known: the stream may be cut off, lose packets or be dropped. A higher bitrate also needs an upload that fast, and loads the encoder and the people watching.",
+            "Lets a stream's bitrate limit be set above 9 Mbit/s, up to 50. Discord documents 9 Mbit/s as the most, and was seen to take up to about 16 Mbit/s; more may break the stream: it can be cut off, lose packets or be dropped. A higher bitrate also needs an upload that fast, and loads the encoder and the people watching.",
         )
         .expect("what it risks, under it")
         .bounds();

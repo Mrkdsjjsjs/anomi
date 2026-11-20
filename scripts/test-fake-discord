@@ -11,7 +11,8 @@
 # runs them side by side, eight at a time (.config/nextest.toml); without
 # it, cargo test runs them one after another.
 # For the yapfast-core tests it starts one fake, waits until it answers,
-# runs them with the `fast` profile, then stops it; its log is
+# runs them with the `fast` profile and YAPFAST_STREAM_TEST_PATTERN=cuts (the
+# picture their shared screens send), then stops it; its log is
 # target/fake-discord.log. Then it does the same for fake_env.rs, against
 # a fake running testing/envs/example.json, whose log is
 # target/fake-discord-env.log.
@@ -70,7 +71,7 @@ fi
 # The shared core's Discord side, against a fake of its own.
 start_fake target/fake-discord.log
 YAPFAST_DISCORD_TEST_SERVER=$server \
-  cargo test --locked --profile fast -p yapfast-core -- --ignored discord_text::tests discord_voice::tests "$@"
+  YAPFAST_STREAM_TEST_PATTERN=cuts cargo test --locked --profile fast -p yapfast-core -- --ignored discord_text::tests discord_voice::tests "$@"
 # The example environment, in a fake of its own.
 start_fake target/fake-discord-env.log --env testing/envs/example.json
 YAPFAST_DISCORD_TEST_SERVER=$server \

@@ -469,7 +469,9 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn serve(input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
+/// Runs the job on `input`'s first line, as [`run`] does on standard
+/// input; the call's tests run a worker in their process with it.
+pub(crate) fn serve(input: Box<dyn BufRead + Send>, report: &mut dyn FnMut(Report)) {
     serve_on(input, report, confine);
 }
 
@@ -657,6 +659,9 @@ struct Sink {
     /// When the stream connection ended, while Discord may still name a
     /// server it moved the stream to.
     lost: Option<Instant>,
+    /// The next frame encoded is a keyframe, as the test pattern's cuts
+    /// ask.
+    forced: bool,
 }
 
 /// A graphics encoder a stream may encode on, with its adapter's name for
@@ -687,22 +692,27 @@ struct Video {
     encoder: Option<Encoder>,
     /// The stream's sound, from the first time there's any to share.
     sound: Option<stream_audio::Capture>,
-    /// When the stream last reported how it goes out, and the bytes it had
-    /// sent then.
-    measured: (Instant, u64),
+    /// When the stream last reported how it goes out.
+    measured: Instant,
+    /// When the encoder's bitrate last changed.
+    retargeted: Instant,
+    /// Windows' timer wakes the sending thread every millisecond, not every
+    /// 15.6, while the stream sends: the limiter lets out 10 ms at a time,
+    /// and would lose what a longer sleep left unsent.
+    _full_speed: crate::audio_io::FullSpeed,
 }
 
 impl Video {
-    /// How the stream goes out, with the kbit/s sent since it last said;
+    /// How the stream goes out: what the stream connection put on the wire,
+    /// everything counted, over the last second, and the most any 100 ms
+    /// and any second of the last five carried, against its ceiling;
     /// nothing without an encoder.
     fn sending(&mut self, fps: u32) -> Option<StreamStats> {
         let encoder = self.encoder.as_ref()?;
         let sent = self.sender.sent();
-        let (since, before) = self.measured;
-        let bits = sent.video_bytes.saturating_sub(before) * 8;
-        let milliseconds = since.elapsed().as_millis().max(1) as u64;
-        self.measured = (Instant::now(), sent.video_bytes);
+        self.measured = Instant::now();
         let (width, height) = encoder.size();
+        let kbps = |bits: u64| u32::try_from(bits / 1000).unwrap_or(u32::MAX);
         Some(StreamStats {
             engine: encoder.engine().to_owned(),
             codec: encoder.codec().name().to_owned(),
@@ -710,9 +720,13 @@ impl Video {
             height,
             fps,
             target_kbps: encoder.bitrate(),
-            sent_kbps: (bits / milliseconds) as u32,
+            sent_kbps: kbps(sent.wire),
+            peak_kbps: kbps(sent.peak_second),
+            peak_100ms_kbps: kbps(sent.peak_100ms),
+            limit_kbps: kbps(sent.ceiling),
             keyframe_requests: sent.keyframe_requests,
             resent: sent.resent,
+            dropped: sent.dropped,
         })
     }
 }
@@ -824,6 +838,7 @@ impl Sink {
             preview_due: None,
             thumbnail: None,
             lost: None,
+            forced: false,
         }
     }
 
@@ -868,7 +883,9 @@ impl Sink {
                 sender,
                 encoder: Some(encoder),
                 sound,
-                measured: (Instant::now(), 0),
+                measured: Instant::now(),
+                retargeted: Instant::now(),
+                _full_speed: crate::audio_io::FullSpeed::hold(),
             });
         }
         let Some(video) = self.video.as_ref() else {
@@ -922,6 +939,7 @@ impl Sink {
         let Some(Video {
             sender,
             encoder: Some(encoder),
+            retargeted,
             ..
         }) = self.video.as_mut()
         else {
@@ -932,10 +950,19 @@ impl Sink {
             height,
             self.max_kbps,
             self.bitrate_unlocked,
+            self.fps,
         );
         let aimed = encoder.bitrate();
-        // Not on every wobble, which would churn the rate control.
-        if wanted.abs_diff(aimed) > aimed / 10 {
+        // A fall past a fiftieth at once, as it keeps the stream under its
+        // ceiling; a rise past a tenth at once, or past a fiftieth a second
+        // after the last change, so it comes back all the way after a fall
+        // without churning the rate control on every wobble.
+        let settled = retargeted.elapsed() >= RETARGET_EVERY;
+        let lower = wanted < aimed && aimed - wanted > aimed / 50;
+        let higher = wanted > aimed
+            && (wanted - aimed > aimed / 10 || (settled && wanted - aimed > aimed / 50));
+        if lower || higher {
+            *retargeted = Instant::now();
             match encoder.set_bitrate(wanted) {
                 Ok(()) => tracing::debug!(kbps = wanted, "the encoder follows the stream's target"),
                 Err(error) => {
@@ -943,8 +970,27 @@ impl Sink {
                 }
             }
         }
+        // A ceiling past Discord's documented cap, or back under it, takes
+        // the encoder's other buffer (stream_connection::encoder_buffer).
+        let buffer = buffer_ms(height, self.max_kbps, self.bitrate_unlocked);
+        if encoder.buffer_ms() != buffer
+            && let Err(error) = encoder.set_buffer_ms(buffer)
+        {
+            tracing::warn!(
+                error = format!("{error:#}"),
+                "could not change the encoder's buffer"
+            );
+        }
+        // The encoder sent more than the ceiling lets out, and what's
+        // queued would take too long: this frame isn't encoded, rather than
+        // made and dropped. The encoder never saw it, so the next needs no
+        // keyframe; a keyframe asked for waits for the next.
+        if sender.behind() {
+            return Ok(());
+        }
         let pts = self.started.elapsed().as_micros() as u64 * encode::CLOCK / 1_000_000;
-        let keyframe = sender.take_keyframe_request();
+        // The test pattern's cuts ask for keyframes of their own.
+        let keyframe = sender.take_keyframe_request() | std::mem::take(&mut self.forced);
         let codec = encoder.codec();
         let encoding = Instant::now();
         let encoded = encoder.encode_i420(picture, pts, keyframe);
@@ -1110,7 +1156,11 @@ impl Sink {
     fn open_on(&self, codec: Codec, width: u32, height: u32, device: &Device) -> Result<Encoder> {
         let (max_kbps, unlocked) = (self.max_kbps, self.bitrate_unlocked);
         let target = self.video.as_ref().map_or_else(
-            || congestion::start(stream_connection::cap(height, max_kbps, unlocked).into()),
+            || {
+                congestion::start(stream_connection::encoder_cap(
+                    height, max_kbps, unlocked, self.fps,
+                ))
+            },
             |video| video.sender.target(),
         );
         Encoder::holding(
@@ -1118,8 +1168,9 @@ impl Sink {
             width,
             height,
             self.fps,
-            aim(target, height, max_kbps, unlocked),
+            aim(target, height, max_kbps, unlocked, self.fps),
             self.reach(height),
+            buffer_ms(height, max_kbps, unlocked),
             self.effort,
             device,
         )
@@ -1303,7 +1354,7 @@ impl Sink {
         }
         if let Some(video) = self.video.as_mut()
             && self.streaming
-            && video.measured.0.elapsed() >= SENDING_EVERY
+            && video.measured.elapsed() >= SENDING_EVERY
             && let Some(sending) = video.sending(self.fps)
         {
             report(Report::Sending(sending));
@@ -1500,15 +1551,34 @@ fn next_frame(started: Instant, frame: u64, fps: u32, stop: &AtomicBool) -> bool
     !stop.load(Ordering::Relaxed)
 }
 
+/// With `YAPFAST_STREAM_TEST_PATTERN=cuts`, the test pattern cuts to
+/// another whole picture every [`CUT_EVERY`] frames: the bars, noise that
+/// changes every frame, the bars turned over, and a fine checkerboard that
+/// moves, each but the noise under grain that changes every frame too. Each
+/// cut leaves the encoder nothing to predict from, the grain keeps it
+/// sending all its target allows, and a keyframe is asked for every
+/// [`FORCED_EVERY`] frames besides, between cuts: the hardest a stream's
+/// ceiling meets.
+fn cuts() -> bool {
+    std::env::var("YAPFAST_STREAM_TEST_PATTERN").is_ok_and(|pattern| pattern == "cuts")
+}
+
+const CUT_EVERY: u64 = 8;
+const FORCED_EVERY: u64 = 40;
+
 /// Colour bars at the sink's bounds, 640 by 360 at most, which follow a
-/// change of quality as a screen's frames do.
+/// change of quality as a screen's frames do; or, with [`cuts`], abrupt
+/// changes of the whole picture, up to 1920 by 1080, so that it presses
+/// against a ceiling of any size.
 fn test_pattern(mut sink: Sink, stop: &AtomicBool, report: &mut dyn FnMut(Report)) -> Result<()> {
     let (mut width, mut height) = (0, 0);
     let (mut rgba, mut picture) = (Vec::new(), I420Buffer::new(2, 2));
     let (mut started, mut fps) = (Instant::now(), sink.fps);
     let (mut frame, mut drawn) = (0u64, 0u64);
+    let cutting = cuts();
+    let most = if cutting { (1920, 1080) } else { (640, 360) };
     while next_frame(started, frame, fps, stop) {
-        let bounds = (sink.bounds.0.min(640), sink.bounds.1.min(360));
+        let bounds = (sink.bounds.0.min(most.0), sink.bounds.1.min(most.1));
         if bounds != (width, height) {
             (width, height) = bounds;
             rgba = vec![0; (width * height * 4) as usize];
@@ -1516,12 +1586,39 @@ fn test_pattern(mut sink: Sink, stop: &AtomicBool, report: &mut dyn FnMut(Report
             report(Report::Sharing { width, height });
         }
         let shift = (drawn * 4) as u32;
+        let scene = if cutting { (drawn / CUT_EVERY) % 4 } else { 0 };
+        // xorshift64, seeded afresh for each frame: never zero.
+        let mut noise = (drawn + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         for (index, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (x, y) = (index as u32 % width, index as u32 / width);
             let bar = ((x + shift) * 8 / width) % 8;
             let level = 255 - (y * 128 / height) as u8;
             let on = |bit: u32| if bar & bit != 0 { level } else { 32 };
-            pixel.copy_from_slice(&[on(4), on(2), on(1), 255]);
+            if !cutting {
+                pixel.copy_from_slice(&[on(4), on(2), on(1), 255]);
+                continue;
+            }
+            noise ^= noise << 13;
+            noise ^= noise >> 7;
+            noise ^= noise << 17;
+            let [r, g, b, grain, ..] = noise.to_le_bytes();
+            // Grain over the other scenes, up to 32 levels either way, so
+            // every frame costs the encoder all its target allows.
+            let grainy = |level: u8| level.saturating_add_signed(grain.cast_signed() >> 2);
+            let shade = |lit: bool| if lit { 230 } else { 20 };
+            let [r, g, b] = match scene {
+                1 => [r, g, b],
+                2 => [255 - on(4), 255 - on(2), 255 - on(1)].map(grainy),
+                3 => {
+                    let shade = shade((x + y + drawn as u32).is_multiple_of(2));
+                    [shade, shade ^ 0x40, shade].map(grainy)
+                }
+                _ => [on(4), on(2), on(1)].map(grainy),
+            };
+            pixel.copy_from_slice(&[r, g, b, 255]);
+        }
+        if cutting && drawn % FORCED_EVERY == FORCED_EVERY / 2 {
+            sink.forced = true;
         }
         let (y_stride, u_stride, v_stride) = picture.strides();
         let (y, u, v) = picture.data_mut();
@@ -1550,15 +1647,28 @@ fn test_pattern(mut sink: Sink, stop: &AtomicBool, report: &mut dyn FnMut(Report
     Ok(())
 }
 
-/// The kbit/s to encode frames of `height` lines at, for a stream aiming
-/// at `target` bit/s: never above that size's cap, nor the bitrate limit
-/// `max_kbps`, `unlocked` or not ([`stream_connection::cap`]). After a
-/// smaller size or a lower limit the stream's target follows the new cap
-/// only once its next frame goes out, and the encoder would otherwise go
-/// back up to the old one.
-fn aim(target: u64, height: u32, max_kbps: Option<u32>, unlocked: bool) -> u32 {
-    (target.min(stream_connection::cap(height, max_kbps, unlocked).into()) / 1000) as u32
+/// The kbit/s to encode frames of `height` lines at, `fps` a second, for a
+/// stream aiming at `target` bit/s: never above what that size's cap, or
+/// the bitrate limit `max_kbps`, `unlocked` or not, leaves the video on the
+/// wire ([`stream_connection::encoder_cap`]). After a smaller size or a
+/// lower limit the stream's target follows the new cap only once its
+/// sending thread wakes, and the encoder would otherwise go back up to the
+/// old one.
+fn aim(target: u64, height: u32, max_kbps: Option<u32>, unlocked: bool, fps: u32) -> u32 {
+    let most = stream_connection::encoder_cap(height, max_kbps, unlocked, fps);
+    (target.min(most) / 1000) as u32
 }
+
+/// The rate control buffer, in milliseconds, of the encoder of a stream of
+/// `height` lines under the bitrate limit `max_kbps`, `unlocked` or not
+/// ([`stream_connection::encoder_buffer`]).
+fn buffer_ms(height: u32, max_kbps: Option<u32>, unlocked: bool) -> u32 {
+    stream_connection::encoder_buffer(height, max_kbps, unlocked).as_millis() as u32
+}
+
+/// How long after the encoder's bitrate changed it may rise by less than
+/// a tenth.
+const RETARGET_EVERY: Duration = Duration::from_secs(1);
 
 /// How hard the encoder works at `quality`.
 fn effort(quality: StreamQuality) -> Effort {
@@ -3280,34 +3390,57 @@ mod tests {
         );
     }
 
-    /// A smaller size's encoder aims within that size's cap at once, though
-    /// the stream's target still follows the larger size's until its first
-    /// frame goes out.
-    #[test]
-    fn aims_within_the_cap_of_a_new_size() {
-        assert_eq!(aim(6_000_000, 720, None, false), 3_500);
-        assert_eq!(aim(6_000_000, 1080, None, false), 6_000);
-        assert_eq!(aim(2_000_000, 720, None, false), 2_000);
+    /// What a ceiling on the wire leaves the video, in kbit/s, at 30 fps:
+    /// [`stream_connection::encoder_cap`].
+    fn video_kbps(height: u32, max_kbps: Option<u32>, unlocked: bool) -> u32 {
+        (stream_connection::encoder_cap(height, max_kbps, unlocked, 30) / 1000) as u32
     }
 
-    /// A bitrate limit is a ceiling: it lowers the aim, never raises it, and
-    /// never past Discord's cap for the size, unless unlocked, then never
-    /// past 50 Mbit/s. A limit of 20 kept while it's locked aims at 9, and
-    /// at 20 again once it's unlocked.
+    /// A smaller size's encoder aims within that size's cap at once, though
+    /// the stream's target still follows the larger size's until its
+    /// sending thread wakes. Discord's cap is the video's, as its client
+    /// sends it; the wire takes what that needs besides.
+    #[test]
+    fn aims_within_the_cap_of_a_new_size() {
+        assert_eq!(aim(6_000_000, 720, None, false, 30), 3_500);
+        assert_eq!(video_kbps(720, None, false), 3_500);
+        assert_eq!(aim(6_000_000, 1080, None, false, 30), 6_000);
+        assert_eq!(aim(2_000_000, 720, None, false, 30), 2_000);
+    }
+
+    /// A bitrate limit is a ceiling on the wire: it lowers the aim, never
+    /// raises it, and never past Discord's cap for the size, unless
+    /// unlocked, then never past 50 Mbit/s; the encoder aims under what it
+    /// leaves the video once the packets' overhead and the sound are taken.
+    /// A limit of 20 kept while it's locked aims at Discord's 9, as Auto
+    /// does, and under 20 again once it's unlocked.
     #[test]
     fn aims_within_the_bitrate_limit() {
-        assert_eq!(aim(9_000_000, 1440, Some(5_000), false), 5_000);
         assert_eq!(
-            aim(3_000_000, 1440, Some(5_000), false),
+            aim(9_000_000, 1440, Some(5_000), false, 30),
+            video_kbps(1440, Some(5_000), false)
+        );
+        assert!((4_000..4_400).contains(&video_kbps(1440, Some(5_000), false)));
+        assert_eq!(
+            aim(3_000_000, 1440, Some(5_000), false, 30),
             3_000,
             "not a floor"
         );
-        assert_eq!(aim(30_000_000, 1440, Some(20_000), false), 9_000);
-        assert_eq!(aim(9_000_000, 720, Some(8_000), false), 3_500);
-        assert_eq!(aim(30_000_000, 1440, Some(20_000), true), 20_000);
-        assert_eq!(aim(12_000_000, 1440, Some(20_000), true), 12_000);
-        assert_eq!(aim(60_000_000, 720, Some(60_000), true), 50_000);
-        assert_eq!(aim(30_000_000, 1440, None, true), 9_000, "Auto");
+        assert_eq!(aim(30_000_000, 1440, Some(20_000), false, 30), 9_000);
+        assert_eq!(aim(9_000_000, 720, Some(8_000), false, 30), 3_500);
+        assert_eq!(
+            aim(30_000_000, 1440, Some(20_000), true, 30),
+            video_kbps(1440, Some(20_000), true)
+        );
+        assert!(video_kbps(1440, Some(20_000), true) < 17_500);
+        assert_eq!(aim(12_000_000, 1440, Some(20_000), true, 30), 12_000);
+        assert_eq!(
+            aim(60_000_000, 720, Some(60_000), true, 30),
+            video_kbps(720, Some(50_000), true)
+        );
+        assert_eq!(aim(30_000_000, 1440, None, true, 30), 9_000, "Auto");
+        // Discord's observed 16 Mbit/s leaves the video about 13.5.
+        assert!((13_300..14_000).contains(&video_kbps(1080, Some(16_000), true)));
     }
 
     /// The test pattern's frames follow a change of quality sent to the

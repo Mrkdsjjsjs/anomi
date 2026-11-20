@@ -14,6 +14,7 @@ use yapfast_discord::{
     member_list::{ListedMember, Presence},
     message::{Reply, Shown},
     notifications::{Change, Level},
+    pacer,
     ready::{Access, Deletes, PRIVATE},
     remote_auth::{self, Step},
     rtp::Codec,

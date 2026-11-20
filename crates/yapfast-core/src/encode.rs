@@ -43,7 +43,7 @@ type Encode = unsafe extern "C" fn(
     usize,
     *mut c_int,
 ) -> c_long;
-type SetBitrate = unsafe extern "C" fn(*mut Raw, c_uint) -> c_int;
+type SetBitrate = unsafe extern "C" fn(*mut Raw, c_uint, c_uint) -> c_int;
 type Free = unsafe extern "C" fn(*mut Raw);
 
 unsafe extern "C" {
@@ -70,7 +70,7 @@ unsafe extern "C" {
         capacity: usize,
         is_key: *mut c_int,
     ) -> c_long;
-    fn yapfast_vp8_set_bitrate(encoder: *mut Raw, kbps: c_uint) -> c_int;
+    fn yapfast_vp8_set_bitrate(encoder: *mut Raw, kbps: c_uint, buffer_ms: c_uint) -> c_int;
     fn yapfast_vp8_free(encoder: *mut Raw);
     fn yapfast_h264_new(
         width: c_uint,
@@ -79,6 +79,7 @@ unsafe extern "C" {
         kbps: c_uint,
         threads: c_uint,
         effort: c_uint,
+        buffer_ms: c_uint,
     ) -> *mut Raw;
     #[allow(clippy::too_many_arguments)]
     fn yapfast_h264_encode(
@@ -96,7 +97,7 @@ unsafe extern "C" {
         capacity: usize,
         is_key: *mut c_int,
     ) -> c_long;
-    fn yapfast_h264_set_bitrate(encoder: *mut Raw, kbps: c_uint) -> c_int;
+    fn yapfast_h264_set_bitrate(encoder: *mut Raw, kbps: c_uint, buffer_ms: c_uint) -> c_int;
     fn yapfast_h264_free(encoder: *mut Raw);
 }
 
@@ -113,6 +114,7 @@ unsafe extern "C" {
         height: c_uint,
         fps: c_uint,
         kbps: c_uint,
+        buffer_ms: c_uint,
         report: *mut std::ffi::c_char,
         report_size: usize,
     ) -> *mut Raw;
@@ -132,12 +134,20 @@ unsafe extern "C" {
         capacity: usize,
         is_key: *mut c_int,
     ) -> c_long;
-    fn yapfast_hwenc_set_bitrate(encoder: *mut Raw, kbps: c_uint) -> c_int;
+    fn yapfast_hwenc_set_bitrate(encoder: *mut Raw, kbps: c_uint, buffer_ms: c_uint) -> c_int;
     fn yapfast_hwenc_free(encoder: *mut Raw);
 }
 
 /// RTP's video clock.
 pub const CLOCK: u64 = 90_000;
+
+/// The rate control buffer an encoder keeps unless it's told another, in
+/// milliseconds: over any span it sends at most its bitrate for that long
+/// and this much more, as a keyframe or a scene cut needs. Half a second,
+/// which keeps a keyframe of a screen's text sharp at a few Mbit/s; a Go
+/// Live stream held under a ceiling past Discord's documented 9 Mbit/s
+/// keeps a fifth of a second (`yapfast_discord::stream_connection::encoder_buffer`).
+pub const BUFFER_MS: u32 = 500;
 
 /// How much work the H264 encoder puts into each frame: x264's superfast
 /// preset, or its faster one, for a sharper picture at about twice the CPU.
@@ -190,8 +200,10 @@ pub struct Encoder {
     encode: Encode,
     set_bitrate: SetBitrate,
     free: Free,
-    /// The bitrate aimed for, in kbit/s.
+    /// The bitrate aimed for, in kbit/s, and its rate control buffer in
+    /// milliseconds ([`BUFFER_MS`]).
     kbps: u32,
+    buffer_ms: u32,
     /// The kbit/s it was opened to hold ([`Self::holding`]): the level it
     /// signals takes the stream up to that. 0 when none was asked.
     held: u32,
@@ -254,12 +266,28 @@ impl Encoder {
         effort: Effort,
         device: &Device,
     ) -> Result<Self> {
+        Self::buffered(codec, width, height, fps, kbps, BUFFER_MS, effort, device)
+    }
+
+    /// An encoder as [`Self::on`] opens it, with a rate control buffer of
+    /// `buffer_ms` in place of [`BUFFER_MS`].
+    #[allow(clippy::too_many_arguments)]
+    fn buffered(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        kbps: u32,
+        buffer_ms: u32,
+        effort: Effort,
+        device: &Device,
+    ) -> Result<Self> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             bail!("{codec:?} frames need an even size, not {width}x{height}");
         }
         let opened = match device {
-            Device::Processor => open_software(codec, width, height, fps, kbps, effort)?,
-            gpu => open_hardware(codec, gpu, width, height, fps, kbps)?,
+            Device::Processor => open_software(codec, width, height, fps, kbps, buffer_ms, effort)?,
+            gpu => open_hardware(codec, gpu, width, height, fps, kbps, buffer_ms)?,
         };
         let (raw, encode, set_bitrate, free, engine, threads) = opened;
         let pixels = (width * height) as usize;
@@ -273,6 +301,7 @@ impl Encoder {
             set_bitrate,
             free,
             kbps,
+            buffer_ms,
             held: 0,
             width,
             height,
@@ -285,8 +314,9 @@ impl Encoder {
         })
     }
 
-    /// An encoder as [`Self::on`] opens it, but at `held` kbit/s, aiming
-    /// for `kbps` from its first frame. Each encoder chooses the level its
+    /// An encoder as [`Self::on`] opens it, with a rate control buffer of
+    /// `buffer_ms`, but at `held` kbit/s, aiming for `kbps` from its first
+    /// frame. Each encoder chooses the level its
     /// stream signals by the bitrate it opens at (x264 and FFmpeg's VA-API
     /// encoders by their VBV's rate and buffer, NVENC's own choice by the
     /// bitrate too), and keeps it: a stream whose target later rises to a
@@ -300,10 +330,12 @@ impl Encoder {
         fps: u32,
         kbps: u32,
         held: u32,
+        buffer_ms: u32,
         effort: Effort,
         device: &Device,
     ) -> Result<Self> {
-        let mut encoder = Self::on(codec, width, height, fps, kbps.max(held), effort, device)?;
+        let at = kbps.max(held);
+        let mut encoder = Self::buffered(codec, width, height, fps, at, buffer_ms, effort, device)?;
         encoder.held = held;
         if held > kbps {
             encoder.set_bitrate(kbps)?;
@@ -377,11 +409,29 @@ impl Encoder {
 
     /// Aims for `kbps` from the next frame on, without a keyframe.
     pub fn set_bitrate(&mut self, kbps: u32) -> Result<()> {
+        self.set_rate(kbps, self.buffer_ms)
+    }
+
+    /// Its rate control buffer, in milliseconds ([`BUFFER_MS`]).
+    pub fn buffer_ms(&self) -> u32 {
+        self.buffer_ms
+    }
+
+    /// Keeps a rate control buffer of `buffer_ms` from the next frame on,
+    /// without a keyframe.
+    pub fn set_buffer_ms(&mut self, buffer_ms: u32) -> Result<()> {
+        self.set_rate(self.kbps, buffer_ms)
+    }
+
+    fn set_rate(&mut self, kbps: u32, buffer_ms: u32) -> Result<()> {
         // SAFETY: raw came from this codec's constructor and is still live.
-        if unsafe { (self.set_bitrate)(self.raw, kbps) } != 0 {
-            bail!("the {:?} encoder refused {kbps} kbit/s", self.codec);
+        if unsafe { (self.set_bitrate)(self.raw, kbps, buffer_ms) } != 0 {
+            bail!(
+                "the {:?} encoder refused {kbps} kbit/s over {buffer_ms} ms",
+                self.codec
+            );
         }
-        self.kbps = kbps;
+        (self.kbps, self.buffer_ms) = (kbps, buffer_ms);
         Ok(())
     }
 
@@ -476,7 +526,8 @@ impl Encoder {
                 // At the bitrate the level was chosen for, as it opened.
                 let kbps = self.kbps;
                 let at = kbps.max(self.held);
-                let opened = open_software(codec, width, height, fps, at, self.effort)?;
+                let opened =
+                    open_software(codec, width, height, fps, at, self.buffer_ms, self.effort)?;
                 self.replace(opened);
                 if at > kbps {
                     self.set_bitrate(kbps)?;
@@ -529,13 +580,15 @@ impl Encoder {
     }
 }
 
-/// libvpx for VP8, x264 for H264.
+/// libvpx for VP8, x264 for H264, with a rate control buffer of
+/// `buffer_ms` ([`BUFFER_MS`]).
 fn open_software(
     codec: Codec,
     width: u32,
     height: u32,
     fps: u32,
     kbps: u32,
+    buffer_ms: u32,
     effort: Effort,
 ) -> Result<Opened> {
     // From the CPUs the process runs on, the cores Settings chose: never
@@ -555,7 +608,17 @@ fn open_software(
             threads,
         ),
         Codec::H264 => (
-            unsafe { yapfast_h264_new(width, height, fps, kbps, threads, effort as c_uint) },
+            unsafe {
+                yapfast_h264_new(
+                    width,
+                    height,
+                    fps,
+                    kbps,
+                    threads,
+                    effort as c_uint,
+                    buffer_ms,
+                )
+            },
             yapfast_h264_encode,
             yapfast_h264_set_bitrate,
             yapfast_h264_free,
@@ -583,6 +646,7 @@ fn open_hardware(
     height: u32,
     fps: u32,
     kbps: u32,
+    buffer_ms: u32,
 ) -> Result<Opened> {
     use std::ffi::CString;
     let number = match codec {
@@ -618,6 +682,7 @@ fn open_hardware(
             height,
             fps,
             kbps,
+            buffer_ms,
             report.as_mut_ptr().cast(),
             report.len(),
         )
@@ -642,7 +707,15 @@ fn open_hardware(
 }
 
 #[cfg(not(hwenc))]
-fn open_hardware(codec: Codec, _: &Device, _: u32, _: u32, _: u32, _: u32) -> Result<Opened> {
+fn open_hardware(
+    codec: Codec,
+    _: &Device,
+    _: u32,
+    _: u32,
+    _: u32,
+    _: u32,
+    _: u32,
+) -> Result<Opened> {
     bail!("this build has no graphics encoder for {}", codec.name())
 }
 
@@ -713,6 +786,7 @@ mod tests {
                 30,
                 2_500,
                 held,
+                BUFFER_MS,
                 Effort::Light,
                 &Device::Processor,
             )

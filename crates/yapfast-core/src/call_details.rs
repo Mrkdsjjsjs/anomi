@@ -130,6 +130,19 @@ pub fn picture(stream: &StreamStats) -> String {
     tr!("{}×{} at {} fps", stream.width, stream.height, stream.fps)
 }
 
+/// The most the stream put on the wire in any second and any 100 ms of the
+/// last five, against the ceiling it's held under: "15.4 Mbit/s over 1 s,
+/// 16.7 Mbit/s over 100 ms; limit 16.0 Mbit/s". A second stays under the
+/// limit; 100 ms may pass it by the limiter's burst allowance.
+pub fn peaks(stream: &StreamStats) -> String {
+    tr!(
+        "{0} over 1 s, {1} over 100 ms; limit {2}",
+        rate(stream.peak_kbps),
+        rate(stream.peak_100ms_kbps),
+        rate(stream.limit_kbps)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +173,16 @@ mod tests {
         assert_eq!(encoder("x264"), "x264 on the CPU");
         assert_eq!(rate(3812), "3.8 Mbit/s");
         assert_eq!(rate(800), "800 kbit/s");
+        let stream = StreamStats {
+            peak_kbps: 15_420,
+            peak_100ms_kbps: 16_710,
+            limit_kbps: 16_000,
+            ..StreamStats::default()
+        };
+        assert_eq!(
+            peaks(&stream),
+            "15.4 Mbit/s over 1 s, 16.7 Mbit/s over 100 ms; limit 16.0 Mbit/s"
+        );
     }
 
     #[test]

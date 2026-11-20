@@ -25,7 +25,8 @@
 //! With Settings' "Unlocked bitrate" the limit's steps go past Discord's
 //! documented 9 Mbit/s, and "Custom value…" opens a small dialog in the
 //! same layer, in place of the dialog or the menu it came from, to type a
-//! limit from 1 to 50 Mbit/s ([`entry`]).
+//! limit from 1 to 50 Mbit/s ([`entry`]); past the 16 Mbit/s Discord was
+//! seen to take ([`ACCEPTED_KBPS`]) it says what that risks.
 
 pub mod entry;
 mod live;
@@ -69,8 +70,17 @@ pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
 /// Discord takes above 720p, 1440p's too. A limit, not a target: the stream
 /// still goes lower as the network asks.
 pub const BITRATES: [u32; 6] = [2_000, 3_500, 5_000, 6_000, 8_000, 9_000];
-/// The steps past them that the unlock adds, in kbit/s.
-pub const UNLOCKED_BITRATES: [u32; 5] = [12_000, 15_000, 20_000, 30_000, 50_000];
+/// The steps past them that the unlock adds, in kbit/s: fine ones up to
+/// the 16 Mbit/s Discord was seen to take ([`ACCEPTED_KBPS`]), then coarse
+/// ones past it.
+pub const UNLOCKED_BITRATES: [u32; 8] = [
+    10_000, 12_000, 14_000, 15_000, 16_000, 20_000, 30_000, 50_000,
+];
+/// The most Discord's servers were seen to take from a stream, in kbit/s:
+/// on one account, on 2026-11-20, a limit of 16 Mbit/s held and more broke
+/// the stream. Discord doesn't document it; past it the limit typed by hand
+/// says what it risks ([`Entry::past_accepted`]).
+pub const ACCEPTED_KBPS: u32 = 16_000;
 /// The most a limit counts as without the unlock, in kbit/s: the core's
 /// `voice::DOCUMENTED_KBPS`.
 pub const DOCUMENTED_KBPS: u32 = 9_000;

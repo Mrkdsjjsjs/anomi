@@ -28,6 +28,10 @@ pub struct Stream {
     pub codec: String,
     pub picture: String,
     pub sent: String,
+    /// The most any second and any 100 ms of the last five carried, and the
+    /// ceiling: "15.4 Mbit/s over 1 s, 16.7 Mbit/s over 100 ms; limit 16.0
+    /// Mbit/s".
+    pub peak: String,
     pub target: String,
     pub keyframes: String,
     pub resent: String,

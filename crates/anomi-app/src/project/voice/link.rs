@@ -7,7 +7,7 @@
 
 use yapfast_core::application::AppState;
 use yapfast_core::call_details::{
-    average, encoder, groups, last_ping, loss, milliseconds, picture, rate,
+    average, encoder, groups, last_ping, loss, milliseconds, peaks, picture, rate,
 };
 
 use anomi_vm::voice::connection::{Connection, Stream};
@@ -31,6 +31,7 @@ pub fn read(state: &AppState, connection: &mut Connection) {
             codec: stream.codec.clone(),
             picture: picture(stream),
             sent: rate(stream.sent_kbps),
+            peak: peaks(stream),
             target: rate(stream.target_kbps),
             keyframes: stream.keyframe_requests.to_string(),
             resent: stream.resent.to_string(),

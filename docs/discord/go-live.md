@@ -97,7 +97,12 @@ ending the stream: the worker starts a second capturer (on Wayland, through
 the dialog again) and keeps sending the first one's frames. When the second one
 gives a frame, it replaces the first. If the dialog is cancelled, the first
 one goes on. The encoder takes the new size on the same connection.
-`YAPFAST_STREAM_TEST_PATTERN=1` shares moving colour bars instead of a screen.
+`YAPFAST_STREAM_TEST_PATTERN=1` shares moving colour bars instead of a screen;
+`YAPFAST_STREAM_TEST_PATTERN=cuts` cuts to another whole picture every 8
+frames (the bars, noise that changes every frame, the bars turned over, a
+fine moving checkerboard, each but the noise under grain that changes every
+frame) at the stream's size up to 1080p, and asks for a keyframe every 40
+besides, the hardest picture a stream's ceiling meets.
 
 A camera can be shared too, such as OBS's virtual camera (v4l2loopback on
 Linux, its DirectShow filter on Windows). The share menu lists the cameras
@@ -136,32 +141,30 @@ for a packet carried on in the next, OBUs of different layers in packets of
 their own, and a keyframe's first packet marked as starting a coded video
 sequence (N). A frame with a malformed OBU isn't sent. DAVE leaves an AV1
 frame's last OBU without its size, its trailer after it, and receivers keep
-it so, since DAVE's decryptor reads the frame as it was sealed. Past a
-frame's first 8 packets, the rest are paced at 2.5 times the stream's
-target bitrate, as libwebrtc's pacer sends, or faster when that wouldn't
-send the frame within two frames' time, so a keyframe doesn't hold back the
-frames after it until they're dropped: a 1080p keyframe of 200 packets sent
-at once can overflow buffers on the way, and fills the sender's uplink. A
-frame's packets wait in a queue with when each is due, and go out from a
-branch of their own, so the stream's sound, NACKs and receiver reports are
-handled while a frame goes out, and a report is timed when it comes; the
-next frame is taken once the queue is empty. The queue has no fixed
-length: it holds a frame, a keyframe's whole half second's buffer at the
-unlock's 50 Mbit/s too, about 2600 packets, which goes out within two
-frames at 750 Mbit/s. Each packet is made in one already sent, which the
-packetizer takes back once it's out (`Packetizer::recycle`, up to 1024
-kept), with room for its header, payload and the transport's tag and
-counter, so sealing it doesn't grow it: once a stream runs, sending a
-packet allocates nothing, at the five thousand a second of 50 Mbit/s too.
-Yapfast keeps about a second of video packets at the stream's cap, at
-least the last 2048 (two seconds at 9 Mbit/s) and up to 8192 at 50
-(`rtp::History::fit`, which grows the ring when the cap rises and keeps
-what it held), each slot reusing its buffer; and when a viewer reports
-some lost with a generic NACK (RTCP 205), resends up to 128 of them as
-Discord's client does: on the RTX SSRC with RTX's payload type and numbering,
-the original sequence number before the payload (RFC 4588), and the repaired
-stream id (extension 12) in place of the stream id. An RTCP sender report goes
-out every second.
+it so, since DAVE's decryptor reads the frame as it was sealed. Every
+packet the stream connection sends goes through its limiter
+([Keeping the ceiling](#keeping-the-ceiling)): a frame's packets wait in a
+queue and go out, from a branch of their own, as fast as the limiter lets
+them, so a keyframe spreads over the time its bytes take at the ceiling
+rather than leave at once, and the stream's sound, NACKs and receiver
+reports are handled while a frame goes out, and a report is timed when it
+comes. Frames are taken as they come, behind those queued. Each packet is
+made in one already sent, which the packetizer takes back once it's out
+(`Packetizer::recycle`, up to 1024 kept), with room for its header, payload
+and the transport's tag and counter, so sealing it doesn't grow it: once a
+stream runs, sending a packet allocates nothing, at the five thousand a
+second of 50 Mbit/s too. Yapfast keeps about a second of video packets at
+the stream's cap, at least the last 2048 (two seconds at 9 Mbit/s) and up
+to 8192 at 50 (`rtp::History::fit`, which grows the ring when the cap rises
+and keeps what it held), each slot reusing its buffer; and when a viewer
+reports some lost with a generic NACK (RTCP 205), resends them as Discord's
+client does: on the RTX SSRC with RTX's payload type and numbering, the
+original sequence number before the payload (RFC 4588), and the repaired
+stream id (extension 12) in place of the stream id. Those asked for wait,
+up to 128, and go before the frames' next packets, within a fifth of the
+limiter's rate; one still waiting 250 ms after it was asked for, or gone
+from the history, is given up, as the viewer has asked again or given up
+itself. An RTCP sender report goes out every second.
 
 Before sharing, the share button's menu picks a resolution and a frame rate, as
 Discord's client asks for them: 720p, 1080p, 1440p or the screen's own size
@@ -244,12 +247,17 @@ so Yapfast offers 1440p to every account, as it does 1080p and the source's
 size, and the limit's steps below are 1080p's. The
 menu's "Bitrate limit" (Auto, or 2, 3.5, 5, 6, 8 or 9 Mbit/s) lowers that
 cap, never raises it without the unlock below: `stream_connection::cap`
-takes the lower of the two, and at least 500 kbit/s. Auto is Discord's cap alone. The limit is kept
+takes the lower of the two, and at least 500 kbit/s. Auto is Discord's cap alone, which is the
+video's, as Discord's client sends it; a limit the person chose holds the
+whole wire ([Keeping the ceiling](#keeping-the-ceiling)). The limit is kept
 with the stream's quality in `devices.json` (`StreamQuality::max_kbps`),
 reaches the worker with `Job::Share` and `Control::Quality`, and bounds
-everything Discord's cap bounds: the target a stream starts at, the
-congestion controller below, the encoder's bitrate and op 12's
-`max_bitrate`, which announces the cap in force. It's a ceiling, not a
+everything Discord's cap bounds. The cap in force is a ceiling on the
+wire: everything the stream connection sends in a second, held under it as
+[Keeping the ceiling](#keeping-the-ceiling) says; op 12's `max_bitrate`
+announces it as it is, no more; and the target a stream starts at, the
+congestion controller below and the encoder's bitrate stay under what it
+leaves the video (`stream_connection::encoder_cap`). It's a ceiling, not a
 target: the congestion controller still lowers the bitrate when the uplink
 queues or loses packets. Discord's client allows
 accounts without Nitro 720p30, but trials 1080p30 at 3.5 or 5 Mbit/s for
@@ -258,19 +266,26 @@ them.
 Past 9 Mbit/s is Anomi's "Unlocked bitrate" in Settings, Advanced, under
 Optimization, off unless turned on (`layout.json`'s
 `stream_bitrate_unlocked`, written once on). Its note says what it risks:
-Discord documents 9 Mbit/s as the most, and what its servers do with more
-isn't known, as the fake can't show whether a stream server clamps the
-stream, drops packets or closes the connection; and a higher bitrate needs
-an upload that fast, and loads the encoder and the viewers. With it, the
-limit's steps go on past 9 (12, 15, 20, 30 and 50 Mbit/s), and "Custom
-value…" after them, chosen while the limit is none of the steps and saying
+Discord documents 9 Mbit/s as the most, and was seen to take up to about
+16 Mbit/s, past which the stream may break; and a higher bitrate needs an
+upload that fast, and loads the encoder and the viewers. The 16 is a
+measurement, not Discord's word: on one account, on 2026-11-20, a stream
+held at a limit of 15 and of 16 Mbit/s, and broke at the moments it went to
+17 to 19, before the limit was kept on the wire
+(`stream_connection::OBSERVED_MAX`); the fake can't show what a stream
+server does with more. With the unlock, the limit's steps go on past 9 in
+fine steps up to that 16 (10, 12, 14, 15 and 16 Mbit/s), then 20, 30 and
+50, and "Custom value…" after them, chosen while the limit is none of the steps and saying
 it under its name, opens a small dialog in the share layer, in the middle
 of the window, in place of the Go Live dialog or the stream's menu
 (`anomi_voice::share::entry`): "Bitrate limit", a field with "Mbit/s" after
 it, "Cancel" and "Apply". It takes 1 to 50 Mbit/s, with a comma or a point
 before up to three decimals (`entry::parse`); an empty field, one that
 isn't a number and one out of that range each say why under the field,
-which keeps what was typed. Enter applies it as a step chosen is, at once
+which keeps what was typed. A value past 16 Mbit/s is the person's to
+choose, and the dialog says under the field, in red, that Discord was seen
+to take up to about 16 and that more may break the stream
+(`Entry::past_accepted`). Enter applies it as a step chosen is, at once
 while live; Escape (once the field lets it go, as in every dialog with a
 field), a press beside it and "Cancel" go back to what it came from, the
 limit as it was. From the menu of one's own stream's tile, which is the
@@ -317,9 +332,9 @@ the delay since (`dlsr`), as RFC 3550 describes, and reads the share of
 packets lost from them. A queue at the router lengthens the round trip as
 much as the delay it adds.
 
-A stream starts at 2.5 Mbit/s, or its cap when that's lower: Discord's for
-its height, or the bitrate limit below it, which a limit set while live
-also takes the target down to at once. Each report
+A stream starts at 2.5 Mbit/s, or what its cap leaves the video when
+that's lower: Discord's cap for its height, or the bitrate limit below it,
+which a limit set while live also takes the target down to at once. Each report
 whose round trip is within 25 ms of the lowest of the last minute, with at
 most 2% of packets lost, raises the target by 8%, up to the cap: about 17 s
 from the start to 1080p's 9 Mbit/s, with a report a second, and about 39 s
@@ -347,8 +362,8 @@ did, and the target rises by 8% again. It stays under the server's bandwidth
 estimate (REMB) when that's lower than the cap, and never goes below
 500 kbit/s. Without a measured round trip, as when reports don't echo a
 sender report, the target doesn't rise from where it started. The encoder
-changes its bitrate only when it differs from the target by more than a
-tenth, so a rise reaches it every second step and a fall at once.
+follows a fall of more than a fiftieth at once, and a rise only past a
+tenth, so a rise reaches it every second step.
 
 Discord shows a still of each stream, in the call and to people outside it.
 Like Discord's client, Yapfast makes one once the stream connects and the
@@ -484,7 +499,13 @@ sequence number Discord's server got and its echo of our sender reports
 (`lsr`), its bitrate estimate (REMB), and keyframe requests, with the last
 round trip measured (`round_trip_ms`), the target (`target_kbps`) and what
 went out over the last half second (`sending_kbps`) and what the server
-received (`received_kbps`). Each
+received (`received_kbps`); the ceiling (`ceiling_kbps`), what the
+stream connection put on the wire over the last second (`wire_kbps`) and
+the most any 100 ms and any second of the last five carried
+(`peak_100ms_kbps`, `peak_second_kbps`), what's queued (`queued_ms`), the
+overhead measured (`per_packet`, `other_kbps`), the encoder's target
+(`encoder_kbps`) and its trim for overshooting (`trim`, in thousandths);
+and `sent`'s `dropped` counts frames dropped whole. Each
 change of the target is logged as "changing the stream's bitrate", with
 `kbps`, the `reason`, the report's `round_trip_ms` and `lost` (out of 256),
 and the lowest round trip (`lowest_ms`); the encoder following it logs "the
@@ -601,6 +622,127 @@ shape than the voice docs' Video payload (a field they don't name, other
 SSRCs than Ready gave, no fixed or source `max_resolution`, a frame rate
 outside 1 to 60) closes its connection with 4020, Bad request.
 
+## Keeping the ceiling
+
+A bitrate limit the person chose is a ceiling on the wire: everything the
+stream connection sends in any second, the video's packets and their
+resends, the stream's sound and RTCP, each with its RTP header and
+extensions, the transport's tag and counter, and the IP and UDP headers
+before it (28 bytes over IPv4, 48 over IPv6), as a server policing the
+stream would count it. Discord's own cap, at Auto or past a limit kept while
+locked, is the video's, as Discord's client sends it: the ceiling on the
+wire is then what that video takes with its overhead
+(`stream_connection::wire_ceiling`, `pacer::wire_for`), about 10.7 Mbit/s
+for 9, under the 16 Mbit/s Discord's servers were seen to take. Op 12
+announces the cap as it is (`max_bitrate`), never more.
+`yapfast_discord::pacer` holds every send under the ceiling:
+
+- One token bucket (`pacer::Bucket`) passes every packet. It refills at
+  97% of the ceiling less its depth, and holds at most 10 ms at the
+  ceiling, at least two datagrams: over any span the stream sends at most
+  the depth and the rate for that long, so at most 97% of the ceiling in
+  any second, and about 106% of it in any 100 ms (more below 2.4 Mbit/s,
+  where two datagrams are more than 10 ms). That 106% is the burst
+  allowance; the 3% under the ceiling is room for a receiver's timing.
+  The bucket is a few integers, kept while a stream is live, and the
+  sending thread sleeps until it holds half its depth or what's queued, so
+  a busy stream wakes every few milliseconds, not for each packet. On
+  Windows the stream worker holds the system's timer at a millisecond
+  while it sends (`audio_io::FullSpeed`): a sleep of 15.6 ms would lose
+  what the bucket can't hold.
+- Video waits for it. Resends wait for it too, before the frames' packets,
+  and within a share of their own, a fifth of the rate, so a burst of NACKs
+  can't push the frames out. The sound and RTCP go at once and are counted,
+  which takes the bucket a packet or two below empty.
+- The encoder aims under what that leaves the video
+  (`pacer::budget`): the bucket's rate less 4% of headroom, less what the
+  sound, resends and RTCP took over the last two seconds (the sound counts
+  at least as its 88 kbit/s on the wire, since it may start at any
+  moment), less each packet's bytes past its share of the frame, measured
+  over the last two seconds from the frames queued (about 76 to 90 bytes:
+  header and extensions 28, sealing 20, IPv4 and UDP 28, H264's
+  fragmentation header and DAVE's trailer). Before there's enough to
+  measure, 88 bytes are assumed (`stream_connection::encoder_cap`), which
+  is what the congestion controller's cap, a stream's start and the worker's
+  aim use. At a ceiling of 16 Mbit/s and 60 fps the encoder aims for about
+  13.5 Mbit/s, and the wire averages about 14.7: the margin from the
+  ceiling, besides the packets' own overhead, is 3% for timing, the
+  depth's 1% and the 4% of headroom. A fall of the target reaches the
+  encoder at once, a rise past a tenth at once and past a fiftieth a second
+  after its last change.
+- The encoders keep their peak at their target over a buffer
+  (`stream_connection::encoder_buffer`, [below](#choosing-the-h264-encoder)
+  and [on the GPU](#encoding-on-the-gpu)): a fifth of a second under a cap
+  past Discord's documented 9 Mbit/s, where its servers were seen to break
+  a stream that went over; half a second otherwise, and for the camera,
+  which keeps a screen's text sharp on each keyframe at a few Mbit/s. A
+  keyframe or a scene cut runs past the bucket's rate by that much at most,
+  and waits in the queue about as long: the latency the limiter adds, which
+  was measured as below, and nothing on a calm stream.
+- An encoder that overshoots its buffer anyway, as a GPU's rate control
+  may at a cut, finds what's queued taking longer than its buffer and 50 ms
+  (`pacer::overshoot`: 250 ms, or 550): its target drops at once by the
+  share it overshot, to half at most, at most every 300 ms, and comes back
+  by 5% each half second once the queue stayed short a second
+  (`Limiter::trim`); meanwhile the worker doesn't encode a frame while the
+  queue is that long (`StreamSender::behind`), which needs no keyframe, as
+  the encoder never saw it. A frame that would still wait longer than that
+  and the buffer again (`pacer::most_queued`: 450 ms, or 1050) behind those
+  queued is dropped whole before it takes any sequence number, and so is
+  every frame after it until a keyframe, which is asked for; a frame
+  encoded while the queue was within the overshoot keeps to the buffer, and
+  always fits, and one with nothing queued before it always goes, so a
+  keyframe gets through. No frame is sent late in part.
+- A limit changed while live lowers the encoder's target at once
+  (`StreamSender::set_ceiling`), and the sending thread, as it next wakes,
+  sets the bucket's rate and depth, the thresholds, the congestion
+  controller's cap and op 12's `max_bitrate`; the worker gives the encoder
+  the buffer the new cap takes, without a keyframe.
+
+The stream connection counts what it put on the wire in 100 ms slots, in a
+ring of 64 (`pacer::Meter`): over the last second, and the most any 100 ms
+and any second of the last five carried. The call's Stream tab shows them
+beside the ceiling ([Voice](voice.md)), and `YAPFAST_LOG=debug` logs them
+with "stream sent". The fake Discord counts every datagram a stream
+connection sends as it arrives, with its 28 bytes of IPv4 and UDP, and
+`/_control/video` gives each stream's `wire` with the most any 100 ms and
+any second carried, over windows that slide from datagram to datagram
+(`peak100msKbps`, `peak1sKbps`). `keeps_a_stream_under_its_ceiling_on_the_wire`
+sends frames of random bytes past a 4 Mbit/s ceiling, with a whole
+picture's worth at each cut, and
+`a_shared_screen_keeps_under_its_ceiling_through_cuts` has x264 encode the
+test pattern's cuts under 2 Mbit/s through a worker: each holds every second
+at or under the ceiling, and every 100 ms within the depth and the rate for
+that long with 20 ms of room for the fake's own timing; the limiter's own
+count keeps to that exactly.
+
+To measure it outside the client, `measures_a_shared_screen_on_the_wire` in
+`discord_voice/tests.rs` shares the cuts with the limit, size, frame rate,
+encoder, losses and changes `YAPFAST_MEASURE_STREAM` gives, and prints the
+call's details each second. The fake's `FAKE_DISCORD_UDP_PORT` and
+`FAKE_DISCORD_VOICE_PORT` put a UDP relay in front of it, which can take
+the kernel's time of each datagram (`SO_TIMESTAMPNS`); POST
+`/_control/stream-reports` has the fake send receiver reports, so the
+target climbs to the cap, and `/_control/stream-nacks` asks for resends in
+bursts. Measured that way on 2026-11-21 (1080p, 45 s each, the cuts at 30
+fps on x264 and 60 on NVENC and VA-API, the most any window carried, IPv4
+and UDP counted):
+
+| Ceiling | Encoder | Largest second | Largest 100 ms | Average, last 30 s | Wait after a cut, p95 / most |
+|---|---|---|---|---|---|
+| 6 | x264 / NVENC / VA-API | 95.9% / 94.0% / 96.8% | 105.3% / 105.9% / 102.4% | 5.4 / 5.1 / 5.7 | 232 / 257, 156 / 196, 786 / 1047 ms |
+| 9 | x264 / NVENC / VA-API | 96.4% / 94.3% / 96.7% | 105.5% / 105.9% / 104.5% | 8.1 / 7.6 / 8.6 | 259 / 292, 122 / 172, 783 / 1050 ms |
+| 15 | x264 / NVENC / VA-API | 77.0% / 93.2% / 96.8% | 105.6% / 105.8% / 105.4% | 9.7 / 12.7 / 14.3 | 139 / 150, 83 / 120, 349 / 537 ms |
+| 16 | x264 / NVENC / VA-API | 77.1% / 92.8% / 96.9% | 105.3% / 105.6% / 104.7% | 10.4 / 13.5 / 15.3 | 141 / 152, 81 / 111, 332 / 455 ms |
+
+No second passed the ceiling, with NACKs for 64 packets every half second
+(NVENC at 16: 94.0%, x264 at 9: 96.7%) or the limit changed live from 16 to
+6 and back (6's seconds 92.9%). x264 at 1080p30 can't fill 15 or 16 over a
+second, only over 100 ms. The Radeon 610M's VA-API (radeonsi, HEVC) sends
+two to four times its target on the cuts' noise: the limiter holds the wire,
+and the stream pays in waits up to the most queued and in frames skipped and
+dropped: 21 to 34 of 60 a second reached the fake.
+
 ## Choosing the H264 encoder
 
 OpenH264, in libwebrtc's archive, doesn't suit Go Live: on anything that moves
@@ -614,9 +756,21 @@ threads), in Main profile, which Discord's client sends (profile-level-id
 `4d0033`). Superfast is the default because it costs little processor time;
 faster takes about twice as much for about NVENC's quality. Adaptive
 quantization is off: it was the one setting that helped both screens and games
-against x264's defaults. The bitrate peaks at the target over half a second's
-buffer; a second's buffer let a second reach twice the cap, and a two-frame
-buffer starved keyframes. Capped CRF ran past Discord's cap.
+against x264's defaults. The bitrate peaks at the target over a buffer the
+stream asks for (`rc_buffer_ms` in `native/h264.c`, at least three frames,
+[Keeping the ceiling](#keeping-the-ceiling)), in average bitrate mode with
+the VBV's rate at the target, no filler and no HRD in the stream. Sent at
+once, half a second's buffer let a second reach one and a half times the
+cap: with the person's limit at 15 Mbit/s the stream went to 17 to 19 on
+the wire at moments, which Discord's servers wouldn't take; the limiter now
+sends it within the ceiling. A two-frame buffer starved keyframes. A fifth
+of a second, kept under a cap past 9 Mbit/s, softens a keyframe of a
+screen's text against half a second's: on four chat windows at 1080p, x264
+at 9 Mbit/s and 60 fps gave keyframes of 47 dB (PSNR of Y) against 51, and
+at 3 Mbit/s and 30 fps 36 dB against 45, blurred text every three seconds;
+moving pictures lost nothing. Keyframes stay whole IDRs: Discord's viewers start
+decoding only at one, and ask for one as they join, so periodic intra
+refresh would spare none of them. Capped CRF ran past Discord's cap.
 
 ## Encoding on the GPU
 
@@ -716,8 +870,18 @@ and the Arch package lists it as optional.
 The settings match x264's where they can: low-latency tuning (NVENC's p4
 preset, `ll`; AMF's `lowlatency` usage and balanced preset), no B-frames, a
 frame out for each frame in, Main profile, keyframes every 3 seconds and when
-asked, and variable bitrate capped at the target over half a second, which
-leaves a calm screen below the cap rather than padding it. NVENC, AMF and
+asked, and variable bitrate with its peak at the target over the buffer
+the stream asks for, as x264's (`rc_buffer_ms` in `native/hwenc.c`; NVENC's
+keyframes of text at 3 Mbit/s were 35 dB over a fifth of a second against
+41 over half), which leaves a calm
+screen below the cap rather than padding it: NVENC's VBR with its
+`maxBitRate` and `vbvBufferSize` from FFmpeg's `rc_max_rate` and
+`rc_buffer_size`, and a first pass at a quarter of the size (`multipass`
+`qres`), which NVIDIA advises for a small buffer, so a scene cut keeps to it;
+VA-API's VBR at a target of 100% of its peak, with that HRD buffer and a
+window of as many milliseconds; AMF's peak-constrained VBR with its HRD
+enforced and no filler. VA-API's `max_frame_size` isn't set: radeonsi has
+none, and asking fails the encoder. NVENC, AMF and
 VA-API change their bitrate as they run, without the IDR frame FFmpeg would
 insert, with a patch to FFmpeg for each (AMF's sets the target, peak and buffer
 on the running encoder). "Higher quality" changes nothing on the GPU: NVENC's
@@ -744,8 +908,8 @@ An encoder whose level was chosen for less than a cap raised while live,
 past 9 Mbit/s, opens again with a keyframe, as for a new size; a lower cap
 opens nothing. x264 taking over from a failing GPU encoder opens at the
 same rate. The rate control's numbers fit 50 Mbit/s: x264's in kbit/s,
-FFmpeg's peak and its half second's buffer (25 Mbit) in bit/s as 64-bit
-and 32-bit numbers, and the frame buffer, twice the frame's pixels, holds
+FFmpeg's peak and its half a second's buffer (25 Mbit) in bit/s as
+64-bit and 32-bit numbers, and the frame buffer, twice the frame's pixels, holds
 a keyframe at any bitrate.
 
 Where the card's encoder encodes AV1 or H265, the stream offers them too,

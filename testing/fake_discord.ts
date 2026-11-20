@@ -78,7 +78,20 @@
 // is decrypted and its frames counted; GET /_control/call-video lists what
 // each call connection sent and asked for.
 // A Go Live stream's video is decrypted and its frames and keyframes
-// counted, and AV1's RTP aggregation and OBU framing are checked too. GET
+// counted, and AV1's RTP aggregation and OBU framing are checked too. Every
+// datagram a stream connection sends is counted as it arrives, with the
+// IPv4 and UDP headers before it, and each stream's `wire` gives the most
+// any 100 ms and any second carried, over windows that slide from datagram
+// to datagram (`peak100msKbps`, `peak1sKbps`). POST
+// /_control/stream-nacks?count=64&every=500 has the fake report the last
+// `count` video packets of each stream lost every `every` ms, as a viewer
+// on a lossy link would (no `count`: no more). POST /_control/stream-reports
+// has the server send each streamer receiver reports about its video twice
+// a second, as Discord's does, so its target climbs (?off: no more).
+// FAKE_DISCORD_UDP_PORT binds
+// the voice servers' UDP socket to a port, and FAKE_DISCORD_VOICE_PORT has
+// op 2 name another, so a relay in front of the fake can see every datagram
+// a client sends (docs/discord/go-live.md, "Keeping the ceiling"). GET
 // /_control/video lists what each stream received, the previews streamers
 // uploaded (`previews`), and the streams whose preview was asked for with GET
 // /streams/{key}/preview, oldest first (`previewReads`), with how many times
@@ -3902,13 +3915,72 @@ type Received = {
   /** The streamer's audio SSRC; video and RTX follow it. */
   ssrc: number;
   rtcpCounter: number;
-  /** The video packet the fake reported lost, and the resends that came. */
+  /** The video packet the fake reported lost, those POST
+   * /_control/stream-nacks has it report, and the resends that came. */
   nacked: number | null;
+  nackedRun?: Set<number>;
   retransmitted: number;
   badRetransmissions: number;
   lastRtxPayloadType: number | null;
+  /** The last video packet's sequence number, and the highest, extended. */
+  lastSequence?: number;
+  highest?: number;
+  /** The middle of the last video sender report's NTP time, and when it
+   *  came; and when the fake last reported what it received. */
+  lastSenderReport?: { middle: number; at: number };
+  reportedAt?: number;
+  /** Everything the connection sent, on the wire, by arrival. */
+  wire?: Wire;
 };
 const received = new Map<number, Received>();
+
+/** What a stream connection sent, counted as it arrives: every datagram
+ *  from it, video, resends, sound and RTCP alike, with the 28 bytes of IPv4
+ *  and UDP headers before it, as the stream's ceiling counts them. The
+ *  peaks are the most any 100 ms and any second carried, over windows that
+ *  end at each datagram, in kbit/s, for a test to hold against the ceiling. */
+type Wire = {
+  bytes: number;
+  /** The datagrams of the last second, by arrival in ms and bytes, from
+   *  `first`; and the bytes of those within the last 100 ms, from `recent`,
+   *  and within the last second. */
+  times: number[];
+  sizes: number[];
+  first: number;
+  recent: number;
+  last100ms: number;
+  last1s: number;
+  peak100msKbps: number;
+  peak1sKbps: number;
+};
+/** IPv4's and UDP's headers before each datagram. */
+const DATAGRAM_HEADERS = 28;
+
+/** Counts a datagram of `bytes` from a stream connection. */
+function meterWire(stream: Received, bytes: number) {
+  const now = performance.now();
+  const wire = (stream.wire ??= {
+    bytes: 0, times: [], sizes: [], first: 0, recent: 0, last100ms: 0, last1s: 0, peak100msKbps: 0, peak1sKbps: 0,
+  });
+  const size = bytes + DATAGRAM_HEADERS;
+  wire.bytes += size;
+  wire.times.push(now);
+  wire.sizes.push(size);
+  wire.last100ms += size;
+  wire.last1s += size;
+  while (wire.times[wire.recent]! <= now - 100) wire.last100ms -= wire.sizes[wire.recent++]!;
+  while (wire.times[wire.first]! <= now - 1000) wire.last1s -= wire.sizes[wire.first++]!;
+  wire.peak100msKbps = Math.max(wire.peak100msKbps, (wire.last100ms * 8) / 100);
+  wire.peak1sKbps = Math.max(wire.peak1sKbps, (wire.last1s * 8) / 1000);
+  // What's past the second goes, now and then rather than every datagram.
+  if (wire.first > 4096) {
+    wire.times.splice(0, wire.first);
+    wire.sizes.splice(0, wire.first);
+    wire.recent -= wire.first;
+    wire.first = 0;
+  }
+}
+
 type Av1Validation = { timestamp?: number; fragment?: Buffer };
 const av1Validation = new WeakMap<Received, Av1Validation>();
 
@@ -4570,6 +4642,59 @@ function nack(stream: Received, sequence: number) {
   udp.send(sealRtp(packet, stream.key, stream.rtcpCounter++, 8), peer.port, peer.address);
 }
 
+/** Sends the streamer generic NACKs for its last `count` video packets, as
+ *  POST /_control/stream-nacks asks: a burst of loss, sixteen packets and
+ *  the one before them in each FCI. */
+function nackRun(stream: Received, count: number) {
+  const peer = peers.get(stream.ssrc);
+  if (!peer || stream.lastSequence === undefined) return;
+  const first = (stream.lastSequence - count + 1) & 0xffff;
+  const fcis = Math.ceil(count / 17);
+  const packet = Buffer.alloc(12 + 4 * fcis);
+  packet[0] = 0x81;
+  packet[1] = 205;
+  packet.writeUInt16BE(2 + fcis, 2);
+  packet.writeUInt32BE(1, 4);
+  packet.writeUInt32BE(stream.ssrc + 1, 8);
+  stream.nackedRun ??= new Set();
+  for (let fci = 0; fci < fcis; fci++) {
+    const pid = (first + fci * 17) & 0xffff;
+    const following = Math.min(16, count - fci * 17 - 1);
+    packet.writeUInt16BE(pid, 12 + 4 * fci);
+    packet.writeUInt16BE((1 << following) - 1, 14 + 4 * fci);
+    for (let bit = 0; bit <= following; bit++) stream.nackedRun.add((pid + bit) & 0xffff);
+  }
+  udp.send(sealRtp(packet, stream.key, stream.rtcpCounter++, 8), peer.port, peer.address);
+}
+let nackBursts: ReturnType<typeof setInterval> | undefined;
+
+/** Whether the server reports what it received of each stream, as POST
+ *  /_control/stream-reports asks. */
+let streamReports = false;
+
+/** A receiver report (RTCP 201) about a stream's video, as Discord's server
+ *  sends about two a second: nothing lost, the highest sequence number,
+ *  and the last sender report echoed, so the streamer measures the round
+ *  trip and its target climbs as the uplink allows. */
+function reportStream(stream: Received) {
+  const peer = peers.get(stream.ssrc);
+  if (!peer || stream.highest === undefined) return;
+  stream.reportedAt = performance.now();
+  const echoed = stream.lastSenderReport;
+  const packet = Buffer.alloc(32);
+  packet[0] = 0x81;
+  packet[1] = 201;
+  packet.writeUInt16BE(7, 2);
+  packet.writeUInt32BE(1, 4);
+  packet.writeUInt32BE(stream.ssrc + 1, 8);
+  packet.writeUInt32BE(stream.highest >>> 0, 16);
+  if (echoed) {
+    packet.writeUInt32BE(echoed.middle, 24);
+    packet.writeUInt32BE(Math.round(((stream.reportedAt - echoed.at) * 65536) / 1000) >>> 0, 28);
+  }
+  udp.send(sealRtp(packet, stream.key, stream.rtcpCounter++, 8), peer.port, peer.address);
+}
+
 /** Checks a resent packet: the RTX payload type, the NACKed sequence number
  * before the payload, and the repaired stream id in place of the stream id. */
 function receiveRtx(stream: Received, packet: Buffer) {
@@ -4581,7 +4706,7 @@ function receiveRtx(stream: Received, packet: Buffer) {
     (plain[1]! & 0x7f) === stream.payloadType + 1 &&
     extensions.get(12)?.toString() === "100" &&
     !extensions.has(11) &&
-    plain.readUInt16BE(at) === stream.nacked;
+    (plain.readUInt16BE(at) === stream.nacked || stream.nackedRun?.delete(plain.readUInt16BE(at)) === true);
   if (good) stream.retransmitted++;
   else stream.badRetransmissions++;
 }
@@ -4715,6 +4840,10 @@ function receiveVideo(packet: Buffer) {
     stream.unattached++;
     return;
   }
+  stream.lastSequence = plain.readUInt16BE(2);
+  const last = stream.highest ?? stream.lastSequence;
+  stream.highest = last + ((((stream.lastSequence - (last & 0xffff)) + 0x8000) & 0xffff) - 0x8000);
+  if (streamReports && performance.now() - (stream.reportedAt ?? 0) >= 500) reportStream(stream);
   // Report the first packet lost, as a viewer would, to see it resent.
   if (stream.nacked === null) nack(stream, plain.readUInt16BE(2));
   const payload = plain.subarray(at);
@@ -5041,11 +5170,20 @@ function spsSize(nal: Buffer): [number, number] | undefined {
 
 const udp = await Bun.udpSocket({
   hostname: args.host,
+  port: Number(process.env.FAKE_DISCORD_UDP_PORT ?? 0),
   socket: {
     data(socket, data, port, address) {
       // IP discovery: type 1, length 70, SSRC, then the answer fills in the address.
       if (discoveryOff && data.length === 74 && data.readUInt16BE(0) === 1) return;
       if (data.length !== 74 || data.readUInt16BE(0) !== 1) {
+        // Everything a stream connection sends counts on its wire: RTP by
+        // its SSRC, RTCP by its sender's.
+        if (data.length >= 8 && (data[0]! & 0xc0) === 0x80) {
+          const rtcp = data[1]! >= 192 && data[1]! <= 223;
+          const from = rtcp ? data.readUInt32BE(4) : data.length > 12 ? data.readUInt32BE(8) : undefined;
+          const sender = from === undefined ? undefined : received.get(from) ?? receivedAudio.get(from) ?? receivedRtx.get(from);
+          if (sender) meterWire(sender, data.length);
+        }
         if (data.length > 12 && (data[0]! & 0xc0) === 0x80 && !(data[1]! >= 192 && data[1]! <= 223)) {
           const ssrc = data.readUInt32BE(8);
           const sound = receivedAudio.get(ssrc);
@@ -5065,6 +5203,8 @@ const udp = await Bun.udpSocket({
             if (received.has(sender) || callCameras.has(sender)) {
               stream.senderReports++;
               stream.reportedPackets = report.readUInt32BE(20);
+              const middle = (((report.readUInt32BE(8) & 0xffff) << 16) | (report.readUInt32BE(12) >>> 16)) >>> 0;
+              stream.lastSenderReport = { middle, at: performance.now() };
             } else {
               stream.audioSenderReports++;
             }
@@ -5153,7 +5293,7 @@ function voiceMessage(ws: Socket, text: string) {
       reply(2, {
         ssrc: ws.data.ssrc,
         ip: args.host,
-        port: udp.port,
+        port: Number(process.env.FAKE_DISCORD_VOICE_PORT ?? udp.port),
         modes: ["aead_aes256_gcm_rtpsize", "aead_xchacha20_poly1305_rtpsize"],
         ...(d.video
           ? { streams: [{ type: "video", rid: "100", ssrc: ws.data.ssrc + 1, rtx_ssrc: ws.data.ssrc + 2, active: false, quality: 100 }] }
@@ -9418,6 +9558,18 @@ const server = Bun.serve<SocketData>({
     if (req.method === "GET" && path === "/_control/discovery-drop") {
       return Response.json({ dropped: discovery.dropped, answered: discovery.answered });
     }
+    if (req.method === "POST" && path === "/_control/stream-reports") {
+      streamReports = !url.searchParams.has("off");
+      return new Response(`receiver reports ${streamReports ? "on" : "off"}\n`);
+    }
+    if (req.method === "POST" && path === "/_control/stream-nacks") {
+      clearInterval(nackBursts);
+      nackBursts = undefined;
+      const count = Math.min(Number(url.searchParams.get("count") ?? 0), 255);
+      const every = Math.max(Number(url.searchParams.get("every") ?? 500), 20);
+      if (count > 0) nackBursts = setInterval(() => { for (const stream of received.values()) nackRun(stream, count); }, every);
+      return new Response(count > 0 ? `reporting ${count} packets lost every ${every} ms\n` : "no more losses\n");
+    }
     if (req.method === "POST" && path === "/_control/voice-discovery") {
       discoveryOff = url.searchParams.has("off");
       return new Response(`address discovery ${discoveryOff ? "ignored" : "answered"}\n`);
@@ -9665,7 +9817,10 @@ const server = Bun.serve<SocketData>({
     }
     if (path === "/_control/video") {
       return json({
-        received: [...received.values()].map(({ key: _, socket: _socket, ...stream }) => stream),
+        received: [...received.values()].map(({ key: _, socket: _socket, nackedRun: _run, ...stream }) => ({
+          ...stream,
+          wire: stream.wire && { bytes: stream.wire.bytes, peak100msKbps: stream.wire.peak100msKbps, peak1sKbps: stream.wire.peak1sKbps },
+        })),
         watchers: [...watchers.values()].map(({ timer: _, resend: _resend, repairs: _repairs, ...watcher }) => watcher),
         repairs,
         previews,

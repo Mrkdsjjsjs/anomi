@@ -1785,3 +1785,118 @@ async fn quitting_in_a_call_leaves_it_at_once() {
     .await;
     drop(call);
 }
+
+/// Holds a stream under its ceiling on the wire whatever the encoder hands
+/// it: a hard pattern of frames, a scene cut every half second whose frame
+/// is a whole picture's worth, random bytes that nothing compresses, past
+/// what the ceiling carries, with the stream's sound besides. The fake
+/// counts every datagram as it arrives, with its IPv4 and UDP headers, over
+/// windows that slide from datagram to datagram: no second carries more
+/// than the ceiling, no 100 ms more than the limiter lets out (its depth
+/// and its rate for that long) with room for the fake's own timing; the
+/// limiter's own count keeps to that exactly. Frames still arrive whole,
+/// and those the limiter couldn't send in time were dropped whole, asking
+/// for a keyframe.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn keeps_a_stream_under_its_ceiling_on_the_wire() {
+    let fixture = Fixture::start("keeps_a_stream_under_its_ceiling_on_the_wire").await;
+    let (_assigned, _call) = join_lounge(&fixture, Arc::new(Dropping::default())).await;
+    let (discord, server) = (&fixture.discord, fixture.server);
+    let mine = discord
+        .go_live(&fixture.guild, &fixture.lounge)
+        .await
+        .unwrap();
+    // 4 Mbit/s on the wire, under Discord's 9 for 1080p.
+    const CEILING_KBPS: u32 = 4_000;
+    let sender = StreamSender::start(mine.clone(), 1920, 1080, 30, vec![SEND_CODEC]).unwrap();
+    sender.set_ceiling(Some(CEILING_KBPS), false);
+    timeout(WAIT, async {
+        while sender.link() == Link::Connecting {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(sender.link(), Link::Connected);
+    assert!(
+        sender.take_keyframe_request(),
+        "the stream starts with a keyframe"
+    );
+    let sound = sender.sound();
+    // xorshift64, without zeros, so no start code splits a frame.
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut noise = |count: usize| -> Vec<u8> {
+        (0..count)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed >> 32) as u8 | 1
+            })
+            .collect()
+    };
+    // Four seconds at 30 frames: 12 kB a frame, and 250 kB at each cut, a
+    // keyframe, about 6.9 Mbit/s in all.
+    for index in 0..120u32 {
+        let cut = index.is_multiple_of(15);
+        let (unit, size) = if cut { (0x65, 250_000) } else { (0x41, 12_000) };
+        let mut data = vec![0, 0, 0, 1, unit];
+        data.extend(noise(size));
+        sender.send(Frame {
+            data,
+            codec: SEND_CODEC,
+            timestamp: index * 3000,
+            keyframe: cut,
+        });
+        sound.send(Sound {
+            opus: noise(160),
+            timestamp: index * 1600,
+        });
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    // What's queued goes out within the limiter's most.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let video = wait_for_stream_video(discord, server, &mine.stream_key, |video| {
+        video["frames"].as_u64() >= Some(10)
+    })
+    .await;
+    let wire = &video["wire"];
+    let second = wire["peak1sKbps"].as_f64().unwrap();
+    let slot = wire["peak100msKbps"].as_f64().unwrap();
+    let ceiling = u64::from(CEILING_KBPS) * 1000;
+    // A datagram of sound or RTCP goes at once, besides.
+    let (depth, rate, datagram) = (pacer::depth(ceiling), pacer::rate(ceiling), 1500 * 8);
+    let kbps = |bits: u64| bits as f64 / 1000.0;
+    assert!(
+        second > kbps(rate) * 0.95,
+        "it pressed on the ceiling: {wire}"
+    );
+    assert!(second <= kbps(ceiling), "a second past the ceiling: {wire}");
+    // 20 ms at the ceiling for the fake's timing: a datagram it reads late
+    // counts in the window after.
+    let most_100ms = (depth + rate / 10 + datagram + ceiling / 50) * 10;
+    assert!(
+        slot <= kbps(most_100ms),
+        "100 ms past what the limiter lets out: {wire}"
+    );
+    let sent = sender.sent();
+    assert!(sent.dropped > 0, "frames dropped whole: {sent:?}");
+    assert!(sent.peak_second <= depth + rate + datagram, "{sent:?}");
+    assert!(
+        sent.peak_100ms <= (depth + rate / 10 + datagram) * 10,
+        "{sent:?}"
+    );
+    assert_eq!(sent.ceiling, ceiling);
+    assert!(
+        sender.take_keyframe_request(),
+        "a keyframe follows a frame dropped"
+    );
+    assert_eq!(video["undecryptable"], 0);
+    assert_eq!(video["unattached"], 0);
+    assert_eq!(video["badRetransmissions"], 0);
+    assert!(
+        video["retransmitted"].as_u64() >= Some(1),
+        "the resend went too"
+    );
+}

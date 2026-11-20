@@ -76,6 +76,11 @@ fn the_stream_tab_is_there_only_while_streaming() {
     let mut ui = simulate(&vm);
     assert!(ui.find("Stream").is_ok());
     assert!(ui.find("Encoder: NVENC on the GPU").is_ok());
+    assert!(
+        ui.find("Peak over 5 s: 4.4 Mbit/s over 1 s, 4.9 Mbit/s over 100 ms; limit 5.0 Mbit/s")
+            .is_ok(),
+        "the peaks beside what's sent"
+    );
     assert!(ui.find("Packets resent: 14").is_ok());
     assert!(ui.find("Average ping: ").is_err());
 }

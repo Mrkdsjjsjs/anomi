@@ -3,9 +3,10 @@
 //! share layer, in place of the dialog or the menu it came from. A number
 //! of Mbit/s from 1 to 50, with a comma or a point before its decimals, as
 //! each language writes them; Enter sets it, Escape leaves the limit as it
-//! was.
+//! was. A value past the 16 Mbit/s Discord was seen to take is allowed, and
+//! the dialog says under the field that it may break the stream.
 
-use super::UNLOCKED_KBPS;
+use super::{ACCEPTED_KBPS, UNLOCKED_KBPS};
 
 /// The least a limit typed by hand may be, in kbit/s: 1 Mbit/s.
 pub const LEAST_KBPS: u32 = 1_000;
@@ -32,6 +33,12 @@ impl Entry {
     pub fn edit(&mut self, text: String) {
         self.text = text;
         self.refused = None;
+    }
+
+    /// Whether what's typed is a limit past the 16 Mbit/s Discord was seen
+    /// to take ([`ACCEPTED_KBPS`]): allowed, with a warning under the field.
+    pub fn past_accepted(&self) -> bool {
+        self.refused.is_none() && parse(&self.text).is_ok_and(|kbps| kbps > ACCEPTED_KBPS)
     }
 }
 
@@ -139,5 +146,27 @@ mod tests {
         };
         entry.edit("30".into());
         assert_eq!((entry.text.as_str(), entry.refused), ("30", None));
+    }
+
+    /// Past 16 Mbit/s, what Discord was seen to take, a limit is allowed and
+    /// warned of; at 16 and under, or not a limit, it isn't.
+    #[test]
+    fn warns_past_what_discord_was_seen_to_take() {
+        let typed = |text: &str| Entry {
+            text: text.into(),
+            refused: None,
+        };
+        assert!(typed("16.001").past_accepted());
+        assert!(typed("20").past_accepted());
+        assert_eq!(parse("20"), Ok(20_000), "still a limit");
+        assert!(!typed("16").past_accepted());
+        assert!(!typed("15,5").past_accepted());
+        assert!(!typed("75").past_accepted(), "refused, not warned");
+        assert!(!typed("abc").past_accepted());
+        let refused = Entry {
+            refused: Some(Refusal::OutOfRange),
+            ..typed("20")
+        };
+        assert!(!refused.past_accepted(), "the refusal says why");
     }
 }

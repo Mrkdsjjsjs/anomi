@@ -71,7 +71,7 @@ impl Codec {
 
 /// Frame bytes per packet, leaving room for headers, the tag and the nonce
 /// within a typical path MTU.
-const CHUNK: usize = 1100;
+pub(crate) const CHUNK: usize = 1100;
 /// RTP's fixed header.
 const HEADER: usize = 12;
 /// The stream id op 12 declares a stream under. Each video packet names it
@@ -96,7 +96,7 @@ const VIDEO_ORIENTATION: u8 = 4;
 /// The extension block's size: its preamble, then three words of elements.
 const EXTENSIONS: usize = 4 + 12;
 /// A video packet's header and extensions, which come before its payload.
-const PREFIX: usize = HEADER + EXTENSIONS;
+pub(crate) const PREFIX: usize = HEADER + EXTENSIONS;
 /// The room a video packet is made with: its prefix, the largest payload
 /// (a chunk after a few bytes of descriptor, or a resend's sequence number
 /// before it), and the transport's tag and nonce, so sealing it never
@@ -1086,6 +1086,8 @@ pub struct Transport {
 }
 
 const TAG: usize = 16;
+/// The bytes sealing adds to a packet: the tag, then the 32-bit counter.
+pub const SEALING: usize = TAG + 4;
 
 impl Transport {
     /// The modes Yapfast asks for, best first.

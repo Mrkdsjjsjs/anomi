@@ -54,6 +54,12 @@ pub fn streaming() -> Connection {
             codec: "h264".into(),
             picture: tr!("{}×{} at {} fps", 1920, 1080, 60),
             sent: tr!("{} Mbit/s", "3.8"),
+            peak: tr!(
+                "{0} over 1 s, {1} over 100 ms; limit {2}",
+                tr!("{} Mbit/s", "4.4"),
+                tr!("{} Mbit/s", "4.9"),
+                tr!("{} Mbit/s", "5.0")
+            ),
             target: tr!("{} Mbit/s", "4.0"),
             keyframes: "2".into(),
             resent: "14".into(),

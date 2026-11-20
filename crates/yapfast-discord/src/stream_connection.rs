@@ -23,6 +23,7 @@ use tokio::{
 
 use crate::{
     congestion::{self, Controller},
+    pacer::{self, Limiter},
     rtp::{self, Assembler, Codec, Orientation, Packetizer},
     stream::{self, StreamServer},
     voice_connection::{Connection, Identity, lock, receive, send_json},
@@ -34,45 +35,23 @@ const KEYFRAME_REQUESTS: Duration = Duration::from_millis(500);
 const SENDER_REPORTS: Duration = Duration::from_secs(1);
 /// How often a viewer logs what it received while no picture comes through.
 const LOG_EVERY: Duration = Duration::from_secs(5);
-/// The most packets resent for one NACK, which can name hundreds.
+/// The most packets waiting to be resent, as many as one NACK may name of
+/// those Discord's client resends.
 const RESENDS: usize = 128;
+/// A resend still waiting this long after it was asked for is given up: the
+/// viewer has asked again, or given up itself at 300 ms.
+const RESEND_WITHIN: Duration = Duration::from_millis(250);
 /// The most video SSRCs a watched stream puts frames together for.
 const MAX_SSRCS: usize = 4;
-/// A frame's packets past the first `BURST` go out paced, at
-/// [`pacing_rate`]: a 1080p keyframe sent at once can overflow buffers on
-/// the way, and fills the uplink's queue.
-const BURST: usize = 8;
 /// The sender reports the last round trips are measured against, by the
 /// time in them a receiver report echoes.
 const ECHOED: usize = 4;
-
-/// The bit/s to pace a frame of `bytes` at, sending `fps` frames a second
-/// at `target` bit/s: 2.5 times the target, as libwebrtc's pacer, but fast
-/// enough to send the frame within two frames' time, so a keyframe doesn't
-/// hold the frames after it until the queue before the encoder drops them.
-fn pacing_rate(target: u64, bytes: usize, fps: u32) -> u64 {
-    let within = bytes as u64 * 8 * u64::from(fps.max(1)) / 2;
-    (target * 5 / 2).max(within).max(1)
-}
-
-/// When each of a frame's packets is due, from `started`: the first
-/// [`BURST`] at once, then the rest at `rate` bit/s.
-fn schedule(
-    started: Instant,
-    packets: Vec<Vec<u8>>,
-    rate: u64,
-) -> impl Iterator<Item = (Instant, Vec<u8>)> {
-    let mut paced = 0u64;
-    packets.into_iter().enumerate().map(move |(index, packet)| {
-        let due = if index < BURST {
-            started
-        } else {
-            started + Duration::from_micros(paced * 8 * 1_000_000 / rate)
-        };
-        paced += packet.len() as u64;
-        (due, packet)
-    })
-}
+/// How often a sender takes stock: the overhead measured moves the
+/// encoder's target, an encoder that overshot gets its target back, and
+/// the rates on the wire go to the call's details.
+const STATS_EVERY: Duration = Duration::from_millis(500);
+/// The least bit/s the encoder is asked for, however low a ceiling leaves it.
+const LEAST_TARGET: u64 = 100_000;
 
 /// The most bit/s Discord's documentation shows a stream sending: op 12's
 /// `max_bitrate` in the voice docs' example, 9 Mbit/s at 60 fps, which is
@@ -101,8 +80,9 @@ pub fn max_bitrate(height: u32) -> u32 {
 /// [`congestion::FLOOR`]. Without the unlock a limit only lowers it, and
 /// one kept above it counts as Discord's cap. With it, `unlocked`, the
 /// limit is the cap at every size, up to [`UNLOCKED_MAX`]; Auto stays
-/// Discord's. Op 12 announces it, and the congestion controller stays
-/// under it.
+/// Discord's. Op 12 announces it. A limit the person set is the ceiling on
+/// the wire as it is ([`wire_ceiling`]); the encoder and the congestion
+/// controller stay under what that leaves the video ([`encoder_cap`]).
 pub fn cap(height: u32, max_kbps: Option<u32>, unlocked: bool) -> u32 {
     let discord = max_bitrate(height);
     let most = if unlocked { UNLOCKED_MAX } else { discord };
@@ -111,6 +91,64 @@ pub fn cap(height: u32, max_kbps: Option<u32>, unlocked: bool) -> u32 {
             .clamp(congestion::FLOOR as u32, most)
     })
 }
+
+/// Whether the bitrate limit the person chose is the [`cap`], rather than
+/// Discord's cap for the height: one at or under Discord's, or any with the
+/// unlock.
+fn limited(height: u32, max_kbps: Option<u32>, unlocked: bool) -> bool {
+    max_kbps.is_some_and(|kbps| unlocked || kbps.saturating_mul(1000) <= max_bitrate(height))
+}
+
+/// The ceiling on the wire, in bit/s, for a stream of `height` lines at
+/// `fps` frames a second: everything the stream connection sends in any
+/// second stays under it ([`pacer`]). A limit the person chose is the
+/// ceiling as it is ([`cap`]). Discord's own cap is the video's, as its
+/// client sends it, and the wire takes what that video needs besides
+/// ([`pacer::wire_for`]): about 10.7 Mbit/s for 9.
+pub fn wire_ceiling(height: u32, max_kbps: Option<u32>, unlocked: bool, fps: u32) -> u64 {
+    let cap = u64::from(cap(height, max_kbps, unlocked));
+    if limited(height, max_kbps, unlocked) {
+        cap
+    } else {
+        pacer::wire_for(cap, fps)
+    }
+}
+
+/// The most bit/s the encoder aims for under [`cap`], at `fps` frames a
+/// second, before the stream measured its overhead: what the ceiling on the
+/// wire leaves the video once the packets' headers, the transport's
+/// sealing, the stream's sound and the limiter's margins are taken
+/// ([`pacer::encoder_ceiling`]), and never past the cap.
+pub fn encoder_cap(height: u32, max_kbps: Option<u32>, unlocked: bool, fps: u32) -> u64 {
+    let wire = wire_ceiling(height, max_kbps, unlocked, fps);
+    pacer::encoder_ceiling(wire, fps).min(cap(height, max_kbps, unlocked).into())
+}
+
+/// The rate control buffer of an encoder held under a cap past Discord's
+/// documented 9 Mbit/s, where its servers were seen to break a stream for
+/// going over: a keyframe or a scene cut waits in the limiter's queue a
+/// fifth of a second at most.
+pub const STRICT_BUFFER: Duration = Duration::from_millis(200);
+/// Under Discord's cap and below: half a second, which keeps a screen's
+/// text sharp on each keyframe at a few Mbit/s, for up to half a second's
+/// wait behind one.
+pub const GENTLE_BUFFER: Duration = Duration::from_millis(500);
+
+/// The rate control buffer the stream's encoder keeps under [`cap`]
+/// ([`STRICT_BUFFER`], [`GENTLE_BUFFER`]); the limiter's thresholds follow
+/// it ([`pacer::overshoot`]).
+pub fn encoder_buffer(height: u32, max_kbps: Option<u32>, unlocked: bool) -> Duration {
+    if cap(height, max_kbps, unlocked) > DOCUMENTED_MAX {
+        STRICT_BUFFER
+    } else {
+        GENTLE_BUFFER
+    }
+}
+
+/// Bit/s Discord's servers were seen to take from one account's stream, on
+/// 2026-11-20, which Discord doesn't document: a ceiling of 16 Mbit/s held,
+/// and the moments the stream went to 17 to 19 broke it.
+pub const OBSERVED_MAX: u32 = 16_000_000;
 
 /// Op 5's speaking flags for a stream's sound: shared sound, not a
 /// microphone, as Discord's client marks it.
@@ -187,20 +225,37 @@ struct Shared {
     /// said.
     chosen: Mutex<Option<Codec>>,
     /// Sending: the video's bytes sent so far, resent ones too, as UDP
-    /// payloads; the keyframes viewers asked for; and the packets resent.
+    /// payloads; the keyframes viewers asked for; the packets resent; and
+    /// the frames dropped whole because the limiter couldn't send them in
+    /// time.
     video_bytes: AtomicU64,
     keyframe_requests: AtomicU64,
     resent: AtomicU64,
+    dropped: AtomicU64,
+    /// Sending: how long what's queued takes to go out under the ceiling,
+    /// and how long it may before the encoder has overshot
+    /// ([`pacer::overshoot`]), in microseconds.
+    backlog: AtomicU64,
+    overshoot: AtomicU64,
+    /// Sending: what went on the wire lately, everything counted, in bit/s
+    /// ([`pacer::Rates`]), and the ceiling it's held under.
+    wire: AtomicU64,
+    peak_100ms: AtomicU64,
+    peak_second: AtomicU64,
+    ceiling_bps: AtomicU64,
 }
 
 impl Shared {
     fn new(size: (u32, u32)) -> Arc<Self> {
+        // The frame rate isn't known yet: the most frames' overhead.
+        let most = encoder_cap(size.1, None, false, 60);
+        let overshoot = pacer::overshoot(encoder_buffer(size.1, None, false));
         Arc::new(Self {
             link: Mutex::new(Link::Connecting),
             keyframe: AtomicBool::new(true),
             size: Mutex::new(size),
             fps: AtomicU32::new(0),
-            target: AtomicU64::new(congestion::start(max_bitrate(size.1).into())),
+            target: AtomicU64::new(congestion::start(most)),
             ceiling: AtomicU32::new(0),
             offers: Mutex::new(vec![SEND_CODEC]),
             offers_changed: AtomicBool::new(false),
@@ -208,6 +263,13 @@ impl Shared {
             video_bytes: AtomicU64::new(0),
             keyframe_requests: AtomicU64::new(0),
             resent: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            backlog: AtomicU64::new(0),
+            overshoot: AtomicU64::new(overshoot.as_micros() as u64),
+            wire: AtomicU64::new(0),
+            peak_100ms: AtomicU64::new(0),
+            peak_second: AtomicU64::new(0),
+            ceiling_bps: AtomicU64::new(0),
         })
     }
 
@@ -224,6 +286,26 @@ impl Shared {
     fn cap(&self, height: u32) -> u32 {
         let (max_kbps, unlocked) = self.ceiling();
         cap(height, max_kbps, unlocked)
+    }
+
+    /// The ceiling on the wire for frames `height` lines tall, `fps` a
+    /// second ([`wire_ceiling`]), and what it leaves the video
+    /// ([`encoder_cap`]).
+    fn wire_ceiling(&self, height: u32, fps: u32) -> u64 {
+        let (max_kbps, unlocked) = self.ceiling();
+        wire_ceiling(height, max_kbps, unlocked, fps)
+    }
+
+    fn encoder_cap(&self, height: u32, fps: u32) -> u64 {
+        let (max_kbps, unlocked) = self.ceiling();
+        encoder_cap(height, max_kbps, unlocked, fps)
+    }
+
+    /// The encoder's rate control buffer for frames `height` lines tall
+    /// ([`encoder_buffer`]).
+    fn buffer(&self, height: u32) -> Duration {
+        let (max_kbps, unlocked) = self.ceiling();
+        encoder_buffer(height, max_kbps, unlocked)
     }
 }
 
@@ -333,18 +415,28 @@ impl StreamSender {
 
     /// Sends at most `max_kbps` from now on, none for Auto, within Discord's
     /// cap for the stream's height unless `unlocked` lets it past, up to
-    /// [`UNLOCKED_MAX`] ([`cap`]): the target drops under it at once, and
-    /// the next frame announces it with op 12 and caps the congestion
-    /// controller at it. A limit raised again, or unlocked, lets the target
-    /// rise as the uplink allows, never at once.
+    /// [`UNLOCKED_MAX`] ([`cap`]): the encoder's target drops under what it
+    /// leaves the video at once ([`encoder_cap`]), and the sending thread,
+    /// as it next wakes, holds the wire under it, announces it with op 12
+    /// and caps the congestion controller. A limit raised again, or
+    /// unlocked, lets the target rise as the uplink allows, never at once.
     pub fn set_ceiling(&self, max_kbps: Option<u32>, unlocked: bool) {
         let kbps = max_kbps.unwrap_or(0).min(!UNLOCKED_BIT);
         let mark = if unlocked { UNLOCKED_BIT } else { 0 };
         self.shared.ceiling.store(kbps | mark, Ordering::Relaxed);
         let height = lock(&self.shared.size).1;
-        self.shared
-            .target
-            .fetch_min(self.shared.cap(height).into(), Ordering::Relaxed);
+        let fps = self.shared.fps.load(Ordering::Relaxed);
+        let most = self.shared.encoder_cap(height, fps);
+        self.shared.target.fetch_min(most, Ordering::Relaxed);
+    }
+
+    /// Whether what's queued would take longer than [`pacer::overshoot`] to
+    /// go out under the ceiling: the encoder sent more than its target, and
+    /// the stream worker skips encoding frames until the queue is shorter,
+    /// rather than make frames the limiter would drop.
+    pub fn behind(&self) -> bool {
+        let overshoot = self.shared.overshoot.load(Ordering::Relaxed);
+        self.shared.backlog.load(Ordering::Relaxed) > overshoot
     }
 
     /// Whether the next frame should be a keyframe: at the start, after
@@ -382,6 +474,11 @@ impl StreamSender {
             video_bytes: load(&self.shared.video_bytes),
             keyframe_requests: load(&self.shared.keyframe_requests),
             resent: load(&self.shared.resent),
+            dropped: load(&self.shared.dropped),
+            wire: load(&self.shared.wire),
+            peak_100ms: load(&self.shared.peak_100ms),
+            peak_second: load(&self.shared.peak_second),
+            ceiling: load(&self.shared.ceiling_bps),
         }
     }
 
@@ -397,13 +494,23 @@ impl StreamSender {
 }
 
 /// A stream's video sent since it started, as [`StreamSender::sent`] says:
-/// bytes as UDP payloads, resent ones too; keyframes viewers asked for; and
-/// packets resent when a viewer reported them lost.
+/// bytes as UDP payloads, resent ones too; keyframes viewers asked for;
+/// packets resent when a viewer reported them lost; and frames dropped
+/// whole because the limiter couldn't send them in time. Then what the
+/// stream connection put on the wire lately, everything counted
+/// ([`pacer`]), in bit/s: over the last second, and the most any 100 ms
+/// and any second of the last five carried; and the ceiling it's held
+/// under.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SentSoFar {
     pub video_bytes: u64,
     pub keyframe_requests: u64,
     pub resent: u64,
+    pub dropped: u64,
+    pub wire: u64,
+    pub peak_100ms: u64,
+    pub peak_second: u64,
+    pub ceiling: u64,
 }
 
 /// Receives someone's stream on a thread of its own; dropping it ends the
@@ -601,11 +708,23 @@ async fn send(
     let mut connection = open(server, user, channel, Role::Send, shared).await?;
     let (ssrc, video, rtx) = (connection.ssrc, connection.video, connection.rtx);
     let mut size = *lock(&shared.size);
-    // Discord's cap for the size, or the person's limit below it, or past
-    // it with the unlock.
-    let mut capped = shared.cap(size.1);
-    let mut pacing = Controller::new(capped.into());
-    shared.target.store(pacing.target(), Ordering::Relaxed);
+    // The cap op 12 announces: Discord's for the size, or the person's
+    // limit below it, or past it with the unlock. The limiter holds every
+    // packet under the ceiling on the wire it makes ([`wire_ceiling`]);
+    // the encoder and the congestion controller aim under what that leaves
+    // the video.
+    let now = std::time::Instant::now();
+    let mut limiter = Limiter::new(shared.wire_ceiling(size.1, fps), shared.buffer(size.1), now);
+    if connection
+        .udp
+        .peer_addr()
+        .is_ok_and(|address| address.is_ipv6())
+    {
+        limiter.set_datagram(pacer::DATAGRAM_V6);
+    }
+    let mut pacing = Controller::new(shared.encoder_cap(size.1, fps));
+    let mut history = rtp::History::default();
+    let mut capped = recap(size.1, fps, shared, &mut limiter, &mut pacing, &mut history);
     // When the last video sender reports went out, by the time in them.
     let mut echoed = [(0u32, std::time::Instant::now()); ECHOED];
     let mut reports_sent = 0usize;
@@ -633,9 +752,6 @@ async fn send(
     tracing::info!(codec = ?chosen, ?offered, "Discord chose the stream's codec");
     let mut withdrawn: Vec<Codec> = vec![];
     let mut packetizer = Packetizer::new(video, chosen);
-    // Room for about a second of packets at the cap, which grows with it.
-    let mut history = rtp::History::default();
-    history.fit(capped.into());
     let interval = connection.interval;
     let mut heartbeat = tokio::time::interval_at(Instant::now() + interval, interval);
     let mut datagram = vec![0u8; 1500];
@@ -646,33 +762,49 @@ async fn send(
     let mut encrypted = None;
     let mut sent = Sent::default();
     let mut log = tokio::time::interval_at(Instant::now() + LOG_EVERY, LOG_EVERY);
+    let mut stats = tokio::time::interval(STATS_EVERY);
     // The sound's RTP numbering and sender report counts, on the audio SSRC.
     let mut sound_sequence: u16 = rand::random();
     let (mut sound_packets, mut sound_octets) = (0u32, 0u32);
     let mut sound_reported = Instant::now() - SENDER_REPORTS;
-    // The packets of the frame going out, each with when it's due, and its
-    // RTP timestamp. They go out from their own branch, so receiver reports
-    // are timed as they come, and the next frame waits until they're out.
-    let mut pending: VecDeque<(Instant, Vec<u8>)> = VecDeque::new();
+    // The packets of the frames queued, which go out from their own branch
+    // as the limiter lets them, so receiver reports are timed as they come;
+    // their bits on the wire; and the RTP timestamp of the last frame.
+    let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
+    let mut queued = 0u64;
     let mut pending_timestamp = 0u32;
+    // The packets viewers asked for again, with when they asked, sent
+    // before the frames' as the limiter lets them.
+    let mut resends: VecDeque<(u16, std::time::Instant)> = VecDeque::with_capacity(RESENDS);
+    // A frame was dropped: those after it predict from it, and go too,
+    // until a keyframe.
+    let mut until_keyframe = false;
     loop {
+        // A new bitrate limit takes effect as the loop next wakes, whatever
+        // woke it: the limiter at once, op 12 with it.
+        if (shared.cap(size.1), shared.wire_ceiling(size.1, fps)) != (capped, limiter.ceiling()) {
+            capped = recap(size.1, fps, shared, &mut limiter, &mut pacing, &mut history);
+            send_json(
+                &mut connection.ws,
+                12,
+                attributes(ssrc, video, rtx, size, fps, capped),
+            )
+            .await?;
+        }
+        let wake = next_send(&mut limiter, &pending, queued, &resends, &history);
         tokio::select! {
-            frame = frames.recv(), if pending.is_empty() => {
+            frame = frames.recv() => {
                 let Some(frame) = frame else {
                     let _ = connection.ws.close(None).await;
                     return Ok(());
                 };
-                // A new size, frame rate or bitrate limit, announced before
-                // the first frame that has it.
+                // A new size or frame rate, announced before the first
+                // frame that has it.
                 let (wanted_size, wanted_fps) = (*lock(&shared.size), shared.fps.load(Ordering::Relaxed));
-                let wanted = (wanted_size, wanted_fps, shared.cap(wanted_size.1));
-                if wanted != (size, fps, capped) {
-                    (size, fps, capped) = wanted;
+                if (wanted_size, wanted_fps) != (size, fps) {
+                    (size, fps) = (wanted_size, wanted_fps);
+                    capped = recap(size.1, fps, shared, &mut limiter, &mut pacing, &mut history);
                     send_json(&mut connection.ws, 12, attributes(ssrc, video, rtx, size, fps, capped)).await?;
-                    if let Some(reason) = pacing.set_cap(capped.into()) {
-                        retarget(shared, &pacing, reason, None);
-                    }
-                    history.fit(capped.into());
                 }
                 let encrypting = connection.dave.encrypting();
                 if encrypted != Some(encrypting) {
@@ -693,23 +825,87 @@ async fn send(
                 if Some(frame.codec) != *lock(&shared.chosen) {
                     continue;
                 }
+                // Viewers would decode it against the frame dropped before.
+                if until_keyframe && !frame.keyframe {
+                    sent.dropped += 1;
+                    shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 packetizer.set_codec(frame.codec);
                 let Some(payload) = connection.dave.encrypt(frame.codec, &frame.data) else {
                     continue;
                 };
+                // Whole or not at all: a frame that would wait too long
+                // behind those queued is dropped before it takes sequence
+                // numbers, with those after it until a keyframe.
+                let now = std::time::Instant::now();
+                let admitted = limiter.admit(now, queued, pacer::frame_on_wire(payload.len()) * 8);
+                if admitted.trimmed {
+                    let queued_ms = limiter.queued_for(queued).as_millis() as u64;
+                    tracing::debug!(trim = limiter.trim(), queued_ms, frame = payload.len(), "the encoder overshot what the ceiling lets out; lowering its target");
+                    publish(shared, &pacing, &limiter, fps);
+                }
+                until_keyframe = !admitted.send;
+                if !admitted.send {
+                    sent.dropped += 1;
+                    shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    shared.keyframe.store(true, Ordering::Relaxed);
+                    continue;
+                }
                 sent.frames += 1;
                 sent.keyframes += u32::from(frame.keyframe);
                 let packets_of_frame = packetizer.packets(&payload, frame.timestamp, frame.keyframe);
-                let bytes: usize = packets_of_frame.iter().map(Vec::len).sum();
-                let rate = pacing_rate(pacing.target(), bytes, fps);
-                pending.extend(schedule(Instant::now(), packets_of_frame, rate));
+                let wire: u64 = packets_of_frame
+                    .iter()
+                    .map(|packet| limiter.on_wire(packet.len() + rtp::SEALING))
+                    .sum();
+                limiter.queued_frame(now, frame.data.len(), wire, packets_of_frame.len());
+                queued += wire * 8;
+                pending.extend(packets_of_frame);
                 pending_timestamp = frame.timestamp;
+                shared.backlog.store(limiter.queued_for(queued).as_micros() as u64, Ordering::Relaxed);
             }
-            _ = tokio::time::sleep_until(pending.front().map_or_else(Instant::now, |&(due, _)| due)), if !pending.is_empty() => {
-                let now = Instant::now();
-                while pending.front().is_some_and(|&(due, _)| due <= now)
-                    && let Some((_, mut packet)) = pending.pop_front()
-                {
+            _ = tokio::time::sleep(wake.unwrap_or_default()), if wake.is_some() => {
+                let now = std::time::Instant::now();
+                // Resends first, within their share of the ceiling; those
+                // asked for too long ago, or gone from the history, are
+                // given up.
+                while let Some(&(lost, asked)) = resends.front() {
+                    let Some(original) = history
+                        .get(lost)
+                        .filter(|_| now.saturating_duration_since(asked) <= RESEND_WITHIN)
+                    else {
+                        resends.pop_front();
+                        sent.too_late += 1;
+                        continue;
+                    };
+                    // RTX puts the original sequence number before the payload.
+                    if !limiter.take_resend(now, limiter.on_wire(original.len() + 2 + rtp::SEALING)) {
+                        break;
+                    }
+                    resends.pop_front();
+                    let Some(mut again) = packetizer.retransmit(original, rtx) else {
+                        continue;
+                    };
+                    let clear = rtp::rtp_clear_len(&again).unwrap_or(again.len());
+                    connection.transport.seal(&mut again, clear)?;
+                    connection.udp.send(&again).await?;
+                    shared.video_bytes.fetch_add(again.len() as u64, Ordering::Relaxed);
+                    pacing.sent(now, again.len());
+                    packetizer.recycle(again);
+                    shared.resent.fetch_add(1, Ordering::Relaxed);
+                    sent.resent += 1;
+                }
+                // Then the frames' packets, as many as the limiter holds.
+                while let Some(front) = pending.front() {
+                    let bytes = limiter.on_wire(front.len() + rtp::SEALING);
+                    if !limiter.take_video(now, bytes) {
+                        break;
+                    }
+                    let Some(mut packet) = pending.pop_front() else {
+                        break;
+                    };
+                    queued = queued.saturating_sub(bytes * 8);
                     history.remember(&packet);
                     let clear = rtp::rtp_clear_len(&packet).unwrap_or(packet.len());
                     packets = packets.wrapping_add(1);
@@ -717,10 +913,14 @@ async fn send(
                     connection.transport.seal(&mut packet, clear)?;
                     connection.udp.send(&packet).await?;
                     shared.video_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
-                    pacing.sent(std::time::Instant::now(), packet.len());
+                    pacing.sent(now, packet.len());
                     // The next frame's packets are built in it.
                     packetizer.recycle(packet);
                 }
+                if pending.is_empty() {
+                    queued = 0;
+                }
+                shared.backlog.store(limiter.queued_for(queued).as_micros() as u64, Ordering::Relaxed);
                 if pending.is_empty() && reported.elapsed() >= SENDER_REPORTS {
                     reported = Instant::now();
                     let mut report = rtp::sender_report(
@@ -736,6 +936,7 @@ async fn send(
                     }
                     connection.transport.seal(&mut report, rtp::RTCP_CLEAR)?;
                     connection.udp.send(&report).await?;
+                    limiter.force(now, pacer::Kind::Report, limiter.on_wire(report.len()));
                 }
             }
             _ = heartbeat.tick() => connection.heartbeat().await?,
@@ -781,6 +982,10 @@ async fn send(
                 let clear = rtp::rtp_clear_len(&packet).unwrap_or(packet.len());
                 connection.transport.seal(&mut packet, clear)?;
                 connection.udp.send(&packet).await?;
+                // The sound never waits: it's counted, and the video waits
+                // the longer.
+                let now = std::time::Instant::now();
+                limiter.force(now, pacer::Kind::Sound, limiter.on_wire(packet.len()));
                 sent.sounds += 1;
                 if sound_reported.elapsed() >= SENDER_REPORTS {
                     sound_reported = Instant::now();
@@ -793,6 +998,7 @@ async fn send(
                     );
                     connection.transport.seal(&mut report, rtp::RTCP_CLEAR)?;
                     connection.udp.send(&report).await?;
+                    limiter.force(now, pacer::Kind::Report, limiter.on_wire(report.len()));
                 }
             }
             received = connection.udp.recv(&mut datagram) => {
@@ -819,7 +1025,7 @@ async fn send(
                 if let Some(estimate) = rtp::bandwidth_estimate(&rtcp, video)
                     && let Some(reason) = pacing.set_estimate(estimate)
                 {
-                    retarget(shared, &pacing, reason, None);
+                    retarget(shared, &pacing, &limiter, fps, reason, None);
                 }
                 if let Some(reception) = rtp::reception(&rtcp, video) {
                     let now = std::time::Instant::now();
@@ -831,33 +1037,132 @@ async fn send(
                         sent.round_trip_ms = Some(trip.as_millis() as u32);
                     }
                     if let Some(reason) = pacing.report(now, trip, &reception) {
-                        retarget(shared, &pacing, reason, Some((trip, reception.fraction_lost)));
+                        retarget(shared, &pacing, &limiter, fps, reason, Some((trip, reception.fraction_lost)));
                     }
                 }
-                for lost in rtp::nacked(&rtcp, video).into_iter().take(RESENDS) {
-                    let Some(mut again) = history.get(lost).and_then(|original| packetizer.retransmit(original, rtx)) else {
+                // Resent as the limiter lets them, before the frames' next.
+                let now = std::time::Instant::now();
+                for lost in rtp::nacked(&rtcp, video) {
+                    if resends.iter().any(|&(waiting, _)| waiting == lost) {
+                        continue;
+                    }
+                    if resends.len() >= RESENDS {
                         sent.too_late += 1;
                         continue;
-                    };
-                    let clear = rtp::rtp_clear_len(&again).unwrap_or(again.len());
-                    connection.transport.seal(&mut again, clear)?;
-                    connection.udp.send(&again).await?;
-                    shared.video_bytes.fetch_add(again.len() as u64, Ordering::Relaxed);
-                    pacing.sent(std::time::Instant::now(), again.len());
-                    packetizer.recycle(again);
-                    shared.resent.fetch_add(1, Ordering::Relaxed);
-                    sent.resent += 1;
+                    }
+                    resends.push_back((lost, now));
                 }
             }
+            _ = stats.tick() => {
+                let now = std::time::Instant::now();
+                if limiter.settle(now, queued) {
+                    tracing::debug!(trim = limiter.trim(), "the encoder's target comes back after it overshot");
+                }
+                // The overhead measured moves the encoder's target, both
+                // ways, at once.
+                publish(shared, &pacing, &limiter, fps);
+                let rates = limiter.rates(now);
+                shared.wire.store(rates.last_second, Ordering::Relaxed);
+                shared.peak_100ms.store(rates.peak_100ms, Ordering::Relaxed);
+                shared.peak_second.store(rates.peak_second, Ordering::Relaxed);
+            }
             _ = log.tick() => {
+                let now = std::time::Instant::now();
                 let target_kbps = pacing.target() / 1000;
-                let sending_kbps = pacing.sending(std::time::Instant::now()).map(|sending| sending / 1000);
+                let encoder_kbps = shared.target.load(Ordering::Relaxed) / 1000;
+                let sending_kbps = pacing.sending(now).map(|sending| sending / 1000);
                 let received_kbps = pacing.received().map(|received| received / 1000);
-                tracing::debug!(?sent, packets, octets, target_kbps, sending_kbps, received_kbps, "stream sent");
+                let rates = limiter.rates(now);
+                tracing::debug!(
+                    ?sent,
+                    packets,
+                    octets,
+                    target_kbps,
+                    encoder_kbps,
+                    sending_kbps,
+                    received_kbps,
+                    ceiling_kbps = capped / 1000,
+                    wire_kbps = rates.last_second / 1000,
+                    peak_100ms_kbps = rates.peak_100ms / 1000,
+                    peak_second_kbps = rates.peak_second / 1000,
+                    queued_ms = limiter.queued_for(queued).as_millis() as u64,
+                    per_packet = limiter.per_packet(now),
+                    other_kbps = limiter.other(now) / 1000,
+                    trim = limiter.trim(),
+                    "stream sent"
+                );
                 sent = Sent::default();
             }
         }
     }
+}
+
+/// How long until the next packet may go, or None with nothing to send: a
+/// resend asked for, within its share of the ceiling, or the next of the
+/// frames' packets, once the limiter holds half its depth or all that's
+/// queued, so a busy stream wakes every few milliseconds rather than for
+/// each packet.
+fn next_send(
+    limiter: &mut Limiter,
+    pending: &VecDeque<Vec<u8>>,
+    queued: u64,
+    resends: &VecDeque<(u16, std::time::Instant)>,
+    history: &rtp::History,
+) -> Option<Duration> {
+    let now = std::time::Instant::now();
+    let resend = resends.front().map(|&(lost, _)| {
+        // One gone from the history is given up as the branch wakes.
+        history.get(lost).map_or(Duration::ZERO, |original| {
+            let bits = limiter.on_wire(original.len() + 2 + rtp::SEALING) * 8;
+            limiter.resend_wait(now, bits)
+        })
+    });
+    let frames = pending.front().map(|front| {
+        let first = limiter.on_wire(front.len() + rtp::SEALING) * 8;
+        let batch = queued.min(limiter.depth() / 2).max(first);
+        limiter.video_wait(now, batch)
+    });
+    match (resend, frames) {
+        (Some(resend), Some(frames)) => Some(resend.min(frames)),
+        (resend, frames) => resend.or(frames),
+    }
+}
+
+/// Takes the ceiling for frames `height` lines tall, `fps` a second, at
+/// once: the limiter's rate and thresholds, the congestion controller's
+/// cap, the encoder's target, and the history's room for about a second of
+/// packets. Returns the cap op 12 announces after.
+fn recap(
+    height: u32,
+    fps: u32,
+    shared: &Shared,
+    limiter: &mut Limiter,
+    pacing: &mut Controller,
+    history: &mut rtp::History,
+) -> u32 {
+    let wire = shared.wire_ceiling(height, fps);
+    limiter.set_ceiling(std::time::Instant::now(), wire, shared.buffer(height));
+    shared.ceiling_bps.store(wire, Ordering::Relaxed);
+    let overshoot = limiter.overshoot().as_micros() as u64;
+    shared.overshoot.store(overshoot, Ordering::Relaxed);
+    match pacing.set_cap(shared.encoder_cap(height, fps)) {
+        Some(reason) => retarget(shared, pacing, limiter, fps, reason, None),
+        None => publish(shared, pacing, limiter, fps),
+    }
+    history.fit(wire);
+    shared.cap(height)
+}
+
+/// Hands the encoder its target: the congestion controller's, within what
+/// the ceiling leaves the video after the overhead measured lately
+/// ([`Limiter::budget`]), less what the encoder overshot
+/// ([`Limiter::trim`]).
+fn publish(shared: &Shared, pacing: &Controller, limiter: &Limiter, fps: u32) {
+    let now = std::time::Instant::now();
+    let target = pacing.target().min(limiter.budget(now, fps)) * limiter.trim() / 1000;
+    shared
+        .target
+        .store(target.max(LEAST_TARGET), Ordering::Relaxed);
 }
 
 /// Hands the encoder the controller's new target, and logs why it changed,
@@ -866,12 +1171,15 @@ async fn send(
 fn retarget(
     shared: &Shared,
     pacing: &Controller,
+    limiter: &Limiter,
+    fps: u32,
     reason: congestion::Reason,
     report: Option<(Option<Duration>, u8)>,
 ) {
-    shared.target.store(pacing.target(), Ordering::Relaxed);
+    publish(shared, pacing, limiter, fps);
     tracing::debug!(
         kbps = pacing.target() / 1000,
+        encoder_kbps = shared.target.load(Ordering::Relaxed) / 1000,
         %reason,
         round_trip_ms = report.and_then(|(trip, _)| trip).map(|trip| trip.as_millis() as u64),
         lowest_ms = pacing.baseline().map(|trip| trip.as_millis() as u64),
@@ -885,6 +1193,8 @@ fn retarget(
 struct Sent {
     frames: u32,
     keyframes: u32,
+    /// Frames dropped whole: the limiter couldn't send them in time.
+    dropped: u32,
     /// Opus frames of the stream's sound.
     sounds: u32,
     /// RTCP by packet type and feedback format, as `type/format`.
@@ -893,8 +1203,9 @@ struct Sent {
     said: std::collections::BTreeMap<String, String>,
     /// Keyframe requests among them.
     requests: u32,
-    /// Packets resent when a viewer reported them lost, and those already
-    /// gone from the history.
+    /// Packets resent when a viewer reported them lost, and those given up:
+    /// gone from the history, asked for too long ago, or past the most
+    /// waiting.
     resent: u32,
     too_late: u32,
     /// RTCP that wouldn't decrypt.
@@ -1408,9 +1719,10 @@ mod tests {
         sender.shared.target.store(18_000_000, Ordering::Relaxed);
         sender.set_ceiling(Some(20_000), false);
         assert_eq!(sender.shared.ceiling(), (Some(20_000), false));
-        assert_eq!(sender.target(), DOCUMENTED_MAX as u64);
+        // Discord's cap, which is the video's, as for Auto.
+        assert_eq!(sender.target(), u64::from(DOCUMENTED_MAX));
         sender.set_ceiling(Some(20_000), true);
-        assert_eq!(sender.target(), DOCUMENTED_MAX as u64, "no jump");
+        assert_eq!(sender.target(), u64::from(DOCUMENTED_MAX), "no jump");
         sender.set_ceiling(Some(u32::MAX), true);
         assert_eq!(sender.shared.cap(1440), UNLOCKED_MAX);
         sender.set_ceiling(None, true);
@@ -1449,49 +1761,72 @@ mod tests {
         };
         assert_eq!(sender.target(), 2_500_000);
         sender.set_ceiling(Some(2_000), false);
+        // What 2 Mbit/s on the wire leaves the video.
+        let video = pacer::encoder_ceiling(2_000_000, 0);
+        assert!((1_500_000..1_800_000).contains(&video), "{video}");
         assert_eq!(
             (sender.target(), sender.shared.ceiling()),
-            (2_000_000, (Some(2_000), false))
+            (video, (Some(2_000), false))
         );
         sender.set_ceiling(None, false);
         assert_eq!(
             (sender.target(), sender.shared.ceiling()),
-            (2_000_000, (None, false))
+            (video, (None, false))
         );
     }
 
+    /// A limit the person chose is the ceiling on the wire: op 12 announces
+    /// it as it is, and the encoder aims under what it leaves the video
+    /// once the packets' overhead, the sound and the limiter's margins are
+    /// taken, at every frame rate; Discord's observed 16 Mbit/s leaves about
+    /// 13.5. Discord's own cap, at Auto or past a locked limit, is the
+    /// video's, as its client sends it, and the wire takes what that needs,
+    /// under the 16 Mbit/s Discord was seen to take.
     #[test]
-    fn paces_frames_by_the_target() {
-        // A 40 kB frame at 4 Mbit/s goes out at 10 Mbit/s, in 32 ms.
-        assert_eq!(pacing_rate(4_000_000, 40_000, 30), 10_000_000);
-        // A 200 kB keyframe goes out within two frames, 67 ms at 30 fps,
-        // not 160 ms at 2.5 times the target.
-        assert_eq!(pacing_rate(4_000_000, 200_000, 30), 24_000_000);
-        assert_eq!(pacing_rate(4_000_000, 200_000, 60), 48_000_000);
-        // At the unlock's 50 Mbit/s: a frame at 125, and a keyframe of the
-        // encoder's whole half second's buffer, 3.1 MB, within two frames.
-        assert_eq!(pacing_rate(50_000_000, 104_000, 60), 125_000_000);
-        assert_eq!(pacing_rate(50_000_000, 3_125_000, 60), 750_000_000);
-        let due: Vec<_> = schedule(Instant::now(), vec![vec![0; 1200]; 2600], 750_000_000)
-            .map(|(due, _)| due)
-            .collect();
-        let took = *due.last().unwrap() - due[0];
-        assert!(took < Duration::from_millis(34), "{took:?}");
-    }
-
-    #[test]
-    fn schedules_a_frame_past_its_burst() {
-        let started = Instant::now();
-        // Ten packets of 1000 bytes at 8 Mbit/s: a millisecond each past
-        // the first eight, which go at once.
-        let due: Vec<_> = schedule(started, vec![vec![0; 1000]; 10], 8_000_000)
-            .map(|(due, _)| due - started)
-            .collect();
-        assert_eq!(due[..BURST], [Duration::ZERO; BURST]);
+    fn the_encoder_aims_under_what_the_ceiling_leaves() {
+        let ceiling = cap(1080, Some(16_000), true);
+        assert_eq!(ceiling, OBSERVED_MAX);
+        let announced = attributes(1, 2, 3, (1920, 1080), 60, ceiling);
         assert_eq!(
-            due[BURST..],
-            [Duration::from_millis(8), Duration::from_millis(9)]
+            announced["streams"][0]["max_bitrate"], 16_000_000,
+            "the ceiling, no more"
         );
+        for fps in [15, 30, 60] {
+            let video = encoder_cap(1080, Some(16_000), true, fps);
+            assert!(
+                (13_300_000..14_000_000).contains(&video),
+                "{video} at {fps} fps"
+            );
+            assert_eq!(video, pacer::encoder_ceiling(16_000_000, fps));
+        }
+        assert!(
+            encoder_cap(1080, Some(16_000), true, 60) < encoder_cap(1080, Some(16_000), true, 15)
+        );
+        assert_eq!(wire_ceiling(1080, Some(16_000), true, 60), 16_000_000);
+        assert!(
+            encoder_cap(1080, Some(9_000), false, 30) < 7_800_000,
+            "a limit at Discord's cap"
+        );
+        for (height, max_kbps, unlocked) in [
+            (720, None, false),
+            (1080, None, true),
+            (1080, Some(20_000), false),
+        ] {
+            for fps in [15, 30, 60] {
+                let cap = cap(height, max_kbps, unlocked);
+                assert_eq!(encoder_cap(height, max_kbps, unlocked, fps), u64::from(cap));
+                let wire = wire_ceiling(height, max_kbps, unlocked, fps);
+                assert_eq!(wire, pacer::wire_for(cap.into(), fps));
+                assert!(
+                    wire > u64::from(cap) * 110 / 100 && wire < u64::from(cap) * 125 / 100,
+                    "{wire}"
+                );
+                assert!(wire < OBSERVED_MAX.into());
+            }
+        }
+        assert_eq!(encoder_buffer(1080, Some(16_000), true), STRICT_BUFFER);
+        assert_eq!(encoder_buffer(1080, Some(9_000), true), GENTLE_BUFFER);
+        assert_eq!(encoder_buffer(1080, None, true), GENTLE_BUFFER);
     }
 
     /// Op 12 as Discord's server sends it to a viewer: the RTX SSRC only in

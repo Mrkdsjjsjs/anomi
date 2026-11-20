@@ -316,10 +316,16 @@ the loss are measured.
 
 While this account's screen is live, a Stream tab says how it goes out:
 the encoder and where it runs ("NVENC on the GPU", "x264 on the CPU"), the
-codec Discord chose, the size and frame rate sent, the bitrate sent over
-the last second beside the one aimed for, which follows what the uplink
-carries ([Go Live](go-live.md)), and the keyframes viewers asked for and the packets resent to
-them. Discord's client shows its stream's numbers only in developer mode.
+codec Discord chose, the size and frame rate sent, what the stream
+connection put on the wire over the last second, everything counted, then
+"Peak over 5 s:", the most any second and any 100 ms of the last five
+carried against the ceiling ("15.4 Mbit/s over 1 s, 16.7 Mbit/s over
+100 ms; limit 16.0 Mbit/s"), so the ceiling can be seen to hold: a second
+stays under it, and 100 ms may pass it by the limiter's burst allowance, a
+few percent ([Keeping the ceiling](go-live.md#keeping-the-ceiling)); the
+bitrate the encoder aims for, which follows what the uplink carries
+([Go Live](go-live.md)); and the keyframes viewers asked for and the packets
+resent to them. The Slint window leaves the peaks out. Discord's client shows its stream's numbers only in developer mode.
 The stream worker reports them once a second while live
 (`Report::Sending`), counting what `StreamSender` sends; the call keeps
 the last report beside its own numbers, without refreshing the UI's state,

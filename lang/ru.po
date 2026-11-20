@@ -6489,6 +6489,12 @@ msgstr "Отправка..."
 msgid "Sending:"
 msgstr "Отправка:"
 
+msgid "Peak over 5 s:"
+msgstr "Пик за 5 с:"
+
+msgid "{0} over 1 s, {1} over 100 ms; limit {2}"
+msgstr "за 1 с — {0}, за 100 мс — {1}; предел {2}"
+
 msgid "SENSITIVE CONTENT FILTERS"
 msgstr "ФИЛЬТРЫ ЧУВСТВИТЕЛЬНОГО КОНТЕНТА"
 
@@ -10384,8 +10390,11 @@ msgstr "Своё значение…"
 msgid "From 1 to 50 Mbit/s"
 msgstr "От 1 до 50 Мбит/с"
 
-msgid "From 1 to 50 Mbit/s. It's a ceiling: the stream still goes lower when the connection can't carry it."
-msgstr "От 1 до 50 Мбит/с. Это потолок: если соединение не тянет, трансляция всё равно снизит битрейт."
+msgid "From 1 to 50 Mbit/s. It's a ceiling: the stream sends no more in any second, and goes lower when the connection can't carry it. Discord was seen to take up to about 16 Mbit/s."
+msgstr "От 1 до 50 Мбит/с. Это потолок: ни за одну секунду трансляция не отправит больше, а если соединение не тянет, снизит битрейт. Замечено, что Discord принимает примерно до 16 Мбит/с."
+
+msgid "Discord was seen to take up to about 16 Mbit/s. More may break the stream: it can be cut off or dropped."
+msgstr "Замечено, что Discord принимает примерно до 16 Мбит/с. Больше может сломать трансляцию: её могут оборвать или отключить."
 
 msgid "Type how many Mbit/s, such as 20."
 msgstr "Введите число Мбит/с, например 20."
@@ -10399,8 +10408,8 @@ msgstr "Предел — от 1 до 50 Мбит/с."
 msgid "Unlocked bitrate"
 msgstr "Сверхбитрейт"
 
-msgid "Lets a stream's bitrate limit be set by hand above 9 Mbit/s, up to 50. Discord documents 9 Mbit/s as the most; what its servers do with more isn't known: the stream may be cut off, lose packets or be dropped. A higher bitrate also needs an upload that fast, and loads the encoder and the people watching."
-msgstr "Позволяет вручную задать предел битрейта трансляции выше 9 Мбит/с, вплоть до 50. В документации Discord указан максимум 9 Мбит/с, а что его серверы делают с большим битрейтом, неизвестно: трансляцию могут оборвать, она может терять пакеты или вовсе отключиться. Кроме того, высокому битрейту нужна такая же скорость отдачи, и он сильнее нагружает кодировщик и зрителей."
+msgid "Lets a stream's bitrate limit be set above 9 Mbit/s, up to 50. Discord documents 9 Mbit/s as the most, and was seen to take up to about 16 Mbit/s; more may break the stream: it can be cut off, lose packets or be dropped. A higher bitrate also needs an upload that fast, and loads the encoder and the people watching."
+msgstr "Позволяет задать предел битрейта трансляции выше 9 Мбит/с, вплоть до 50. В документации Discord указан максимум 9 Мбит/с, а на деле замечено, что он принимает примерно до 16 Мбит/с; больше может сломать трансляцию: её могут оборвать, она может терять пакеты или вовсе отключиться. Кроме того, высокому битрейту нужна такая же скорость отдачи, и он сильнее нагружает кодировщик и зрителей."
 
 msgid "The graphics card's encoder failed, so the processor encodes the stream now."
 msgstr "Кодировщик видеокарты отказал, поэтому теперь трансляцию кодирует процессор."

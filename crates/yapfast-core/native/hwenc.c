@@ -10,8 +10,8 @@
  * Settings, as measured on screen recordings and games
  * (docs/discord/go-live.md):
  * low-latency tuning, no B-frames, a frame out for each frame in, the
- * bitrate capped over half a second without padding a calm screen, H264's
- * Main profile, and parameter sets before each IDR. */
+ * bitrate capped over the buffer asked for (set_rate) without padding a calm
+ * screen, H264's Main profile, and parameter sets before each IDR. */
 /* POSIX 2008 with XSI, for realpath. */
 #define _XOPEN_SOURCE 700
 #include <stdarg.h>
@@ -63,10 +63,24 @@ static void keep_error(void *context, int level, const char *format, va_list arg
   if (length && first_error[length - 1] == '\n') first_error[length - 1] = 0;
 }
 
-static void set_rate(AVCodecContext *codec, unsigned kbps) {
-  codec->bit_rate = (int64_t)kbps * 1000;
-  codec->rc_max_rate = (int64_t)kbps * 1000;
-  codec->rc_buffer_size = (int)(kbps * 500);
+/* The rate control's buffer at `fps` frames a second, in milliseconds, as
+ * h264.c sizes x264's: `ms`, at least three frames. */
+static int64_t rc_buffer_ms(int fps, unsigned ms) {
+  int64_t frames = fps > 0 ? 3000 / fps : 3000;
+  return frames > ms ? frames : ms;
+}
+
+/* Aims for `kbps` with the peak at it over the buffer of rc_buffer_ms, so a
+ * keyframe or a scene cut passes the rate by that much at most: FFmpeg
+ * gives NVENC its vbvBufferSize, VA-API its HRD buffer (and a window of as
+ * many milliseconds), and AMF its VBV buffer from rc_buffer_size, and
+ * patches/ make each take a new one as it runs. */
+static void set_rate(AVCodecContext *codec, unsigned kbps, unsigned ms) {
+  int fps = codec->framerate.den > 0 ? codec->framerate.num / codec->framerate.den : 0;
+  int64_t bits = (int64_t)kbps * 1000;
+  codec->bit_rate = bits;
+  codec->rc_max_rate = bits;
+  codec->rc_buffer_size = (int)(bits * rc_buffer_ms(fps, ms) / 1000);
 }
 
 /* The lowest H264 level from 4.2 up (its level_idc, 51 for 5.1) whose
@@ -130,7 +144,7 @@ static int open_vaapi(struct yapfast_hwenc *h, AVCodecContext *codec, struct va_
  * where that's 0 or more, the first that opens otherwise. */
 static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va_device device,
                         int gpu, unsigned codec_id, unsigned width, unsigned height,
-                        unsigned fps, unsigned kbps) {
+                        unsigned fps, unsigned kbps, unsigned buffer_ms) {
   int vaapi = device.path != NULL, amf = strstr(found->name, "_amf") != NULL;
   AVCodecContext *codec = h->codec = avcodec_alloc_context3(found);
   if (!codec) return AVERROR(ENOMEM);
@@ -147,7 +161,7 @@ static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va
   codec->color_trc = AVCOL_TRC_SMPTE170M;
   codec->colorspace = AVCOL_SPC_SMPTE170M;
   codec->color_range = AVCOL_RANGE_MPEG;
-  set_rate(codec, kbps);
+  set_rate(codec, kbps, buffer_ms);
   if (codec_id == CODEC_H264) codec->profile = AV_PROFILE_H264_MAIN;
   void *options = codec->priv_data;
   int ret = 0;
@@ -186,6 +200,10 @@ static int open_encoder(struct yapfast_hwenc *h, const AVCodec *found, struct va
     av_opt_set(options, "preset", "p4", 0);
     av_opt_set(options, "tune", "ll", 0);
     av_opt_set(options, "rc", "vbr", 0);
+    /* A first pass at a quarter of the size measures each frame before it's
+     * coded, as NVIDIA advises for a small buffer: a scene cut or a
+     * keyframe then keeps to it rather than overflow it. */
+    av_opt_set(options, "multipass", "qres", 0);
     av_opt_set_int(options, "zerolatency", 1, 0);
     av_opt_set_int(options, "delay", 0, 0);
     av_opt_set_int(options, "forced-idr", 1, 0);
@@ -260,7 +278,7 @@ static void kernel_driver(const char *name, char *kernel, size_t size) {
 }
 
 struct opening {
-  unsigned codec_id, width, height, fps, kbps;
+  unsigned codec_id, width, height, fps, kbps, buffer_ms;
   char *report;
   size_t report_size, used;
 };
@@ -291,7 +309,7 @@ static struct yapfast_hwenc *try_open(struct opening *o, const AVCodec *found,
   if (!h) return NULL;
   first_error[0] = 0;
   int ret = open_encoder(h, found, device, gpu, o->codec_id, o->width, o->height, o->fps,
-                         o->kbps);
+                         o->kbps, o->buffer_ms);
   if (ret >= 0) {
     snprintf(o->report, o->report_size, "%s", label);
     return h;
@@ -332,12 +350,12 @@ static struct yapfast_hwenc *try_vaapi(struct opening *o, const AVCodec *found, 
 struct yapfast_hwenc *yapfast_hwenc_open(unsigned codec_id, unsigned on, const char *node,
                                          const char *kernel, int gpu, unsigned width,
                                          unsigned height, unsigned fps, unsigned kbps,
-                                         char *report, size_t report_size) {
+                                         unsigned buffer_ms, char *report, size_t report_size) {
   if (report_size) report[0] = 0;
   if (codec_id > CODEC_AV1 || on > ON_VAAPI) return NULL;
   av_log_set_level(AV_LOG_ERROR);
   av_log_set_callback(keep_error);
-  struct opening o = {codec_id, width, height, fps, kbps, report, report_size, 0};
+  struct opening o = {codec_id, width, height, fps, kbps, buffer_ms, report, report_size, 0};
   for (unsigned family = ON_NVENC; family <= ON_VAAPI; family++) {
     if (on != ON_ANY && on != family) continue;
     const char *name = ENCODERS[codec_id][family - ON_NVENC];
@@ -444,8 +462,8 @@ long yapfast_hwenc_encode(struct yapfast_hwenc *h, const unsigned char *y, int y
 /* Changes the bitrate aimed for, from the next frame on, without a
  * keyframe: patches/ in vendor/ffmpeg-src make NVENC and VA-API follow it.
  * Returns 0. */
-int yapfast_hwenc_set_bitrate(struct yapfast_hwenc *h, unsigned kbps) {
-  set_rate(h->codec, kbps);
+int yapfast_hwenc_set_bitrate(struct yapfast_hwenc *h, unsigned kbps, unsigned buffer_ms) {
+  set_rate(h->codec, kbps, buffer_ms);
   return 0;
 }
 

@@ -3,8 +3,9 @@
 //! middle of the window, in the share layer, in place of the Go Live
 //! dialog or the stream's menu it came from, as the window's dialogs with a
 //! field are drawn. "Bitrate limit" over what it takes, the field with
-//! "Mbit/s" after it and why a value was refused under it, then "Cancel"
-//! and "Apply". Enter in the field sets the value; Escape, once the field
+//! "Mbit/s" after it and why a value was refused under it, or, past the
+//! 16 Mbit/s Discord was seen to take, that it may break the stream; then
+//! "Cancel" and "Apply". Enter in the field sets the value; Escape, once the field
 //! has let it go as in every dialog with a field, and a press beside the
 //! card leave the limit as it was: the app takes the layer's close for
 //! that while the card shows.
@@ -56,13 +57,13 @@ pub fn view(entry: &Entry, motion: Motion) -> Element<'_, Intent> {
             .on_press(Intent::ApplyBitrate),
     ]
     .spacing(metrics::SPACE_S);
-    let card = column![
+    let mut card = column![
         text(tr!("Bitrate limit"))
             .size(TITLE)
             .font(typography::BOLD)
             .style(catalog::text::primary),
         text(tr!(
-            "From 1 to 50 Mbit/s. It's a ceiling: the stream still goes lower when the connection can't carry it."
+            "From 1 to 50 Mbit/s. It's a ceiling: the stream sends no more in any second, and goes lower when the connection can't carry it. Discord was seen to take up to about 16 Mbit/s."
         ))
         .size(typography::size::SMALL)
         .style(catalog::text::secondary)
@@ -70,9 +71,20 @@ pub fn view(entry: &Entry, motion: Motion) -> Element<'_, Intent> {
         row![well, unit]
             .spacing(UNIT_GAP)
             .align_y(Alignment::Start),
-        container(buttons).align_right(Fill),
     ]
     .spacing(SPACING);
+    if entry.past_accepted() {
+        card = card.push(
+            text(tr!(
+                "Discord was seen to take up to about 16 Mbit/s. More may break the stream: it can be cut off or dropped."
+            ))
+            .size(typography::size::SMALL)
+            .style(catalog::text::danger)
+            .width(Fill)
+            .boxed(),
+        );
+    }
+    let card = card.push(container(buttons).align_right(Fill).boxed());
     container(card)
         .padding(PADDING)
         .width(WIDTH)

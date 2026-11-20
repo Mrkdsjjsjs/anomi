@@ -8,10 +8,10 @@
 //! [`Saved::other`] and go back into the file as they came.
 //!
 //! Anomi's own keys, which the Slint app doesn't have (the processor's
-//! cores, what draws the interface, where streams encode, echo cancellation
-//! and the people whose voice is cleaned), are written only once set, so a
-//! file the Slint app wrote reads and writes back unchanged; it keeps them
-//! through its own catch-all.
+//! cores, what draws the interface, where streams encode, echo
+//! cancellation, the people whose voice is cleaned and the streams muted),
+//! are written only once set, so a file the Slint app wrote reads and
+//! writes back unchanged; it keeps them through its own catch-all.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -20,6 +20,8 @@ use serde_json::{Map, Value};
 use yapfast_core::keybinds::{Binding, Shortcut};
 use yapfast_core::noise::{Strength, Suppressor};
 use yapfast_core::sounds::{Sound, SoundSet};
+
+use super::stickers::{KeptSticker, KeptStickerUse};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -153,6 +155,11 @@ pub struct Saved {
     /// How loud people sound in calls, and their streams, by user id.
     pub volumes: BTreeMap<String, f32>,
     pub stream_volumes: BTreeMap<String, f32>,
+    /// The streams muted here from the menu of their tile, by streamer: the
+    /// core plays them at nothing, their volume above kept for when they're
+    /// unmuted. Written once one is.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub muted_streams: BTreeSet<String>,
     /// Those muted for this account alone, from their menu in a call.
     pub muted_people: BTreeSet<String>,
     /// Those whose soundboard sounds this account doesn't hear.
@@ -354,27 +361,6 @@ pub enum CpuChoice {
     Auto,
     All,
     Cores(Vec<u32>),
-}
-
-/// A sticker this device kept, as `layout.json` keeps it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct KeptSticker {
-    pub id: String,
-    pub name: String,
-    /// Discord's `format_type`, which its picture's address takes.
-    pub format: u64,
-    /// Its picture at the picker's tile size.
-    pub picture: String,
-}
-
-/// A sticker this device sent, and how often, as `layout.json` keeps it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct KeptStickerUse {
-    pub id: String,
-    pub name: String,
-    pub format: u64,
-    pub picture: String,
-    pub uses: u32,
 }
 
 /// How calls decide when to send the microphone, as Discord's Input Mode.

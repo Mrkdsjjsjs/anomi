@@ -54,5 +54,13 @@ pub fn shots() -> Vec<Shot> {
         bonfire("dmcall", "call_watching", || {
             fixtures::dm_window(fixtures::watching())
         }),
+        // A stream in each state in the strip beneath a large tile: at its
+        // smallest in the small window, and a size up in the golden one.
+        shot("small", "voice_strip_streams", SMALL, "bonfire", || {
+            fixtures::window(fixtures::small_streams())
+        }),
+        bonfire("voice", "strip_streams", || {
+            fixtures::window(fixtures::small_streams())
+        }),
     ]
 }

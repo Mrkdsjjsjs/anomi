@@ -4,20 +4,25 @@
 //! (docs/iced/tasks/voice.md). In a Discord call, Anomi's own sliders follow
 //! while each is on: how much of their noise is taken out, and how far
 //! they're turned down while only this account's echo comes from them. A
-//! watched stream's card, over the menu of its tile, has the stream's
-//! volume alone, then the same two for its sound. The rows under it are the
-//! window's menu (`vm.menu`); the shell draws both, this is the card alone.
+//! watched stream's card, over the menu of its tile, starts as Discord's
+//! menu of a stream does: under its name its own rows ("Stop Watching", a
+//! line, the box "Mute"), drawn as a menu's are, then the stream's volume
+//! alone, "Stream volume", then the same two sliders for its sound. The rows
+//! under it are the window's menu (`vm.menu`); the shell draws both, this
+//! is the card alone.
 
 use iced::border::Radius;
 use iced::widget::text::{Ellipsis, Wrapping};
-use iced::widget::{column, container, text};
-use iced::{Border, Color, Length, Shadow, Vector};
+use iced::widget::{Column, column, container, space, text};
+use iced::{Background, Border, Color, Length, Padding, Shadow, Vector};
 
 use anomi_theme::prelude::*;
 use anomi_theme::{catalog, metrics, typography};
 use anomi_vm::voice::participant_menu::{
-    DEPTH, Intent, MAXIMUM, NAME_HEIGHT, PADDING, ParticipantMenu, SPACING, STRENGTH,
+    DEPTH, Intent, MAXIMUM, NAME_HEIGHT, PADDING, ParticipantMenu, ROWS_GAP, ROWS_PADDING, RULE,
+    SPACING, STRENGTH,
 };
+use anomi_widgets::menu::item;
 use anomi_widgets::slider::{self, Volume};
 use yapfast_lang::tr;
 
@@ -31,7 +36,7 @@ const SHADOW: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.5);
 const SHADOW_BLUR: f32 = 24.0;
 const SHADOW_DROP: f32 = 8.0;
 
-pub fn view(menu: &ParticipantMenu, _motion: Motion) -> impl View<Intent> + '_ {
+pub fn view(menu: &ParticipantMenu, motion: Motion) -> impl View<Intent> + '_ {
     let name = text(menu.name.as_str())
         .size(typography::size::BODY)
         .font(typography::BOLD)
@@ -40,22 +45,59 @@ pub fn view(menu: &ParticipantMenu, _motion: Motion) -> impl View<Intent> + '_ {
         .wrapping(Wrapping::None)
         .ellipsis(Ellipsis::End)
         .style(catalog::text::primary);
+    let head = container(name).padding(Padding::new(PADDING).bottom(0.0));
     // A stream's card: its volume alone.
-    let mut content = column![name, volume(menu, menu.stream)].spacing(SPACING);
+    let mut sliders = column![volume(menu, menu.stream)].spacing(SPACING);
     if menu.live && !menu.stream {
-        content = content.push(volume(menu, true));
+        sliders = sliders.push(volume(menu, true));
     }
     if let Some(strength) = menu.noise_strength {
-        content = content.push(noise_strength(menu, strength));
+        sliders = sliders.push(noise_strength(menu, strength));
     }
     if let Some(depth) = menu.echo_depth {
-        content = content.push(echo_depth(menu, depth));
+        sliders = sliders.push(echo_depth(menu, depth));
+    }
+    // The card's own rows, if any, take the room above the first slider.
+    let above = if menu.rows.is_empty() { SPACING } else { 0.0 };
+    let sliders = container(sliders).padding(Padding::new(PADDING).top(above));
+    let mut content: Column<Element<'_, Intent>> = Column::new().push(head.boxed());
+    if !menu.rows.is_empty() {
+        content = content.push(rows(menu, motion));
     }
     let joined = menu.joined;
-    container(content.padding(PADDING))
+    container(content.push(sliders.boxed()))
         .width(menu.width)
         .height(menu.height())
         .style(move |theme: &Theme| card(theme, joined))
+}
+
+/// A stream's own rows, as a menu's: each lights under the pointer and
+/// sends its intent when clicked, a line before one that starts a group.
+fn rows(menu: &ParticipantMenu, motion: Motion) -> Element<'_, Intent> {
+    let mut rows = Column::new().spacing(ROWS_GAP);
+    for (index, row) in menu.rows.iter().enumerate() {
+        if index > 0 && row.separated {
+            rows = rows.push(rule());
+        }
+        rows = rows.push(item(row, motion).boxed());
+    }
+    container(rows).padding(ROWS_PADDING).boxed()
+}
+
+/// A group's line, 1 px in the line colour in the middle of its room.
+fn rule<'a>() -> Element<'a, Intent> {
+    const LINE: f32 = 1.0;
+    let line = container(space())
+        .width(Length::Fill)
+        .height(LINE)
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(theme.palette().line)),
+            ..container::Style::default()
+        });
+    let room = (RULE - LINE) / 2.0;
+    container(line)
+        .padding(Padding::ZERO.top(room).bottom(room))
+        .boxed()
 }
 
 /// One slider: the person's voice, or their stream.
@@ -178,6 +220,13 @@ pub fn shots() -> Vec<crate::shots::Shot> {
             size: GOLDEN,
             theme: "bonfire",
             vm: fixture::stream,
+        },
+        Shot {
+            area: "voice",
+            name: "stream_menu_muted",
+            size: GOLDEN,
+            theme: "bonfire",
+            vm: fixture::stream_muted,
         },
     ]
 }

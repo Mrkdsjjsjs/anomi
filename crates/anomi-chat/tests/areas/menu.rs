@@ -178,3 +178,95 @@ fn the_submenu_opening_on_the_left_moves_nothing() {
     assert!(quote.x + quote.width < closed.x);
     assert!((quote.y - closed.y).abs() < 8.0, "{quote:?} by {closed:?}");
 }
+
+/// Well within the wait for the pointer, and well past it.
+const SOON: std::time::Duration = std::time::Duration::from_millis(50);
+const LATER: std::time::Duration = std::time::Duration::from_millis(400);
+
+fn move_to(
+    ui: &mut Simulator<'_, Intent, anomi_theme::Theme, anomi_theme::Renderer>,
+    at: iced::Point,
+) {
+    ui.point_at(at);
+    ui.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved {
+        position: at,
+    })]);
+}
+
+/// A frame `wait` from now; what was asked by then.
+fn after(
+    ui: &mut Simulator<'_, Intent, anomi_theme::Theme, anomi_theme::Renderer>,
+    wait: std::time::Duration,
+) -> Vec<Intent> {
+    let at = std::time::Instant::now() + wait;
+    ui.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(
+        at,
+    ))]);
+    ui.drain().collect()
+}
+
+/// The menu with Apps open and the pointer on its row, as it opened them.
+fn on_apps(menu: &Menu) -> Simulator<'_, Intent, anomi_theme::Theme, anomi_theme::Renderer> {
+    let mut ui = simulate(menu);
+    let apps = ui.find("Apps").expect("the Apps row").bounds();
+    move_to(&mut ui, apps.center());
+    let _ = after(&mut ui, SOON);
+    ui
+}
+
+fn opened() -> Menu {
+    let mut menu = menu_of(sample::message_context);
+    menu.apps_open = true;
+    menu
+}
+
+#[test]
+fn apps_close_a_moment_after_the_pointer_went_to_another_row() {
+    let menu = opened();
+    let mut ui = on_apps(&menu);
+    let below = ui.find("Mark Unread").expect("the next row").bounds();
+    move_to(&mut ui, below.center());
+    // Meanwhile the row the pointer is on doesn't take it.
+    assert_eq!(after(&mut ui, SOON), [], "within the wait");
+    assert!(after(&mut ui, LATER).contains(&Intent::Apps(false)));
+}
+
+#[test]
+fn apps_close_a_moment_after_the_pointer_left_the_card() {
+    let menu = opened();
+    let mut ui = on_apps(&menu);
+    move_to(&mut ui, iced::Point::new(650.0, 650.0));
+    assert_eq!(after(&mut ui, SOON), [], "within the wait");
+    assert_eq!(after(&mut ui, LATER), [Intent::Apps(false)]);
+}
+
+#[test]
+fn a_diagonal_move_across_the_next_row_reaches_the_apps() {
+    let menu = opened();
+    let mut ui = on_apps(&menu);
+    let apps = ui.find("Apps").expect("the Apps row").bounds();
+    let below = ui.find("Mark Unread").expect("the next row").bounds();
+    let quote = ui.find("Quote").expect("the app's command").bounds();
+    // Across the next row's far end, then onto the command.
+    move_to(&mut ui, iced::Point::new(apps.x + 200.0, below.center_y()));
+    assert_eq!(after(&mut ui, SOON), []);
+    move_to(&mut ui, quote.center());
+    assert_eq!(after(&mut ui, LATER), [], "it stays");
+}
+
+#[test]
+fn a_press_elsewhere_closes_the_apps_at_once() {
+    let menu = opened();
+    let mut ui = on_apps(&menu);
+    move_to(&mut ui, iced::Point::new(650.0, 650.0));
+    ui.simulate(iced_test::simulator::click());
+    assert_eq!(ui.drain().collect::<Vec<_>>(), [Intent::Apps(false)]);
+}
+
+#[test]
+fn apps_the_keys_opened_stay_while_the_pointer_is_elsewhere() {
+    let menu = opened();
+    let mut ui = simulate(&menu);
+    move_to(&mut ui, iced::Point::new(650.0, 650.0));
+    assert_eq!(after(&mut ui, LATER), [], "not the pointer's");
+}

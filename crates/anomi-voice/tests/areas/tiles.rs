@@ -4,6 +4,7 @@
 //! draws the goldens' tiles where the goldens have them.
 
 mod render;
+mod small;
 
 use iced::{Event, Point, Rectangle, Size, mouse};
 use iced_test::selector::Candidate;

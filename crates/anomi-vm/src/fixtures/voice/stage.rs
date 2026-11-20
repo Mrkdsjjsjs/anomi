@@ -110,6 +110,13 @@ fn both_sharing() -> Vec<Tile> {
     tiles
 }
 
+/// Alice large, a stream in each state in the strip beneath her
+/// (`tiles::small_streams`): in [`crate::fixtures::SMALL`]'s window, its
+/// smallest tiles, 120 by 67.5.
+pub fn small_streams() -> Stage {
+    Stage::new(tiles::small_streams(), Some(0), false, false)
+}
+
 /// Alice alone in the Lounge, under the line that says so.
 pub fn alone() -> Stage {
     grid(vec![tiles::alice()])

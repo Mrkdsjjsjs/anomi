@@ -1,7 +1,8 @@
 //! One choice in a menu a screen lays out itself, as the composer's +, the
 //! status menu or the message menu: `MenuItem` (`ui/controls.slint:1156`).
-//! It lights under the pointer (or when told), sends its row's intent when
-//! clicked, or when it has the keyboard's focus and Enter or Space is
+//! It lights under the pointer (or when told), says when the pointer comes
+//! onto it (`on_hover`, at a move or at a frame), sends its row's intent
+//! when clicked, or when it has the keyboard's focus and Enter or Space is
 //! pressed, and draws a ring while focused. Its arrow turns down while what
 //! it opens shows below it (`expanded`), over `QUICK` on `ARRIVE`; its box
 //! fills over `QUICK` as it's ticked.
@@ -239,6 +240,14 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for Item<'_, M> {
                 }
             }
             Event::Window(window::Event::RedrawRequested(now)) => {
+                // The pointer can come onto it without moving, as a
+                // submenu's wait over it ends (`super::hold`): it's told so.
+                if over != state.hovered {
+                    state.hovered = over;
+                    if over && let Some(hover) = &self.on_hover {
+                        shell.publish(hover.clone());
+                    }
+                }
                 state.now = *now;
                 let mut moving = false;
                 for (animation, target, easing) in [

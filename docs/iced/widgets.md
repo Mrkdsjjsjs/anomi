@@ -183,11 +183,29 @@ and out. Your dialog or popover is a plain view of your view-model.
   window's `Intent`; the shell places it. A menu a screen lays out itself
   (a pick list, a submenu in a card) uses `menu::item(&row, motion)` per row;
   `menu::context_menu(&rows, spot, motion)` for one of its own. In such a
-  card, `menu::beside(item, &row.submenu, open, motion)` shows a row's
-  submenu beside the card (flipping left without room on the right), and
-  `menu::keyed(card, on_key)` hands the card the arrows, Enter and, while
-  a submenu shows, Escape as `menu::Key`s for its view-model to move by
-  (`voice::devices`, the stream's menu `voice::share::live`).
+  card, `menu::beside(item, &row.submenu, open, on_leave, motion)` shows a
+  row's submenu beside the card (flipping left without room on the right),
+  and `menu::keyed(card, on_key)` hands the card the arrows, Enter and,
+  while a submenu shows, Escape as `menu::Key`s for its view-model to move
+  by (`voice::devices`, the stream's menu `voice::share::live`).
+- Every submenu closes alike (`anomi-widgets/src/menu/hold.rs`), the
+  window's menu's and one `menu::beside` shows: once the pointer has left
+  both the submenu and the row that opened it, wherever it went (another
+  row, a card over the menu, the window behind), it closes 200 ms later
+  (the holding tip's wait, `tip::hold::GRACE`) unless the pointer came
+  back, so a diagonal move across another row reaches it; meanwhile the
+  other rows don't take the pointer, and after it the row under the pointer
+  does. A press anywhere else closes it at once; one the keys opened with
+  the pointer elsewhere stays until a key or a press. The window's menu
+  does this itself; `menu::beside` sends `on_leave` (the device menus' and
+  the stream's `Hover(None)`) for its view-model to close it, and while it
+  waits takes the pointer from the card under it, so a `menu::item` under
+  the pointer says `on_hover` at the frame the wait ends, not only when the
+  pointer moves. A submenu a screen lays out inside its card, beside its
+  rows, wraps the card in `menu::held(card, open, [row, submenu], on_leave)`
+  with where the two are in it, which sends `on_leave` alike and hides the
+  pointer from the card's rows while it waits (the message menu's Apps,
+  `anomi-chat/src/menu.rs`).
   `Row::radio(chosen)` ends a row with a round mark, and choosing it in a
   context menu leaves the menu open, as a box to tick does, for the app to
   move the mark (a participant's "Suppress their noise"); `Row::heading(text)`

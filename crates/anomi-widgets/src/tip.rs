@@ -19,7 +19,7 @@
 //! 10 px right of it, centred on its height.
 
 mod card;
-mod hold;
+pub(crate) mod hold;
 #[cfg(test)]
 mod tests;
 

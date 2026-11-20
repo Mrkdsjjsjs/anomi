@@ -7,7 +7,9 @@
 //! corner, a stream's red LIVE badge, at rest too, where Discord's strip
 //! has it; at the bottom right of the large tile under the pointer, the
 //! buttons that hide the tiles beneath it and go full screen. Each button
-//! is a white icon on a round dark scrim, 32 px.
+//! is a white icon on a round dark scrim, 32 px. In a small tile only what
+//! has room shows (`super::room`): the badge before the button, the button
+//! before the viewers.
 //!
 //! Slint fades these in over `QUICK`; iced draws no layer at an opacity,
 //! so they show at once.
@@ -23,21 +25,25 @@ use anomi_widgets::button::icon_button;
 use anomi_widgets::icon::Icon;
 use anomi_widgets::menu::opener;
 
+use super::room::Room;
 use super::{INSET, SCRIM, live::live, viewers::viewers};
 
 /// A button's side, its corners, and the room between two (`:792`, `:800`).
-const BUTTON: f32 = 32.0;
-const GAP: f32 = 8.0;
+pub(super) const BUTTON: f32 = 32.0;
+pub(super) const GAP: f32 = 8.0;
 
-/// The layer at rest, or under the pointer when `hovered`.
-pub fn view(tile: &Tile, hovered: bool, motion: Motion) -> Element<'_, Intent> {
+/// The layer at rest, or under the pointer when `hovered`, with what `room`
+/// has room for.
+pub fn view(tile: &Tile, room: Room, hovered: bool, motion: Motion) -> Element<'_, Intent> {
     let mut top: Row<Element<'_, Intent>> = Row::new()
         .align_y(Alignment::Center)
         .height(BUTTON)
         .spacing(GAP)
-        .push(Space::new().width(Fill).boxed())
-        .push(viewers(&tile.viewers, motion));
-    if tile.watched() && (hovered || tile.focused) {
+        .push(Space::new().width(Fill).boxed());
+    if room.viewers[usize::from(hovered)] {
+        top = top.push(viewers(&tile.viewers, motion));
+    }
+    if room.button && tile.watched() && (hovered || tile.focused) {
         top = top.push(button(
             Icon::X,
             tr!("Stop watching"),
@@ -45,10 +51,10 @@ pub fn view(tile: &Tile, hovered: bool, motion: Motion) -> Element<'_, Intent> {
             motion,
         ));
     }
-    if hovered && tile.key == Key::OwnScreen {
+    if room.button && hovered && tile.key == Key::OwnScreen {
         top = top.push(settings(motion));
     }
-    if tile.badge {
+    if room.badge {
         top = top.push(badge());
     }
     let mut bottom: Row<Element<'_, Intent>> = Row::new()

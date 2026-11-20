@@ -18,6 +18,11 @@
 //! - its buttons (`controls`), which `swap` changes under the pointer: who
 //!   watches (`viewers`), stop watching, hide the others, full screen.
 //!
+//! What shows depends on the size the tile is laid out at (`room`): in a
+//! small one what has no room goes rather than covering another part, so
+//! the strip's smallest tile keeps its name and its badge, and a stream on
+//! its way there turns its ring in the chip.
+//!
 //! A camera's and a stream's frames are read from their `Live` as they're
 //! drawn, so a frame builds no view, and drawn square and whole, never
 //! copied (`anomi_widgets::picture::live`). The corners are rounded over
@@ -44,6 +49,7 @@ pub mod live;
 mod marks;
 mod pulse;
 mod ring;
+mod room;
 mod spinner;
 mod swap;
 pub mod viewers;
@@ -52,14 +58,16 @@ pub mod waiting;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use iced::widget::mouse_area;
-use iced::{Color, Fill, mouse};
+use iced::widget::{mouse_area, responsive};
+use iced::{Color, Fill, Size, mouse};
 
 use anomi_theme::prelude::*;
 use anomi_theme::{rgb, rgba};
 use anomi_vm::menu::Spot;
 use anomi_vm::voice::tiles::{Intent, Tile};
 use anomi_widgets::menu;
+
+use self::room::Room;
 
 /// A tile's corners, square over the whole window (`:769`).
 const RADIUS: f32 = 12.0;
@@ -79,11 +87,16 @@ const PILL_SIDE: f32 = 10.0;
 
 /// A tile at the size it's laid out at; see the module's doc.
 pub fn view(tile: &Tile, motion: Motion) -> impl View<Intent> + '_ {
+    responsive(move |size: Size| laid(tile, Room::of(tile, size), motion))
+}
+
+/// The tile with what `room` has room for.
+fn laid(tile: &Tile, room: Room, motion: Motion) -> Element<'_, Intent> {
     let radius = if tile.full { 0.0 } else { RADIUS };
     let layers = iced::widget::stack![
-        fill::view(tile, radius, motion),
+        fill::view(tile, room, radius, motion),
         ring::ring(tile.outline, radius, motion),
-        marks::view(tile, motion),
+        marks::view(tile, room, motion),
     ]
     .width(Fill)
     .height(Fill);
@@ -92,12 +105,13 @@ pub fn view(tile: &Tile, motion: Motion) -> impl View<Intent> + '_ {
     iced::widget::stack![
         pressed(tile, layers),
         swap::swap(
-            controls::view(tile, false, motion),
-            controls::view(tile, true, motion),
+            controls::view(tile, room, false, motion),
+            controls::view(tile, room, true, motion),
         ),
     ]
     .width(Fill)
     .height(Fill)
+    .boxed()
 }
 
 /// What a press on the tile's `layers` asks: see the module's doc.

@@ -1,6 +1,7 @@
 //! What a context menu keeps between views: its panels laid out, measured
 //! again only when their rows change, where the pointer and the keys are,
-//! the submenu fading in, the boxes filling.
+//! whether the open submenu is the pointer's (`super::super::hold`), the
+//! submenu fading in, the boxes filling.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
@@ -12,6 +13,7 @@ use anomi_theme::Motion;
 use anomi_theme::motion::{ARRIVE, QUICK};
 use anomi_vm::menu::Row;
 
+use super::super::hold::Hold;
 use super::super::keys::Nav;
 use super::super::panel::{PADDING, Panel};
 use super::super::place::MARGIN;
@@ -38,6 +40,9 @@ pub(super) struct State {
     /// The row under the pointer, and the one a press began on.
     pub pointer: Option<Target>,
     pub pressed: Option<Target>,
+    /// Whether the open submenu is the pointer's, and since when the
+    /// pointer has been off it and its row.
+    pub hold: Hold,
     /// The submenu fading in.
     pub fade: Animation<bool>,
     /// The boxes filling as they're ticked: the menu's rows, then the open
@@ -58,6 +63,7 @@ impl State {
             nav: Nav::default(),
             pointer: None,
             pressed: None,
+            hold: Hold::default(),
             fade: Animation::new(false),
             ticks: Vec::new(),
             ticks_for: None,
@@ -65,7 +71,8 @@ impl State {
         }
     }
 
-    /// A menu showing `row`'s submenu from the start, lit on that row.
+    /// A menu showing `row`'s submenu from the start, lit on that row: not
+    /// the pointer's, so it stays as the keys' would.
     pub fn showing(row: Option<usize>) -> Self {
         Self {
             nav: Nav {
@@ -119,6 +126,23 @@ impl State {
 
     pub fn sub(&self) -> Option<&Panel> {
         self.nav.open.and_then(|open| self.subs.get(open))
+    }
+
+    /// The pointer, at `point` over `target`, is on the open submenu or on
+    /// the row that opened it; never while none is open.
+    pub fn on_open(&self, point: Option<Point>, target: Option<Target>) -> bool {
+        let Some(open) = self.nav.open else {
+            return false;
+        };
+        let on_sub = |point: Point| self.sub().is_some_and(|sub| sub.bounds.contains(point));
+        target == Some(Target::Main(open)) || point.is_some_and(on_sub)
+    }
+
+    /// The open submenu closes.
+    pub fn close_sub(&mut self) {
+        self.nav.open = None;
+        self.nav.sub = None;
+        self.hold = Hold::default();
     }
 
     /// Lines the open submenu's first row up with its row, inside the window.

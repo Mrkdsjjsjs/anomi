@@ -132,3 +132,72 @@ fn a_stream_not_watched_opens_its_streamers_menu() {
         .any(|row| row.text == "Suppress noise");
     assert!(!ours, "nor its rows");
 }
+
+/// A streamer of this test alone, for the stream's volume.
+const MUTED: &str = "discord:u-muted-stream";
+
+#[test]
+fn a_watched_streams_card_mutes_it_keeping_its_volume_and_stops_watching() {
+    let folder = Folder::new("menus-stream-mute");
+    let mut app = discord_app(&folder);
+    app.size = iced::Size::new(1400.0, 860.0);
+    app.core.state.voice.room = Some(ROOM.into());
+    app.core.state.voice.watching = Some(Box::new(Watching {
+        user: MUTED.into(),
+        name: "Bob".into(),
+        opening: false,
+        frames: None,
+        viewers: Vec::new(),
+    }));
+    let set = |volume, last| card::Intent::Volume {
+        person: MUTED.into(),
+        stream: true,
+        volume,
+        last,
+    };
+    let stream = || volume::get(volume::Kind::Stream, MUTED);
+    drop(app.update(ask(set(80, true))));
+    let chosen = stream();
+    let at = Spot::pointer(iced::Point::new(400.0, 300.0));
+    drop(super::open(&mut app, ROOM.into(), MUTED.into(), at));
+    let shown = &app.vm.voice.participant_menu;
+    let rows: Vec<&str> = shown.rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(rows, ["Stop Watching", "Mute"], "as Discord's starts");
+    assert!(shown.rows[1].checkbox && !shown.rows[1].checked);
+    assert_eq!(shown.stream_volume, 80);
+
+    let mute = || card::Intent::MuteStream(MUTED.into());
+    drop(app.update(ask(mute())));
+    assert_eq!(stream(), 0.0, "silent here");
+    assert!(app.layout.muted_streams.contains(MUTED));
+    assert_eq!(app.layout.stream_volumes[MUTED], chosen, "its volume kept");
+    assert!(
+        app.vm.voice.participant_menu.rows[1].checked,
+        "the box ticked"
+    );
+    assert!(
+        app.vm.shell.is_open(Layer::ParticipantMenu),
+        "the menu stays"
+    );
+    // Moved while muted, the volume is kept and the stream stays silent.
+    drop(app.update(ask(set(60, true))));
+    assert_eq!(stream(), 0.0);
+    let kept = app.layout.stream_volumes[MUTED];
+    assert!(kept < chosen);
+    // Opened again, the card says so and shows the volume kept.
+    drop(super::open(&mut app, ROOM.into(), MUTED.into(), at));
+    let shown = &app.vm.voice.participant_menu;
+    assert!(shown.rows[1].checked);
+    assert_eq!(shown.stream_volume, 60);
+    // Unticked, it plays at the volume kept.
+    drop(app.update(ask(mute())));
+    assert_eq!(stream(), kept);
+    assert!(!app.layout.muted_streams.contains(MUTED));
+    assert!(!app.vm.voice.participant_menu.rows[1].checked);
+
+    drop(app.update(ask(card::Intent::StopWatching)));
+    assert!(
+        !app.vm.shell.is_open(Layer::ParticipantMenu),
+        "stopping closes the menu"
+    );
+}

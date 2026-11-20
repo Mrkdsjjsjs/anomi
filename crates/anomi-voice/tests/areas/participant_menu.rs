@@ -181,3 +181,35 @@ fn a_streams_card_has_its_volume_alone() {
     assert!(shown.stream && shown.noise_strength.is_some());
     assert_eq!(vm.menu.rows.len(), 2, "its noise and our echo");
 }
+
+/// A watched stream's card starts as Discord's menu of a stream does:
+/// "Stop Watching", then the box "Mute", then the stream's volume under
+/// them, each asking for its own.
+#[test]
+fn a_streams_card_stops_watching_mutes_and_sets_its_volume() {
+    let vm = fixture::stream_muted();
+    let menu = &vm.voice.participant_menu;
+    assert_eq!(menu.rows.len(), 2);
+    assert!(menu.rows[1].checkbox && menu.rows[1].checked, "muted");
+    let mut ui = card(menu);
+    ui.click("Stop Watching").expect("its first row");
+    ui.click("Mute").expect("its box");
+    // The volume's track, as far below the name as the rows take.
+    let track = FIRST - 12.0 + menu.rows_height();
+    ui.point_at(Point::new(14.0, track));
+    ui.simulate([press(), release()]);
+    let asked = support::asked(ui);
+    assert_eq!(
+        asked[..2],
+        [
+            Intent::StopWatching,
+            Intent::MuteStream(fixture::BOB.into())
+        ]
+    );
+    assert!(asked.len() > 2, "{asked:?}");
+    assert!(
+        asked[2..]
+            .iter()
+            .all(|intent| matches!(intent, Intent::Volume { stream: true, .. }))
+    );
+}

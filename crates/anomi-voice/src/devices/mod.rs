@@ -75,7 +75,8 @@ fn head<'a>(
     if devices.lit(part) {
         item = item.lit(true);
     }
-    menu::beside(item, &row.submenu, open, motion)
+    // The pointer gone from the submenu and its row: as onto the volume.
+    menu::beside(item, &row.submenu, open, Intent::Hover(None), motion)
         .reach(PADDING)
         .lit(devices.sub.filter(|_| open))
         .boxed()

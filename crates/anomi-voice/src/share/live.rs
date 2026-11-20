@@ -53,7 +53,8 @@ fn head(live: &Live, part: Part, motion: Motion) -> Element<'_, Intent> {
     if live.lit(part) {
         item = item.lit(true);
     }
-    menu::beside(item, &row.submenu, open, motion)
+    // The pointer gone from the submenu and its row: on no row.
+    menu::beside(item, &row.submenu, open, Intent::Hover(None), motion)
         .reach(PADDING)
         .lit(live.sub.filter(|_| open))
         .boxed()

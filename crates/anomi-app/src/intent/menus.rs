@@ -132,21 +132,22 @@ pub(crate) fn open_voice(app: &mut App, room: String, user: String, at: Spot) ->
         return Task::none();
     };
     let size = anomi_widgets::menu::size(&rows, card::WIDTH);
-    let volume = |kind| {
-        let volume = yapfast_core::volume::get(kind, &user);
-        yapfast_core::volume::to_slider(volume).round() as i32
-    };
+    let slider = |gain: f32| yapfast_core::volume::to_slider(gain).round() as i32;
+    let voice = yapfast_core::volume::get(yapfast_core::volume::Kind::Voice, &user);
+    // Their stream's volume as chosen, muted here or not.
+    let stream_gain = stream::kept(&app.layout, &user);
     let mut made = ParticipantMenu {
         name,
         live,
         stream: false,
-        voice_volume: volume(yapfast_core::volume::Kind::Voice),
-        stream_volume: volume(yapfast_core::volume::Kind::Stream),
+        voice_volume: slider(voice),
+        stream_volume: slider(stream_gain),
         noise_strength: None,
         echo_depth: None,
         joined: !rows.is_empty(),
         width: size.width.max(card::WIDTH),
         person: user,
+        rows: Vec::new(),
     };
     let cleans = (app.core.voice_person_choices(&room, &made.person))
         .contains(&yapfast_core::application::MenuChoice::SuppressTheirNoise);

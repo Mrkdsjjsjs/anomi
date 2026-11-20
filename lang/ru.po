@@ -7419,11 +7419,14 @@ msgstr "Остановить видео"
 msgid "Stop watching"
 msgstr "Перестать смотреть"
 
+msgid "Stop Watching"
+msgstr "Прекратить просмотр"
+
 msgid "Stream"
 msgstr "Трансляция"
 
 msgid "Stream volume"
-msgstr "Громкость трансляции"
+msgstr "Громкость стрима"
 
 msgid "Stream settings"
 msgstr "Настройки трансляции"

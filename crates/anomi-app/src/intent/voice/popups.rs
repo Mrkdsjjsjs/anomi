@@ -44,7 +44,11 @@ pub(super) fn handle(app: &mut App, intent: voice::Intent) -> Task<Message> {
             } else {
                 yapfast_core::volume::from_slider(volume as f32)
             };
-            yapfast_core::volume::set(kind, &person, gain);
+            // A stream muted here stays silent: the volume is kept for when
+            // it's unmuted.
+            if !(stream && app.layout.muted_streams.contains(&person)) {
+                yapfast_core::volume::set(kind, &person, gain);
+            }
             let card = &mut app.vm.voice.participant_menu;
             if stream {
                 card.stream_volume = volume;
@@ -85,6 +89,16 @@ pub(super) fn handle(app: &mut App, intent: voice::Intent) -> Task<Message> {
         }) => {
             let sound = Sound::of(&app.vm.voice.participant_menu);
             cleaning::echo_depth(app, sound, &person, depth, last);
+            Task::none()
+        }
+        // A watched stream's card: stop watching it, the menu closing; or
+        // mute its sound here, the menu staying.
+        I::ParticipantMenu(participant_menu::Intent::StopWatching) => {
+            crate::intent::menus::close(app);
+            command(app, Command::StopWatching)
+        }
+        I::ParticipantMenu(participant_menu::Intent::MuteStream(person)) => {
+            crate::intent::menus::stream::mute(app, &person);
             Task::none()
         }
         I::Share(intent) => super::share::handle(app, intent),

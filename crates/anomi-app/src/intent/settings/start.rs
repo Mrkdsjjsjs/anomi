@@ -83,6 +83,10 @@ fn apply(saved: &Saved) {
     for (person, gain) in &saved.stream_volumes {
         volume::set(volume::Kind::Stream, person, *gain);
     }
+    // A stream muted from its menu plays at nothing, its volume kept above.
+    for person in &saved.muted_streams {
+        volume::set(volume::Kind::Stream, person, 0.0);
+    }
     for person in &saved.muted_people {
         volume::mute(person, true);
     }

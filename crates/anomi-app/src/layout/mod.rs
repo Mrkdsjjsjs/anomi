@@ -24,6 +24,7 @@ pub mod carry;
 mod cleaning;
 mod games;
 mod saved;
+mod stickers;
 #[cfg(test)]
 mod tests;
 mod writer;
@@ -37,10 +38,8 @@ use yapfast_core::layout_file::LAYOUT as FILE;
 
 pub use cleaning::CleanedVoice;
 pub use games::DiscordGame;
-pub use saved::{
-    Animate, CpuChoice, ENCODE_AUTO, ENCODE_SOFTWARE, Encoder, InputMode, KeptSticker,
-    KeptStickerUse, Saved,
-};
+pub use saved::{Animate, CpuChoice, ENCODE_AUTO, ENCODE_SOFTWARE, Encoder, InputMode, Saved};
+pub use stickers::{KeptSticker, KeptStickerUse};
 
 /// How long a change waits for the next before the file is written.
 pub const WRITE_AFTER: Duration = Duration::from_secs(1);

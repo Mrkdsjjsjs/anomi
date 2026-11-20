@@ -3,18 +3,20 @@
 //! menu opened at; this is the card: the four quick reactions over the
 //! rows ([`build`] makes them, in Discord's order) and, for Apps, a submenu beside
 //! it, level with its row, on the left when there is no room on the right
-//! (`flip`).
+//! (`flip`). The submenu closes as every other does (`menu::held`): a
+//! moment after the pointer left it and its row, wherever it went, the
+//! other rows waiting meanwhile, or at once on a press elsewhere.
 
 mod rows;
 
 use iced::widget::{column, container, row, space};
-use iced::{Background, Border, Fill, Shadow, Vector};
+use iced::{Background, Border, Fill, Point, Rectangle, Shadow, Size, Vector};
 
 use anomi_theme::metrics;
 use anomi_theme::prelude::*;
 use anomi_vm::chat::menu::{Intent, Menu};
 use anomi_vm::menu::Row;
-use anomi_widgets::menu::{item, width};
+use anomi_widgets::menu::{held, item, width};
 
 use crate::pickers::emoji::emoji_button;
 
@@ -68,7 +70,33 @@ pub fn view(menu: &Menu, motion: Motion) -> impl View<Intent> + '_ {
     } else {
         row![panel, beside]
     };
-    across.spacing(BESIDE).boxed()
+    let regions = apps_regions(menu, top, height);
+    held(
+        across.spacing(BESIDE),
+        menu.apps_open,
+        regions,
+        Intent::Apps(false),
+    )
+    .boxed()
+}
+
+/// Where the Apps row and their submenu are in the card, from its top left:
+/// where the pointer keeps the submenu, `top` down and `height` tall.
+fn apps_regions(menu: &Menu, top: f32, height: f32) -> [Rectangle; 2] {
+    let rows = &menu.rows[..];
+    let tiles = menu.facts.can_react && !menu.reactions.is_empty();
+    let panel = width(rows, NARROWEST);
+    let (panel_x, apps_x) = if menu.flip {
+        (APPS_WIDTH + BESIDE, 0.0)
+    } else {
+        (0.0, panel + BESIDE)
+    };
+    let row = Rectangle::new(
+        Point::new(panel_x + PAD, PAD + apps_level(rows, tiles)),
+        Size::new(panel - 2.0 * PAD, ROW),
+    );
+    let apps = Rectangle::new(Point::new(apps_x, top), Size::new(APPS_WIDTH, height));
+    [row, apps]
 }
 
 /// The menu's column: the tiles, then the rows with a line before each
@@ -174,20 +202,25 @@ fn apps<'a>(rows: &'a [Row<Intent>], top: f32, motion: Motion) -> Element<'a, In
 /// less the menu's padding (`apps-y - 6px`), but no lower than ends it with
 /// the menu or itself, whichever is taller (`:1596`).
 fn apps_place(rows: &[Row<Intent>], tiles: bool, commands: usize) -> (f32, f32) {
+    let level = apps_level(rows, tiles);
+    let menu = panel_height(rows, tiles);
+    let height = commands as f32 * (APP_ROW + GAP) - GAP + 2.0 * PAD;
+    (level.min(menu.max(height) - height).max(0.0), height)
+}
+
+/// How far down the Apps row is in the menu's column, within its padding.
+fn apps_level(rows: &[Row<Intent>], tiles: bool) -> f32 {
     let mut y = if tiles { TILE + TILES_BELOW + GAP } else { 0.0 };
-    let mut level = 0.0;
     for each in rows {
         if each.separated {
             y += LINE + GAP;
         }
         if !each.submenu.is_empty() {
-            level = y;
+            return y;
         }
         y += ROW + GAP;
     }
-    let menu = panel_height(rows, tiles);
-    let height = commands as f32 * (APP_ROW + GAP) - GAP + 2.0 * PAD;
-    (level.min(menu.max(height) - height).max(0.0), height)
+    0.0
 }
 
 /// A one pixel line (`Theme.line`).

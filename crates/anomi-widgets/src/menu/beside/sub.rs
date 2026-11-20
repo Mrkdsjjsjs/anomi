@@ -1,6 +1,10 @@
 //! The submenu beside a row, as an overlay: its card drawn as
 //! `ContextMenu`'s are, the pointer lighting its rows, a click sending a
-//! row's intent, the wheel scrolling it.
+//! row's intent, the wheel scrolling it, and `on_leave` sent once the
+//! pointer left it and its row (`super::super::hold`). An overlay hears the
+//! pointer before the card under it, wherever it is, so it follows the
+//! pointer off the card too; while it waits, it takes the pointer from
+//! what's under it, so the card's other rows don't light or open.
 
 use iced::advanced::overlay::{self, Overlay};
 use iced::advanced::renderer::{self, Renderer as _};
@@ -11,6 +15,7 @@ use iced::{Event, Point, Rectangle, touch, window};
 use anomi_theme::{Renderer, Theme};
 use anomi_vm::menu::Row;
 
+use super::super::hold::Hold;
 use super::super::row::{Look, Paint};
 use super::State;
 
@@ -18,15 +23,23 @@ struct Sub<'a, 'b, M> {
     rows: &'a [Row<M>],
     state: &'b mut State,
     lit: Option<usize>,
+    on_leave: M,
 }
 
-/// The submenu of `rows`, placed in `state`; the keys light `lit`.
+/// The submenu of `rows`, placed in `state`; the keys light `lit`, and
+/// `on_leave` closes it.
 pub(super) fn overlay<'b, M: Clone + 'b>(
     rows: &'b [Row<M>],
     state: &'b mut State,
     lit: Option<usize>,
+    on_leave: M,
 ) -> overlay::Element<'b, M, Theme, Renderer> {
-    overlay::Element::new(Box::new(Sub { rows, state, lit }))
+    overlay::Element::new(Box::new(Sub {
+        rows,
+        state,
+        lit,
+        on_leave,
+    }))
 }
 
 impl<M> Sub<'_, '_, M> {
@@ -36,6 +49,41 @@ impl<M> Sub<'_, '_, M> {
 
     fn over(&self, point: Option<Point>) -> bool {
         point.is_some_and(|point| self.state.panel.bounds.contains(point))
+    }
+
+    fn on_row(&self, point: Option<Point>) -> bool {
+        point.is_some_and(|point| self.state.row.contains(point))
+    }
+
+    /// Off it and its row, it stays for now, and nothing under it takes the
+    /// pointer: within the wait, or while the keys hold it.
+    fn waiting(&self, point: Option<Point>) -> bool {
+        !self.state.told && self.state.hold.waiting() && !self.over(point) && !self.on_row(point)
+    }
+}
+
+impl<M: Clone> Sub<'_, '_, M> {
+    /// The pointer is `on` it or its row, or not.
+    fn follow(&mut self, on: bool, shell: &mut Shell<'_, M>) {
+        if self.state.told {
+            // Asked to close; the pointer back on it keeps it while it shows.
+            if on {
+                self.state.told = false;
+                self.state.hold = Hold::new(true);
+            }
+            return;
+        }
+        self.state.hold.moved(on, shell);
+    }
+
+    /// Asks the view-model to close it, once.
+    fn leave(&mut self, shell: &mut Shell<'_, M>) {
+        if !self.state.told {
+            self.state.told = true;
+            self.state.hold = Hold::default();
+            shell.publish(self.on_leave.clone());
+            shell.request_redraw();
+        }
     }
 }
 
@@ -75,6 +123,7 @@ impl<M: Clone> Overlay<M, Theme, Renderer> for Sub<'_, '_, M> {
     ) {
         let point = cursor.position();
         let over = self.over(point);
+        let on = over || self.on_row(point);
         match event {
             Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft)
             | Event::Touch(touch::Event::FingerMoved { .. }) => {
@@ -83,6 +132,7 @@ impl<M: Clone> Overlay<M, Theme, Renderer> for Sub<'_, '_, M> {
                     self.state.pointer = hit;
                     shell.request_redraw();
                 }
+                self.follow(on, shell);
             }
             Event::Mouse(mouse::Event::ButtonPressed(button)) if over => {
                 if *button == mouse::Button::Left {
@@ -93,6 +143,14 @@ impl<M: Clone> Overlay<M, Theme, Renderer> for Sub<'_, '_, M> {
             Event::Touch(touch::Event::FingerPressed { .. }) if over => {
                 self.state.pressed = self.hit(point);
                 shell.capture_event();
+            }
+            // A press anywhere but on it or its row closes it at once, and
+            // goes on to what's under the pointer.
+            Event::Mouse(mouse::Event::ButtonPressed(_))
+            | Event::Touch(touch::Event::FingerPressed { .. })
+                if !on =>
+            {
+                self.leave(shell);
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerLifted { .. }) => {
@@ -122,6 +180,11 @@ impl<M: Clone> Overlay<M, Theme, Renderer> for Sub<'_, '_, M> {
                 if self.state.fade.is_animating(*now) {
                     shell.request_redraw();
                 }
+                // The pointer resting on it at a frame is on it too.
+                self.follow(on, shell);
+                if !self.state.told && self.state.hold.due(*now, shell) {
+                    self.leave(shell);
+                }
             }
             _ => {}
         }
@@ -131,7 +194,8 @@ impl<M: Clone> Overlay<M, Theme, Renderer> for Sub<'_, '_, M> {
         let point = cursor.position();
         match self.hit(point).and_then(|at| self.rows.get(at)) {
             Some(row) if !row.disabled => mouse::Interaction::Pointer,
-            _ if self.over(point) => mouse::Interaction::Idle,
+            // Waiting, it keeps the pointer from what's under it.
+            _ if self.over(point) || self.waiting(point) => mouse::Interaction::Idle,
             _ => mouse::Interaction::None,
         }
     }

@@ -243,6 +243,43 @@ pub fn waiting() -> Tile {
     }
 }
 
+/// Alice and, for the strip beneath her shown large, a stream in each
+/// state: Bob's on its way, Carol's on its preview, Dave's without one,
+/// Erin's watched, this account's with its preview hidden; then Bob's own
+/// tile. Six beneath a large one take the strip's smallest tiles in a small
+/// window (`fixtures::stage::small_streams`).
+pub fn small_streams() -> Vec<Tile> {
+    let named = |id: &str, name: &str, tile: Tile| Tile {
+        key: Key::Stream(id.into()),
+        chip: Chip {
+            name: name.into(),
+            ..bobs_stream()
+        },
+        ..tile
+    };
+    let erins = Tile {
+        focused: false,
+        can_hide_others: false,
+        ..watched()
+    };
+    let hidden = Tile {
+        fill: Fill::OwnScreen {
+            frame: None,
+            status: tr!("Your stream preview is hidden").into(),
+        },
+        ..sharing()
+    };
+    vec![
+        alice(),
+        waiting(),
+        named(CAROL, "Carol", offered(true)),
+        named(DAVE, "Dave", offered(false)),
+        named(ERIN, "Erin", erins),
+        hidden,
+        bob(),
+    ]
+}
+
 /// Alice's camera on its way.
 pub fn starting() -> Tile {
     Tile {

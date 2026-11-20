@@ -10,6 +10,14 @@
 //! the keys are the menu's, which say the row they light (`lit`). It takes
 //! the pointer over itself, so the menu under it sees none there and a
 //! press on it closes nothing.
+//!
+//! It closes as the window's submenus do (`super::hold`): the view-model
+//! opens it, and it sends `on_leave` for the view-model to close it
+//! [`super::hold::GRACE`] after the pointer left it and its row, wherever
+//! the pointer went, or at once on a press elsewhere. Meanwhile nothing
+//! under it takes the pointer, so the card's other rows wait as the
+//! window's do; one the keys opened, the pointer elsewhere, holds the
+//! pointer so until a key or a press.
 
 mod sub;
 
@@ -22,12 +30,13 @@ use iced::advanced::renderer;
 use iced::advanced::widget::{self, Operation, Tree, tree};
 use iced::advanced::{Shell, mouse};
 use iced::animation::Animation;
-use iced::{Event, Length, Point, Rectangle, Size, Vector};
+use iced::{Event, Length, Point, Rectangle, Size, Vector, touch, window};
 
 use anomi_theme::motion::{ARRIVE, QUICK};
 use anomi_theme::{Element, Motion, Renderer, Theme, View};
 use anomi_vm::menu::Row;
 
+use super::hold::Hold;
 use super::panel::{NARROWEST, PADDING, Panel};
 use super::place::MARGIN;
 use super::row;
@@ -39,22 +48,26 @@ pub struct Beside<'a, M> {
     content: Element<'a, M>,
     rows: &'a [Row<M>],
     open: bool,
+    on_leave: M,
     reach: f32,
     lit: Option<usize>,
     motion: Motion,
 }
 
-/// `content`, a row, with `rows` beside the card while `open`.
+/// `content`, a row, with `rows` beside the card while `open`; `on_leave`
+/// asks the view-model to close them once the pointer left.
 pub fn beside<'a, M>(
     content: impl View<M> + 'a,
     rows: &'a [Row<M>],
     open: bool,
+    on_leave: M,
     motion: Motion,
 ) -> Beside<'a, M> {
     Beside {
         content: content.boxed(),
         rows,
         open,
+        on_leave,
         reach: 0.0,
         lit: None,
         motion,
@@ -78,7 +91,7 @@ impl<M> Beside<'_, M> {
 
 /// What the submenu keeps between views: its card laid out (again only
 /// when its rows change) and placed, the row under the pointer and the one
-/// a press began on, its fading in.
+/// a press began on, its fading in, and whether it's the pointer's.
 pub(crate) struct State {
     pub panel: Panel,
     measured: Option<u64>,
@@ -91,6 +104,14 @@ pub(crate) struct State {
     pub pressed: Option<usize>,
     pub fade: Animation<bool>,
     pub now: Instant,
+    /// The row it's beside, in the window.
+    pub row: Rectangle,
+    /// The pointer was on the row at its last move: a submenu showing then
+    /// is the pointer's.
+    on_row: bool,
+    pub hold: Hold,
+    /// `on_leave` went for this showing.
+    pub told: bool,
 }
 
 impl State {
@@ -146,6 +167,10 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for Beside<'_, M> {
             pressed: None,
             fade: Animation::new(false),
             now: Instant::now(),
+            row: Rectangle::default(),
+            on_row: false,
+            hold: Hold::default(),
+            told: false,
         })
     }
 
@@ -172,6 +197,14 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for Beside<'_, M> {
         shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
+        // Where the pointer last was, at a move or a frame: on the row when
+        // its submenu shows, the pointer opened it.
+        if let Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft)
+        | Event::Touch(touch::Event::FingerMoved { .. })
+        | Event::Window(window::Event::RedrawRequested(_)) = event
+        {
+            tree.state.downcast_mut::<State>().on_row = cursor.is_over(layout.bounds());
+        }
         let (child, child_tree) = layout.iter_mut(&mut tree.children).next().unwrap();
         self.content
             .update(child_tree, event, child, cursor, renderer, shell, viewport);
@@ -240,11 +273,16 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for Beside<'_, M> {
             state.shown = false;
             state.pointer = None;
             state.revealed = None;
+            state.hold = Hold::default();
+            state.told = false;
             return overlays;
         }
+        state.row = row;
         state.place(self.rows, row, self.reach, window);
         if !state.shown {
             state.shown = true;
+            state.hold = Hold::new(state.on_row);
+            state.told = false;
             state.fade = if self.motion.still() {
                 Animation::new(true)
             } else {
@@ -260,7 +298,8 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for Beside<'_, M> {
                 state.panel.reveal(lit);
             }
         }
-        overlays.push(sub::overlay(self.rows, state, self.lit));
+        let on_leave = self.on_leave.clone();
+        overlays.push(sub::overlay(self.rows, state, self.lit, on_leave));
         overlays
     }
 }

@@ -1,16 +1,18 @@
 //! What a context menu does with the pointer and the keys: lighting rows,
 //! opening submenus, choosing (`hovered`, `clicked`, `pick` and
-//! `key-pressed` of `ContextMenu`, `ui/controls.slint:1332`), and filling
-//! the boxes.
+//! `key-pressed` of `ContextMenu`, `ui/controls.slint:1332`), closing a
+//! submenu the pointer left (`super::super::hold`), and filling the boxes.
 
 use std::time::Instant;
 
+use iced::Point;
 use iced::advanced::Shell;
 use iced::animation::Animation;
 
 use anomi_theme::motion::QUICK;
 use anomi_vm::menu::Row;
 
+use super::super::hold::Hold;
 use super::super::keys::{Move, Outcome, Rows};
 use super::ContextMenu;
 use super::state::{State, Target};
@@ -21,12 +23,63 @@ impl<M: Clone> ContextMenu<'_, M> {
             Some(Target::Main(row)) => {
                 let had = state.nav.open.is_some();
                 if state.nav.hover(row, !self.submenu(row).is_empty()) {
+                    // The pointer opened it, on its row: it's the pointer's.
+                    state.hold = Hold::new(true);
                     state.opened(self.motion, !had);
                 }
             }
             Some(Target::Sub(row)) => state.nav.sub = Some(row),
             None => {}
         }
+    }
+
+    /// The pointer moved to `point`, over `target`: the rows light and the
+    /// submenus open as it goes, except while a submenu shows and the
+    /// pointer is off it and its row, when nothing moves until it comes back
+    /// or the wait ends ([`Self::due`]).
+    pub(super) fn moved(
+        &self,
+        state: &mut State,
+        point: Option<Point>,
+        target: Option<Target>,
+        shell: &mut Shell<'_, M>,
+    ) {
+        let was = std::mem::replace(&mut state.pointer, target);
+        if state.nav.open.is_some() {
+            let on = state.on_open(point, target);
+            state.hold.moved(on, shell);
+            if !on {
+                return;
+            }
+        }
+        if target != was {
+            self.hover(state, target);
+            shell.request_redraw();
+        }
+    }
+
+    /// A frame at `now`: the submenu the pointer left closes once the wait
+    /// ran out, and the row under the pointer takes it, opening its own
+    /// submenu if it has one. Whether it closed.
+    pub(super) fn due(&self, state: &mut State, now: Instant, shell: &mut Shell<'_, M>) -> bool {
+        if state.nav.open.is_none() || !state.hold.due(now, shell) {
+            return false;
+        }
+        state.close_sub();
+        let target = state.pointer;
+        self.hover(state, target);
+        true
+    }
+
+    /// A press at `point`: anywhere but on the open submenu or its row, it
+    /// closes the submenu at once, whoever opened it. Whether it did.
+    pub(super) fn press(&self, state: &mut State, point: Option<Point>) -> bool {
+        let target = point.and_then(|point| state.target(point));
+        if state.nav.open.is_none() || state.on_open(point, target) {
+            return false;
+        }
+        state.close_sub();
+        true
     }
 
     pub(super) fn act(&self, state: &mut State, target: Target, shell: &mut Shell<'_, M>) {
@@ -38,6 +91,8 @@ impl<M: Clone> ContextMenu<'_, M> {
                     state.nav.current = Some(index);
                     state.nav.open = Some(index);
                     state.nav.sub = None;
+                    // Clicked open, the pointer on its row.
+                    state.hold = Hold::new(true);
                     state.opened(self.motion, fresh);
                     shell.request_redraw();
                 } else {
@@ -98,6 +153,8 @@ impl<M: Clone> ContextMenu<'_, M> {
                 }
             }
             Outcome::Opened(row) => {
+                // The keys': it stays wherever the pointer is.
+                state.hold = Hold::new(false);
                 state.opened(self.motion, had != Some(row));
                 state.subs[row].reveal(0);
             }

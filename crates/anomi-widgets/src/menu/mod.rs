@@ -8,8 +8,11 @@
 //!   row, taking the keyboard. [`layer`] puts the window's (`vm.menu`) in a
 //!   layer of [`crate::layer`].
 //! - [`Item`]: one row, for menus a screen lays out itself; [`Beside`]
-//!   shows such a row's submenu beside the card, and [`Keyed`] hands such a
-//!   menu the keys.
+//!   shows such a row's submenu beside the card, [`Held`] closes one the
+//!   screen lays out in the card itself, and [`Keyed`] hands such a menu
+//!   the keys.
+//! - `hold`: when any submenu closes as the pointer leaves it and its row,
+//!   the window's and a screen's alike.
 //! - [`Opener`]: what a menu opens from, telling where it is in the window.
 //! - [`place`]: where a popup goes against its anchor; the layer stack
 //!   places popovers and cards with it.
@@ -22,6 +25,8 @@
 
 mod beside;
 mod context;
+mod held;
+mod hold;
 mod item;
 mod keyed;
 mod keys;
@@ -31,11 +36,14 @@ mod panel;
 pub mod place;
 mod row;
 #[cfg(test)]
+mod submenus;
+#[cfg(test)]
 mod tests;
 pub mod text;
 
 pub use beside::{Beside, beside};
 pub use context::{ContextMenu, context_menu};
+pub use held::{Held, held};
 pub use item::{Item, item};
 pub use keyed::{Keyed, keyed};
 pub use opener::{Opener, opener};

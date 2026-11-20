@@ -34,6 +34,33 @@ const STEP: f32 = 15.0;
 const RIGHT: f32 = 6.0;
 const MORE_GAP: f32 = 4.0;
 const COUNT: f32 = typography::size::HEADING;
+/// More than a digit or a plus takes at the count's size, in bold.
+const DIGIT: f32 = 9.0;
+
+/// At most how wide the stack of `viewers` is, its count's digits taken at
+/// [`DIGIT`] each, so a tile knows its room without shaping them
+/// (`super::room`); nothing when nobody watches.
+pub(super) fn width(viewers: &Viewers) -> f32 {
+    if viewers.count == 0 {
+        return 0.0;
+    }
+    let digits = |n: usize| n.checked_ilog10().map_or(1, |log| log + 1) as f32 * DIGIT;
+    let shown = viewers.faces.len().min(Viewers::FACES);
+    let ring = RING - FACE;
+    let mut width = LEFT + EYE + EYE_GAP + digits(viewers.count) + COUNT_GAP;
+    let mut right = RIGHT;
+    if shown > 0 {
+        width += RING + STEP * (shown - 1) as f32;
+        right -= ring;
+    }
+    if viewers.more() > 0 {
+        let gap = if shown > 0 { MORE_GAP - ring } else { MORE_GAP };
+        // "+N": the plus, then the digits.
+        width += gap + DIGIT + digits(viewers.more());
+        right = RIGHT;
+    }
+    width + right
+}
 
 /// The stack of `viewers`, or nothing when nobody watches.
 pub fn viewers<'a, M: 'a>(viewers: &'a Viewers, motion: Motion) -> Element<'a, M> {

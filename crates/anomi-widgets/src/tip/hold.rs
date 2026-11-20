@@ -14,8 +14,9 @@ use anomi_theme::motion::{Pace, Popup};
 
 use super::State;
 
-/// How long the card stays once the pointer left it and what it names.
-pub(super) const GRACE: Duration = Duration::from_millis(200);
+/// How long the card stays once the pointer left it and what it names; a
+/// submenu waits as long for the pointer (`crate::menu::hold`).
+pub(crate) const GRACE: Duration = Duration::from_millis(200);
 
 /// Follows the pointer for a holding card: `over` is the pointer on what it
 /// names; whether it's on the card, its overlay noted first.

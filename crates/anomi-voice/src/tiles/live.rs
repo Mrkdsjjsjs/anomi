@@ -12,10 +12,19 @@ use anomi_theme::prelude::*;
 use anomi_theme::typography;
 use yapfast_lang::tr;
 
-const HEIGHT: f32 = 16.0;
+pub(super) const HEIGHT: f32 = 16.0;
 const SIDE: f32 = 5.0;
 const SIZE: f32 = 10.0;
 const FONT: iced::Font = typography::weight(Weight::ExtraBold);
+/// More than a letter of its words takes, on average, at that size and
+/// weight in any of the languages: "В ЭФИРЕ" is 47 px of the 56 it allows.
+const LETTER: f32 = 8.0;
+
+/// At most how wide the tag is in the language chosen, from its words'
+/// letters, so a tile knows its room without shaping them (`super::room`).
+pub(super) fn width() -> f32 {
+    2.0 * SIDE + tr!("LIVE").chars().count() as f32 * LETTER
+}
 
 /// The tag; a click sends `watch` when there is one, and it lights under
 /// the pointer then.

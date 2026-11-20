@@ -11,10 +11,14 @@
 //!
 //! It takes the keyboard (see [`super::keys`]). A row with a submenu opens
 //! it on hover; clicked, it opens it too, unless the row has an intent of
-//! its own, which it then sends. Choosing a row sends its intent and then
-//! `on_close`; a box to tick or a radio sends its intent and the menu stays; a
-//! disabled row sends nothing. A click outside the panels isn't the menu's:
-//! the layer under it closes the menu.
+//! its own, which it then sends. A submenu closes as `super::hold` says:
+//! [`super::hold::GRACE`] after the pointer left it and its row, wherever
+//! it went (another row, the card over the menu, the window behind), the
+//! other rows waiting meanwhile; at once on a press elsewhere; one the keys
+//! opened only on a key or a press. Choosing a row sends its intent and
+//! then `on_close`; a box to tick or a radio sends its intent and the menu
+//! stays; a disabled row sends nothing. A click outside the panels isn't the
+//! menu's: the layer under it closes the menu.
 
 mod act;
 mod state;
@@ -152,16 +156,15 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for ContextMenu<'_, M> {
         let origin = Vector::new(layout.position().x, layout.position().y);
         let point = cursor.position().map(|point| point - origin);
         match event {
-            Event::Mouse(mouse::Event::CursorMoved { .. })
+            Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft)
             | Event::Touch(touch::Event::FingerMoved { .. }) => {
                 let target = point.and_then(|point| state.target(point));
-                if target != state.pointer {
-                    state.pointer = target;
-                    self.hover(state, target);
-                    shell.request_redraw();
-                }
+                self.moved(state, point, target, shell);
             }
             Event::Mouse(mouse::Event::ButtonPressed(button)) => {
+                if self.press(state, point) {
+                    shell.request_redraw();
+                }
                 if point.is_some_and(|point| state.over(point)) {
                     if *button == mouse::Button::Left {
                         state.pressed = point.and_then(|point| state.target(point));
@@ -181,6 +184,9 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for ContextMenu<'_, M> {
                 }
             }
             Event::Touch(touch::Event::FingerPressed { .. }) => {
+                if self.press(state, point) {
+                    shell.request_redraw();
+                }
                 if point.is_some_and(|point| state.over(point)) {
                     state.pressed = point.and_then(|point| state.target(point));
                     shell.capture_event();
@@ -208,7 +214,9 @@ impl<M: Clone> widget::Widget<M, Theme, Renderer> for ContextMenu<'_, M> {
             }
             Event::Window(window::Event::RedrawRequested(now)) => {
                 state.now = *now;
-                if self.tick(state, *now) || state.fade.is_animating(*now) {
+                let closed = self.due(state, *now, shell);
+                let ticking = self.tick(state, *now);
+                if closed || ticking || state.fade.is_animating(*now) {
                     shell.request_redraw();
                 }
             }

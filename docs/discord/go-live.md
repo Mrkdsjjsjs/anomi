@@ -19,7 +19,15 @@ tile of its own, right before its streamer's, who keeps their picture or
 camera, their speaking ring and their marks: someone may film while they
 share. The stream's tile has the red LIVE badge at its top right, and their
 own none; a click on the stream's tile watches it and shows it large, a
-click on theirs shows them. A stream being watched starts large, however
+click on theirs shows them. In a tile too small for all it has, what has no
+room goes rather than covering another part (`anomi-voice/src/tiles/room.rs`):
+the words under its middle first (what it waits for, "Watch stream", this
+account's status), then its icon or ring shrinks, rises into the band
+between the badge and the chip where it isn't clear of both in the middle
+(Discord's strip keeps its screen there), and goes, a stream on its way
+then turning its ring in the name's chip; who watches and the stop
+button go before the middle does; the name and the badge stay, as at the
+strip's smallest, 120 by 67.5. A stream being watched starts large, however
 watching began, and stays watched in its tile after a click beside it.
 While a stream shows large, the row beneath keeps its place with a
 stand-in, its screen icon and LIVE badge, as Discord's strip does, which
@@ -484,11 +492,18 @@ Yapfast's stream at 1080p with its sound, without the call's.
 ### Cleaning a stream's sound
 
 A right click on the tile of a stream this account watches opens its menu
-in the iced window, Anomi's own: the card with the stream's volume, then
-"Suppress noise", whose submenu has the suppressors someone's voice may be
-cleaned with (Off, RNNoise, DeepFilterNet), and "Remove my echo", for a
-streamer whose shared system sound carries the call back, this account's
-voice with it. Each that's on adds its slider to the card, as for a voice
+in the iced window. The card on top starts as Discord's menu of a stream
+does: under "{name}'s screen", "Stop Watching", which stops watching it and
+closes the menu, a line, the box "Mute", and the stream's volume, "Stream
+volume". "Mute" silences the stream here: the core has no mute of its own
+for a stream's sound, so its volume there goes to nothing, while
+`layout.json` keeps the volume chosen in `stream_volumes` beside the
+streamer in `muted_streams` (Anomi's own key, written once one is muted);
+the slider still moves that volume, and the box unticked plays the stream
+at it again. Anomi's own rows follow under the card: "Suppress noise",
+whose submenu has the suppressors someone's voice may be cleaned with (Off,
+RNNoise, DeepFilterNet), and "Remove my echo", for a streamer whose shared
+system sound carries the call back, this account's voice with it. Each that's on adds its slider to the card, as for a voice
 ([Cleaning someone's voice](voice.md#cleaning-someones-voice)): "Noise
 suppression strength" and "Echo removal strength". The suppressors are made
 for speech and take music and a game's sound apart, which the row says

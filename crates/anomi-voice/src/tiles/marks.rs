@@ -3,7 +3,8 @@
 //! (`ui/voice.slint:1094`), and at its bottom left its chip (`TileChip`,
 //! `:819`). The pill offering a stream that a click watches (`:1100`) is in
 //! the middle of the stream's own tile (`fill`), whose top right has its
-//! LIVE badge (`controls`).
+//! LIVE badge (`controls`). Each shows only where the tile has room for it
+//! (`super::room`).
 
 use iced::widget::{Row, Space, column, container, text};
 use iced::{Background, Border, Color, Fill, Padding};
@@ -14,33 +15,47 @@ use anomi_theme::typography;
 use anomi_vm::voice::tiles::{Intent, Tile};
 
 use super::pulse::pulse;
+use super::room::{Middle, Room};
 use super::{INSET, PILL, PILL_SIDE, PILL_TEXT, SCRIM, chip};
 
-pub fn view(tile: &Tile, motion: Motion) -> Element<'_, Intent> {
+/// More than a letter of a pill's words takes, on average, at its size in
+/// bold.
+const LETTER: f32 = 9.0;
+
+pub fn view(tile: &Tile, room: Room, motion: Motion) -> Element<'_, Intent> {
     let mut top: Row<Element<'_, Intent>> = Row::new();
-    if tile.starting {
+    if room.starting {
         top = top.push(starting_pill(motion));
     }
     top = top.push(Space::new().width(Fill).boxed());
-    column![top, Space::new().height(Fill), chip::view(&tile.chip)]
-        .padding(INSET)
-        .width(Fill)
-        .height(Fill)
-        .boxed()
+    let mut marks = column![top, Space::new().height(Fill)];
+    if room.chip {
+        let spinning = (room.middle == Middle::InChip).then_some(motion);
+        marks = marks.push(chip::view(&tile.chip, spinning));
+    }
+    marks.padding(INSET).width(Fill).height(Fill).boxed()
+}
+
+/// The words of "Watch stream", as `ParticipantGrid` words it.
+fn watch_words() -> &'static str {
+    text_in("ParticipantGrid", "Watch stream")
+}
+
+/// At most how wide "Watch stream" is, from its words' letters
+/// (`super::room`).
+pub(super) fn watch_width() -> f32 {
+    2.0 * PILL_SIDE + watch_words().chars().count() as f32 * LETTER
 }
 
 /// "Watch stream" on the danger colour, as `ParticipantGrid` words it
 /// (`:1042`, `:1105`).
 pub fn watch_pill<'a>() -> Element<'a, Intent> {
-    words(
-        text_in("ParticipantGrid", "Watch stream"),
-        |theme: &Theme| container::Style {
-            background: Some(Background::Color(theme.palette().danger)),
-            text_color: Some(theme.palette().on_danger),
-            border: Border::default().rounded(PILL / 2.0),
-            ..container::Style::default()
-        },
-    )
+    words(watch_words(), |theme: &Theme| container::Style {
+        background: Some(Background::Color(theme.palette().danger)),
+        text_color: Some(theme.palette().on_danger),
+        border: Border::default().rounded(PILL / 2.0),
+        ..container::Style::default()
+    })
 }
 
 /// "Starting camera...", white on the scrim, beating while `motion` plays.

@@ -10,7 +10,9 @@
 //! volumes, and in a Discord call how strongly their noise and this
 //! account's echo are taken out of their voice, while each is (Anomi's own;
 //! `docs/discord/voice.md`). A stream watched has the same card over the
-//! menu of its tile ([`ParticipantMenu::stream`]): its own volume, and how
+//! menu of its tile ([`ParticipantMenu::stream`]), as Discord's menu of a
+//! stream starts: under its name "Stop Watching", a line, the box "Mute"
+//! ([`ParticipantMenu::rows`]), then its volume, "Stream volume", and how
 //! strongly its sound is cleaned. The app opens `Layer::ParticipantMenu` and the
 //! context menu
 //! `HEAD_OVERLAP` px above the card's bottom edge, so the two read as one: a
@@ -19,6 +21,8 @@
 //! together when they don't fit below it (`top`, `ui/yapfast.slint:2694`).
 
 use iced::{Point, Size};
+
+use crate::menu::Row;
 
 /// The card's width unless the rows under it are wider: the context menu's
 /// narrowest there (`narrowest: 260px`, `ui/yapfast.slint:2713`).
@@ -36,6 +40,14 @@ pub const SLIDER_HEIGHT: f32 = 41.0;
 /// How far the rows start above the card's bottom edge, so the two share
 /// one line.
 pub const HEAD_OVERLAP: f32 = 1.0;
+
+/// The card's own rows, as a menu's (`MenuRows`, `ui/controls.slint:1287`):
+/// each 32 px, 2 px apart, 6 px from the card's sides and from what's above
+/// and below them; a group's line takes 9 px with it.
+pub const ROW: f32 = 32.0;
+pub const ROWS_PADDING: f32 = 6.0;
+pub const ROWS_GAP: f32 = 2.0;
+pub const RULE: f32 = 9.0;
 
 /// Where a volume runs to, in percent.
 pub const MAXIMUM: i32 = 200;
@@ -72,6 +84,10 @@ pub struct ParticipantMenu {
     /// The card's width: the rows' under it when they are wider than
     /// [`WIDTH`].
     pub width: f32,
+    /// A stream's card: its own rows between its name and its volume, each
+    /// 32 px tall without a second line, a line before one `separated`.
+    /// Someone's card has none.
+    pub rows: Vec<Row<Intent>>,
 }
 
 impl Default for ParticipantMenu {
@@ -87,18 +103,34 @@ impl Default for ParticipantMenu {
             echo_depth: None,
             joined: false,
             width: WIDTH,
+            rows: Vec::new(),
         }
     }
 }
 
 impl ParticipantMenu {
-    /// The card's height: the app places the rows under it with this.
+    /// The card's height: the app places the rows under it with this. Its
+    /// own rows take the space before the first slider.
     pub fn height(&self) -> f32 {
         let sliders = 1
             + u8::from(self.live && !self.stream)
             + u8::from(self.noise_strength.is_some())
             + u8::from(self.echo_depth.is_some());
-        2.0 * PADDING + NAME_HEIGHT + f32::from(sliders) * (SPACING + SLIDER_HEIGHT)
+        let rows = self.rows_height();
+        let before = if rows > 0.0 { SPACING } else { 0.0 };
+        2.0 * PADDING + NAME_HEIGHT + rows - before + f32::from(sliders) * (SPACING + SLIDER_HEIGHT)
+    }
+
+    /// How tall its own rows are with the room round them: none without.
+    pub fn rows_height(&self) -> f32 {
+        if self.rows.is_empty() {
+            return 0.0;
+        }
+        let lines = (self.rows.iter().skip(1))
+            .filter(|row| row.separated)
+            .count();
+        let rows = self.rows.len() as f32;
+        2.0 * ROWS_PADDING + rows * ROW + (rows - 1.0) * ROWS_GAP + lines as f32 * (RULE + ROWS_GAP)
     }
 
     /// Where the card and the rows under it go, as their top left corners,
@@ -156,6 +188,12 @@ pub enum Intent {
         depth: i32,
         last: bool,
     },
+    /// A stream's card: stop watching it (Discord's "Stop Watching"); the
+    /// menu closes.
+    StopWatching,
+    /// A stream's card: its sound muted here, or back at the volume it had,
+    /// by its streamer (Discord's "Mute" box); the menu stays.
+    MuteStream(String),
 }
 
 #[cfg(test)]
@@ -221,6 +259,30 @@ mod tests {
             ..stream.clone()
         };
         assert_eq!(cleaned.height(), stream.height() + SPACING + SLIDER_HEIGHT);
+    }
+
+    #[test]
+    fn a_streams_rows_stand_between_its_name_and_its_volume() {
+        let plain = ParticipantMenu {
+            stream: true,
+            live: true,
+            ..card(true)
+        };
+        let rows = ParticipantMenu {
+            rows: vec![
+                Row::new("Stop Watching", Intent::StopWatching),
+                Row::new("Mute", Intent::MuteStream("bob".into()))
+                    .checkbox(false)
+                    .separated(),
+            ],
+            ..plain.clone()
+        };
+        // 6 + 32 + 2 + 9 + 2 + 32 + 6, in place of the 12 before the slider.
+        assert_eq!(rows.rows_height(), 89.0);
+        assert_eq!(rows.height(), plain.height() + 89.0 - SPACING);
+        let at = Point::new(100.0, 100.0);
+        let (_, below) = rows.place(at, Size::new(274.0, 100.0), WINDOW);
+        assert_eq!(below.y, 100.0 + rows.height() - HEAD_OVERLAP);
     }
 
     #[test]

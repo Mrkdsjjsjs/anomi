@@ -7,7 +7,12 @@
 //! Frames are read as they're drawn, so a new one builds no view, and are
 //! drawn square and whole, never copied; `ring` rounds the corners over
 //! them.
+//!
+//! What the middle says is as large as the tile's room lets it be
+//! (`super::room`): the icon or the ring with its words, alone, smaller, or
+//! nothing, clear of the badge and the viewers above and the chip below.
 
+use iced::widget::text::{Ellipsis, Wrapping};
 use iced::widget::{Space, column, container, responsive, stack, text};
 use iced::{Alignment, Background, Border, Color, Fill, Padding, Size};
 
@@ -19,6 +24,7 @@ use anomi_widgets::avatar::portrait;
 use anomi_widgets::icon::{Icon, icon};
 use anomi_widgets::picture::{Fit, live, picture};
 
+use super::room::{Middle, Room};
 use super::{GREY, waiting};
 
 /// Someone's picture: 45% of the tile's height, at most 80 px, 8 px above
@@ -33,18 +39,17 @@ const DIM: Color = anomi_theme::rgba(0x0000_0059);
 /// The screen over a stream offered, 30 px, and over this account's screen
 /// before its first picture, 34; each 10 px above what follows (`:1001`,
 /// `:1003`, `:1035`, `:1036`).
-const OFFER_ICON: f32 = 30.0;
-const SHARE_ICON: f32 = 34.0;
-const GAP: f32 = 10.0;
-/// A stream tile lower than this is one of the small ones beneath a large
-/// tile: its screen alone, 20 px, clear of the badge above and the chip
-/// below, as a large stream's stand-in has it.
-const OFFER_ROOM: f32 = 140.0;
-const SMALL_ICON: f32 = 20.0;
+pub(super) const OFFER_ICON: f32 = 30.0;
+pub(super) const SHARE_ICON: f32 = 34.0;
+pub(super) const GAP: f32 = 10.0;
+/// The screen alone, as a large stream's stand-in has it, and in a tile
+/// too small for its words.
+pub(super) const SMALL_ICON: f32 = 20.0;
 /// This account's screen's status, 14 px (`:1004`).
-const STATUS: f32 = typography::size::SMALL;
+pub(super) const STATUS: f32 = typography::size::SMALL;
 
-pub fn view<'a>(tile: &'a Tile, radius: f32, motion: Motion) -> Element<'a, Intent> {
+pub fn view<'a>(tile: &'a Tile, room: Room, radius: f32, motion: Motion) -> Element<'a, Intent> {
+    let middle = room.middle;
     let content: Element<'a, Intent> = match &tile.fill {
         Filling::Avatar { avatar, connected } => face(avatar, *connected),
         Filling::Camera(frame)
@@ -57,13 +62,17 @@ pub fn view<'a>(tile: &'a Tile, radius: f32, motion: Motion) -> Element<'a, Inte
         Filling::Watched {
             frame: None,
             status,
-        } => waiting::waiting(status, motion).boxed(),
-        Filling::Offer { preview } => offer(preview.as_ref()),
+        } => match middle {
+            Middle::Full(_) => waiting::line(status, motion).boxed(),
+            Middle::Glyph(side) => waiting::ring(side, room.raised(), motion).boxed(),
+            Middle::Empty | Middle::InChip => Space::new().boxed(),
+        },
+        Filling::Offer { preview } => offer(preview.as_ref(), room),
         Filling::OwnScreen {
             frame: None,
             status,
-        } => screen_starting(status),
-        Filling::Large => on_stage(),
+        } => screen_starting(status, room),
+        Filling::Large => glyph(Color::WHITE, room),
     };
     let black = tile.fill.on_black();
     container(content)
@@ -122,70 +131,93 @@ fn whole(frames: &Live) -> Element<'_, Intent> {
         .boxed()
 }
 
-/// A stream's preview filling the tile, dimmed (`StreamPreview`).
-fn dimmed(preview: &iced::widget::image::Handle) -> Element<'_, Intent> {
-    let dim = container(Space::new())
+/// What dims a stream's preview filling the tile (`StreamPreview`).
+fn dim<'a>() -> Element<'a, Intent> {
+    container(Space::new())
         .width(Fill)
         .height(Fill)
         .style(|_theme: &Theme| container::Style {
             background: Some(Background::Color(DIM)),
             ..container::Style::default()
-        });
-    stack![
-        picture(preview.clone())
-            .width(Fill)
-            .height(Fill)
-            .fit(Fit::Cover),
-        dim,
-    ]
-    .boxed()
+        })
+        .boxed()
 }
 
 /// A stream not watched, in a tile of its own: the screen over the pill
-/// that offers it, white on its preview, grey on black. Among the small
-/// tiles beneath a large one, too low for both between its badge and its
-/// chip, the screen alone, smaller: a click still watches it.
-fn offer(preview: Option<&iced::widget::image::Handle>) -> Element<'_, Intent> {
+/// that offers it, white on its preview, dimmed, grey on black. Among the
+/// small tiles beneath a large one, too low for both between its badge and
+/// its chip, the screen alone, smaller, or nothing: a click still watches
+/// it.
+///
+/// With or without its preview it's one stack, the picture first: a tile's
+/// tree is kept as its fill changes and a stack places nothing, so a part
+/// another fill had placed there (this one's centred screen, before its
+/// preview came) would keep its place under the preview.
+fn offer(preview: Option<&iced::widget::image::Handle>, room: Room) -> Element<'_, Intent> {
     let ink = if preview.is_some() {
         Color::WHITE
     } else {
         GREY
     };
-    let middle = responsive(move |room: Size| -> Element<'_, Intent> {
-        let ink = anomi_theme::catalog::svg::colored(ink);
-        let middle = if room.height < OFFER_ROOM {
-            column![icon(Icon::ScreenShare, SMALL_ICON).style(ink)]
-        } else {
-            column![
+    let middle = match room.middle {
+        Middle::Full(_) => {
+            let ink = anomi_theme::catalog::svg::colored(ink);
+            let both = column![
                 icon(Icon::ScreenShare, OFFER_ICON).style(ink),
                 super::marks::watch_pill(),
             ]
-        };
-        let middle = middle.spacing(GAP).align_x(Alignment::Center);
-        container(middle).center(Fill).boxed()
-    });
-    match preview {
-        Some(preview) => stack![dimmed(preview), middle].boxed(),
-        None => middle.boxed(),
-    }
+            .spacing(GAP)
+            .align_x(Alignment::Center);
+            container(both).center(Fill).boxed()
+        }
+        _ => glyph(ink, room),
+    };
+    let (ground, veil) = match preview {
+        Some(preview) => {
+            let ground = picture(preview.clone())
+                .width(Fill)
+                .height(Fill)
+                .fit(Fit::Cover);
+            (ground.boxed(), dim())
+        }
+        None => (Space::new().boxed(), Space::new().boxed()),
+    };
+    stack![ground, veil, middle]
+        .width(Fill)
+        .height(Fill)
+        .boxed()
 }
 
-/// A stream shown large above, in its place beneath: the screen, white on
-/// black, as Discord's strip shows it.
-fn on_stage<'a>() -> Element<'a, Intent> {
-    let ink = anomi_theme::catalog::svg::colored(Color::WHITE);
-    container(icon(Icon::ScreenShare, SMALL_ICON).style(ink))
+/// The screen alone in `ink`, as large as the `room`'s middle says, in the
+/// middle or above it; a stream shown large above, in its place beneath,
+/// has it white on black, as Discord's strip shows it. Nothing where
+/// there's no room.
+fn glyph<'a>(ink: Color, room: Room) -> Element<'a, Intent> {
+    let side = match room.middle {
+        Middle::Glyph(side) => side,
+        Middle::Full(_) => SMALL_ICON,
+        Middle::Empty | Middle::InChip => return Space::new().boxed(),
+    };
+    let ink = anomi_theme::catalog::svg::colored(ink);
+    container(icon(Icon::ScreenShare, side).style(ink))
         .center(Fill)
+        .padding(room.raised())
         .boxed()
 }
 
 /// This account's screen before its first picture: the screen over how
-/// it's going.
-fn screen_starting(status: &str) -> Element<'_, Intent> {
+/// it's going, on one line cut short; the screen alone in a tile too small
+/// for both.
+fn screen_starting(status: &str, room: Room) -> Element<'_, Intent> {
+    if !matches!(room.middle, Middle::Full(_)) {
+        return glyph(GREY, room);
+    }
     let status = text(status)
         .size(STATUS)
         .color(GREY)
         .width(Fill)
+        .wrapping(Wrapping::None)
+        .ellipsis(Ellipsis::End)
         .align_x(Alignment::Center);
     let icon = icon(Icon::ScreenShare, SHARE_ICON).style(anomi_theme::catalog::svg::colored(GREY));
     container(

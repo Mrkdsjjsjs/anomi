@@ -6,7 +6,9 @@
 //! LIVE tag keep their width and the name and the note share what is left,
 //! each cut short with an ellipsis: `Fluid(Max)` lays them out after the
 //! fixed parts, each no wider than it is, the name first at no more than
-//! half the room when the note is there too.
+//! half the room when the note is there too. A stream on its way in a tile
+//! too small for its ring in the middle turns the ring here, in the mark's
+//! place (`room::Middle::InChip`).
 
 use iced::widget::{Row, container, text};
 use iced::{Alignment, Background, Border, Color, Length, Padding};
@@ -17,9 +19,10 @@ use anomi_theme::typography;
 use anomi_vm::voice::tiles::{Chip, Intent, Mark};
 use anomi_widgets::icon::{Icon, icon};
 
+use super::spinner::spinner;
 use super::{SCRIM, live::live};
 
-const HEIGHT: f32 = 26.0;
+pub(super) const HEIGHT: f32 = 26.0;
 const RADIUS: f32 = 6.0;
 const SIDE: f32 = 8.0;
 const SPACING: f32 = 6.0;
@@ -31,12 +34,16 @@ const MARK: f32 = 14.0;
 /// wider than they are.
 const SHRINKS: Length = Length::Fluid(Constraint::Max);
 
-pub fn view(chip: &Chip) -> Element<'_, Intent> {
+/// The chip; `spinning`, the ring turning in place of its mark while
+/// `motion` lets it.
+pub fn view(chip: &Chip, spinning: Option<Motion>) -> Element<'_, Intent> {
     let mut parts: Row<Element<'_, Intent>> = Row::new()
         .spacing(SPACING)
         .align_y(Alignment::Center)
         .height(HEIGHT);
-    if let Some(mark) = chip.mark {
+    if let Some(motion) = spinning {
+        parts = parts.push(spinner(Icon::Loader, MARK, Color::WHITE, motion).boxed());
+    } else if let Some(mark) = chip.mark {
         parts = parts.push(mark_icon(mark));
     }
     parts = parts.push(

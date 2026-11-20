@@ -3,8 +3,8 @@
 //! rows under it are the window's context menu for the target
 //! `in-voice:<room>/<user>` (`src/ui/menus.rs`), as `menu/voice_person.png`
 //! has them, each sending the choice its id names. A watched stream's tile
-//! has the same card over its own rows, for `in-stream:<room>/<user>`
-//! ([`stream`]).
+//! has the same card, with rows of its own over its volume, over its own
+//! rows, for `in-stream:<room>/<user>` ([`stream`], [`stream_muted`]).
 
 use iced::{Point, Size};
 use yapfast_lang::tr;
@@ -14,7 +14,7 @@ use crate::fixtures::shell;
 use crate::icon::Icon;
 use crate::menu::{Menu, Row, Spot};
 use crate::shell::Layer;
-use crate::voice::participant_menu::ParticipantMenu;
+use crate::voice::participant_menu::{Intent as CardIntent, ParticipantMenu};
 
 use super::stage;
 
@@ -206,19 +206,46 @@ pub fn alone() -> Vm {
 }
 
 /// The menu of Bob's stream's tile while Alice watches it, right-clicked on
-/// the large stream: the stream's volume alone on the card, then how much
-/// of its noise RNNoise takes out and how far Alice's echo comes out of it;
-/// the rows choose them, "Suppress noise" saying what it does to music.
+/// the large stream, as Discord's starts: "Stop Watching", a line, "Mute"
+/// and the stream's volume on the card, then how much of its noise RNNoise
+/// takes out and how far Alice's echo comes out of it, both sliders shown;
+/// the rows under it choose them, "Suppress noise" saying what it does to
+/// music.
 pub fn stream() -> Vm {
+    watched_stream(true, false)
+}
+
+/// [`stream`] with nothing cleaning its sound, and the stream muted here:
+/// "Mute" ticked, its volume kept as it was.
+pub fn stream_muted() -> Vm {
+    watched_stream(false, true)
+}
+
+/// A stream's own rows on its card, as the app makes them
+/// (`project::menus::stream::card_rows`): "Stop Watching" with the struck
+/// screen, then under a line the box "Mute", ticked while `muted`.
+pub fn stream_rows(person: &str, muted: bool) -> Vec<Row<CardIntent>> {
+    vec![
+        Row::new(tr!("Stop Watching"), CardIntent::StopWatching).icon(Icon::ScreenShareOff),
+        Row::new(tr!("Menu" => "Mute"), CardIntent::MuteStream(person.into()))
+            .checkbox(muted)
+            .plain()
+            .separated(),
+    ]
+}
+
+/// Bob's stream's menu, its sound `cleaned` (RNNoise, Alice's echo out) or
+/// not, and `muted` here or not.
+fn watched_stream(cleaned: bool, muted: bool) -> Vm {
     let target = format!("in-stream:{ROOM}/{BOB}");
     let row = |text: &str, id: &str| {
         Row::new(text, crate::menu::Choice::person(target.clone(), id).into())
     };
     let suppressors = vec![
-        row(tr!("Off"), "their-noise:off").radio(false).plain(),
+        row(tr!("Off"), "their-noise:off").radio(!cleaned).plain(),
         row("RNNoise", "their-noise:rnnoise")
             .subtitle(tr!("Light on the processor"))
-            .radio(true)
+            .radio(cleaned)
             .plain(),
         row("DeepFilterNet", "their-noise:deepfilternet")
             .subtitle(tr!("Stronger, but uses more of the processor"))
@@ -235,7 +262,7 @@ pub fn stream() -> Vm {
             .icon(Icon::NoiseBars),
         row(tr!("Remove my echo"), "remove-my-echo")
             .icon(Icon::Volume)
-            .checkbox(true),
+            .checkbox(cleaned),
     ];
     let card = ParticipantMenu {
         person: BOB.into(),
@@ -243,10 +270,11 @@ pub fn stream() -> Vm {
         live: true,
         stream: true,
         stream_volume: 54,
-        noise_strength: Some(100),
-        echo_depth: Some(20),
+        noise_strength: cleaned.then_some(100),
+        echo_depth: cleaned.then_some(20),
         joined: true,
         width: WIDTH,
+        rows: stream_rows(BOB, muted),
         ..ParticipantMenu::default()
     };
     let mut vm = stage::window(stage::watching());

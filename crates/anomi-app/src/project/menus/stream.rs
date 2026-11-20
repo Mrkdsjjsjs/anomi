@@ -1,5 +1,8 @@
 //! The menu of a watched stream's tile, Anomi's own, under the card with its
-//! volume (`intent::menus::stream`): what cleans the stream's sound, as
+//! volume (`intent::menus::stream`), and the card's own rows over that
+//! volume, as Discord's menu of a stream starts ([`card_rows`]): "Stop
+//! Watching", then under a line the box "Mute". Under the card, what cleans
+//! the stream's sound, as
 //! someone's menu in a call cleans their voice. "Suppress noise" opens the
 //! same suppressors, and says under it that they're made for speech, which
 //! music and a game's sound come out of damaged; "Remove my echo" turns the
@@ -14,6 +17,7 @@ use yapfast_lang::tr;
 
 use anomi_vm::icon::Icon;
 use anomi_vm::menu::Row;
+use anomi_vm::voice::participant_menu::Intent as Card;
 
 use super::{Make, choice_id, subs};
 
@@ -52,6 +56,18 @@ pub(crate) fn rows(target: &str, cleaning: Cleaning) -> Vec<Row> {
         .icon(Icon::Volume)
         .checkbox(cleaning.own_echo);
     vec![noise, echo]
+}
+
+/// The card's own rows for `user`'s stream, as Discord's menu of a stream
+/// starts: "Stop Watching" with the struck screen, then under a line the box
+/// "Mute", ticked while the stream is `muted` here.
+pub(crate) fn card_rows(user: &str, muted: bool) -> Vec<Row<Card>> {
+    let stop = Row::new(tr!("Stop Watching"), Card::StopWatching).icon(Icon::ScreenShareOff);
+    let mute = Row::new(tr!("Menu" => "Mute"), Card::MuteStream(user.to_owned()))
+        .checkbox(muted)
+        .plain()
+        .separated();
+    vec![stop, mute]
 }
 
 #[cfg(test)]

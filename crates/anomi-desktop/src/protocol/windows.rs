@@ -212,8 +212,10 @@ fn query_value(key: &str, name: Option<&str>) -> Option<(String, REG_VALUE_TYPE)
     }
     data.truncate(size as usize);
     let text: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|&unit| unit != 0)
         .collect();
     String::from_utf16(&text).ok().map(|text| (text, kind))

@@ -45,7 +45,7 @@ fn measured_once_and_carried_elsewhere_it_gates_alike() {
     let here = run(&mut gate, &ours, &heard);
     let (mut measure, mut far) = (Measure::new(), EchoGate::new());
     let mut there = heard.clone();
-    for (tick, theirs) in there.chunks_exact_mut(FRAME).enumerate() {
+    for (tick, theirs) in there.as_chunks_mut::<FRAME>().0.iter_mut().enumerate() {
         let said = ours.get(tick * FRAME..(tick + 1) * FRAME);
         let said = said.filter(|frame| frame.iter().any(|sample| *sample != 0.0));
         let line = serde_json::to_string(&measure.ours(said)).unwrap();
@@ -161,7 +161,7 @@ fn does_nothing_in_silence_or_without_us() {
     let voice = speech(THEIRS, 3.0, 210.0, -24.0);
     let mut out = voice.clone();
     let mut fresh = EchoGate::new();
-    for frame in out.chunks_exact_mut(FRAME) {
+    for frame in out.as_chunks_mut::<FRAME>().0 {
         fresh.heard(frame);
     }
     assert!(out == voice);
@@ -277,7 +277,11 @@ fn gates_a_recording() {
     let mut gate = EchoGate::new();
     let mut open_for = 0u32;
     let (mut second, mut whole) = (Counts::default(), Counts::default());
-    let frames = sent.chunks_exact(FRAME).zip(out.chunks_exact_mut(FRAME));
+    let frames = sent
+        .as_chunks::<FRAME>()
+        .0
+        .iter()
+        .zip(out.as_chunks_mut::<FRAME>().0);
     for (tick, (ours, theirs)) in frames.enumerate() {
         open_for = if level(ours) > open {
             20
@@ -488,7 +492,7 @@ fn mixed(one: &[f32], other: &[f32]) -> Vec<f32> {
 /// tick of silence, then what came from them. Returns what it let through.
 fn run(gate: &mut EchoGate, ours: &[f32], heard: &[f32]) -> Vec<f32> {
     let mut out = heard.to_vec();
-    for (tick, theirs) in out.chunks_exact_mut(FRAME).enumerate() {
+    for (tick, theirs) in out.as_chunks_mut::<FRAME>().0.iter_mut().enumerate() {
         let said = ours.get(tick * FRAME..(tick + 1) * FRAME);
         gate.sent(said.filter(|frame| frame.iter().any(|sample| *sample != 0.0)));
         gate.heard(theirs);
@@ -545,7 +549,7 @@ fn through_opus(sound: &[f32]) -> Vec<f32> {
     let mut decoder = Decoder::new(1).expect("an Opus decoder");
     let (mut packet, mut decoded) = (vec![0; 1_500], vec![0; FRAME]);
     let mut coded = Vec::with_capacity(sound.len());
-    for frame in sound.chunks_exact(FRAME) {
+    for frame in sound.as_chunks::<FRAME>().0 {
         let length = encoder
             .encode_float(frame, &mut packet)
             .expect("Opus encodes");
@@ -566,7 +570,12 @@ fn through_opus(sound: &[f32]) -> Vec<f32> {
 fn read_sound(path: &str) -> Vec<f32> {
     let bytes = std::fs::read(path).unwrap_or_else(|error| panic!("can't read {path}: {error}"));
     if bytes.get(..4) != Some(b"RIFF".as_slice()) || bytes.get(8..12) != Some(b"WAVE".as_slice()) {
-        return bytes.chunks_exact(2).map(pcm16).collect();
+        return bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| pcm16(pair))
+            .collect();
     }
     let (mut format, mut channels, mut bits) = (0u16, 0usize, 0u16);
     let mut at = 12;

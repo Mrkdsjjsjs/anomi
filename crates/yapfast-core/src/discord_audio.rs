@@ -607,7 +607,7 @@ impl Cleaned {
         if back && !fresh {
             denoiser.clear();
         }
-        for block in self.mono.chunks_exact_mut(BLOCK) {
+        for block in self.mono.as_chunks_mut::<BLOCK>().0 {
             denoiser.block(block);
         }
     }
@@ -1610,7 +1610,9 @@ fn processes_a_recording() {
     let read = |name| -> Vec<i16> {
         std::fs::read(std::env::var(name).unwrap())
             .unwrap()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect()
     };
@@ -1634,9 +1636,11 @@ fn processes_a_recording() {
     let mut drain = Drain::default();
     let (mut drained, mut whole) = ((0, 0.0), (0, 0.0));
     let (mut ticks, mut short, mut unsent) = (0, 0, 0);
-    for bytes in input.chunks_exact(BLOCK * 2) {
+    for bytes in input.as_chunks::<{ BLOCK * 2 }>().0 {
         let mut block: Vec<i16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         if let Some(far) = &far
@@ -2064,8 +2068,8 @@ mod tests {
                 }
                 simulated.ticks.push((now, waited as f32 / 48.0));
                 let frame: Vec<f32> = queue.drain(..FRAME).collect();
-                for block in frame.chunks_exact(BLOCK) {
-                    simulated.sent.push(block.try_into().unwrap());
+                for block in frame.as_chunks::<BLOCK>().0 {
+                    simulated.sent.push(*block);
                 }
             }
         }
@@ -2254,7 +2258,6 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(tokio::task::LocalSet::new().run_until(async {
-            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
             let discord =
                 yapfast_discord::service::Discord::start(yapfast_discord::token::load().unwrap())
                     .unwrap();
@@ -2434,7 +2437,7 @@ mod tests {
             let out = people.cleaned(cleaned).expect("cleaned this tick");
             assert_eq!(out.len(), frame.len());
             assert!(
-                out.chunks_exact(2).all(|pair| pair[0] == pair[1]),
+                out.as_chunks::<2>().0.iter().all(|pair| pair[0] == pair[1]),
                 "the same in both channels"
             );
             // RNNoise takes a while to learn the noise.
@@ -2502,7 +2505,7 @@ mod tests {
 
     /// Their tick in one channel, as the call cleans it: both averaged.
     fn mono(frame: &[i16]) -> Vec<f32> {
-        (frame.chunks_exact(2))
+        (frame.as_chunks::<2>().0.iter())
             .map(|pair| (f32::from(pair[0]) + f32::from(pair[1])) / 2.0)
             .collect()
     }
@@ -2534,7 +2537,7 @@ mod tests {
             people.next_tick();
             people.clean(&[(user, &frame)]);
             let mut expected = mono(&frame);
-            for block in expected.chunks_exact_mut(BLOCK) {
+            for block in expected.as_chunks_mut::<BLOCK>().0 {
                 before.block(block);
             }
             let expected = stereo(&expected);
@@ -2557,8 +2560,10 @@ mod tests {
             let frame = mono(&noisy_frame(tick, &mut seed));
             let (mut one, mut other) = (frame.clone(), frame);
             for (one, other) in one
-                .chunks_exact_mut(BLOCK)
-                .zip(other.chunks_exact_mut(BLOCK))
+                .as_chunks_mut::<BLOCK>()
+                .0
+                .iter_mut()
+                .zip(other.as_chunks_mut::<BLOCK>().0)
             {
                 full.block(one);
                 half.block(other);

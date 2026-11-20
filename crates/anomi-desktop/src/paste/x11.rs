@@ -80,8 +80,10 @@ pub fn read() -> Result<Clipboard, Box<dyn Error>> {
         return Ok(Clipboard::Other);
     };
     let offered: Vec<Atom> = offered
-        .chunks_exact(4)
-        .map(|atom| u32::from_ne_bytes(atom.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|atom| u32::from_ne_bytes(*atom))
         .collect();
     if offered.contains(&uri_list)
         && let Some(list) = reader.get(uri_list)?

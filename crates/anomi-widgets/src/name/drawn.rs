@@ -211,7 +211,7 @@ fn whole(
 /// tiny-skia's pixels carry their colour multiplied by their alpha; a
 /// picture's don't.
 fn unpremultiply(pixels: &mut [u8]) {
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         if alpha == 0 || alpha == 255 {
             continue;

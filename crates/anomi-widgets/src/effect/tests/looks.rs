@@ -33,7 +33,7 @@ fn on_blue() -> Effect {
         panic!("a still of pixels");
     };
     let mut opaque = pixels.to_vec();
-    for pixel in opaque.chunks_exact_mut(4) {
+    for pixel in opaque.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         for (channel, blue) in pixel.iter_mut().zip(BLUE).take(3) {
             *channel =

@@ -69,7 +69,7 @@ soundboard. Screens in `anomi-voice/src/<area>/`, view-models in
 - **Done when:** as Discord's: "Input Device"/"Output Device" over the device in use, its submenu of devices with radio marks beside the card; for the microphone with Discord linked, "Input Profile" (Voice Isolation, Studio, Custom: what Voice & video's switches make, a preset setting them); the volume with its value in a tip while dragged; Voice Settings; arrows, Right, Left, Enter and Escape. The input level shows in Voice & video, not in the menu. I18.
 
 ### V10 · Sharing the screen (Sonnet · M)
-- **Owns:** `anomi-voice/src/share/`, `anomi-vm/src/voice/share.rs`.
+- **Owns:** `anomi-voice/src/share/`, `anomi-vm/src/voice/share.rs`, `anomi-voice/tests/areas/share_bitrate.rs`.
 - **After:** F06, F05.
 - **Ports:** `ShareMenu`, `ScreenCard` (`ui/voice.slint:1414`, `:1359`); `src/ui/callbacks.rs:3108`-`:3302`.
 - **Shots:** `voice/share_menu.png`.

@@ -333,7 +333,7 @@ impl Cleaner {
         if back && !fresh {
             rnnoise.clear();
         }
-        for block in self.mono.chunks_exact_mut(BLOCK) {
+        for block in self.mono.as_chunks_mut::<BLOCK>().0 {
             rnnoise.block(block);
         }
     }
@@ -433,7 +433,11 @@ mod tests {
         let played = cleaner.clean(&mut pcm, 2).to_vec();
         assert_eq!(played.len(), 2 * FRAME, "20 ms, both channels");
         assert!(
-            played.chunks_exact(2).all(|pair| pair[0] == pair[1]),
+            played
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|pair| pair[0] == pair[1]),
             "mono"
         );
         assert!(cleaner.rnnoise.is_some());

@@ -637,7 +637,7 @@ mod tests {
                             flip: true
                         } || turn == Turn::default()
                     );
-                    for (at, pixel) in plain.chunks_exact(4).enumerate() {
+                    for (at, pixel) in plain.as_chunks::<4>().0.iter().enumerate() {
                         let (x, y) = (at % w, at / w);
                         // Quarter turns clockwise, then the flip.
                         let (x, y) = match turns {

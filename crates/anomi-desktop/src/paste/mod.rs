@@ -135,8 +135,13 @@ fn bitmap(dib: &[u8]) -> Option<image::RgbaImage> {
             Box::new(data.chunks_exact(stride))
         };
         for (out, row) in rows_out.zip(rows_in) {
-            for (out, pixel) in out.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
-                out.copy_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            for (out, &[b, g, r, a]) in out
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(row.as_chunks::<4>().0)
+            {
+                *out = [r, g, b, a];
             }
         }
         pixels

@@ -152,7 +152,8 @@ function Select-BuildLlvm {
     $compiler = Find-BuildTool 'clang-cl.exe' '^clang version 21\.1\.7\b'
     if ($compiler) {
         $bin = Split-Path $compiler
-        $missing = @('libclang.dll','llvm-lib.exe','lld-link.exe','llvm-rc.exe','../lib/clang/21/include/stddef.h') | Where-Object { !(Test-Path (Join-Path $bin $_)) }
+        # llvm-nm and llvm-objcopy rename the symbols of wreq's BoringSSL (vendor/btls-sys/PATCHES.md).
+        $missing = @('libclang.dll','llvm-lib.exe','lld-link.exe','llvm-rc.exe','llvm-nm.exe','llvm-objcopy.exe','../lib/clang/21/include/stddef.h') | Where-Object { !(Test-Path (Join-Path $bin $_)) }
         if (!$missing) { return Split-Path $bin }
     }
     $root = Join-Path $script:ToolsDirectory 'llvm-21.1.7'
@@ -171,7 +172,7 @@ function Select-BuildLlvm {
             if ($LASTEXITCODE -ne 0) { throw 'Could not extract LLVM' }
         } else { Install-BuildArchive 'llvm' $root 'bin/clang-cl.exe' }
     }
-    foreach ($file in @('clang-cl.exe','libclang.dll','llvm-lib.exe','lld-link.exe','llvm-rc.exe')) {
+    foreach ($file in @('clang-cl.exe','libclang.dll','llvm-lib.exe','lld-link.exe','llvm-rc.exe','llvm-nm.exe','llvm-objcopy.exe')) {
         if (!(Test-Path "$root/bin/$file")) { throw "Incomplete LLVM installation: $file" }
     }
     if (!(Test-Path "$root/lib/clang/21/include/stddef.h")) { throw 'LLVM builtin headers are missing' }

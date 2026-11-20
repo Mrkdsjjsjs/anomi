@@ -97,7 +97,7 @@ pub(super) fn scale(draw: &mut Draw<'_>) -> bool {
     // darker at most, as Yapfast's do.
     for row in draw.target[clip_y as usize * stride..end].chunks_exact_mut(stride) {
         let line = &mut row[clip_x as usize * 4..(clip_x + clip_width) as usize * 4];
-        for pixel in line.chunks_exact_mut(4) {
+        for pixel in line.as_chunks_mut::<4>().0 {
             pixel[3] = u8::MAX;
         }
     }
@@ -133,10 +133,10 @@ mod tests {
             target_width: width,
         });
         assert!(drawn);
-        for (at, pixel) in target.chunks_exact(4).enumerate() {
+        for (at, pixel) in target.as_chunks::<4>().0.iter().enumerate() {
             let (x, y) = (at as u32 % width, at as u32 / width);
             if !((3..23).contains(&x) && (5..15).contains(&y)) {
-                assert_eq!(pixel, ground, "{x}, {y}");
+                assert_eq!(*pixel, ground, "{x}, {y}");
                 continue;
             }
             assert_eq!(pixel[3], 255, "{x}, {y}");

@@ -75,7 +75,11 @@ impl Listener for Echoed {
             *first = Some(Instant::now());
         }
         let stereo = frame.len() == yapfast_discord::voice::FRAME * 2
-            && frame.chunks_exact(2).all(|pair| pair[0] == pair[1]);
+            && frame
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|[left, right]| left == right);
         if !stereo {
             self.malformed.fetch_add(1, Ordering::Relaxed);
         }

@@ -93,7 +93,6 @@ fn ending(ending: LineEnding) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use iced::advanced::text::editor::Editor as _;
 
     use super::*;
 

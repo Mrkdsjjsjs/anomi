@@ -197,7 +197,7 @@ fn work(jobs: &Receiver<Job>, done: &SyncSender<Done>, state: &AtomicU8) {
                     .or_insert_with(|| (Deep::of(&model), Instant::now()));
                 *heard = Instant::now();
                 deep.limit(limit);
-                for block in samples.chunks_exact_mut(BLOCK) {
+                for block in samples.as_chunks_mut::<BLOCK>().0 {
                     deep.block(block);
                 }
                 // The call's thread takes what comes every tick, and never

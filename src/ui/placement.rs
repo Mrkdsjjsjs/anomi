@@ -274,7 +274,11 @@ mod platform {
         let desktop = numbers(current, 1)
             .and_then(|current: Vec<u32>| current.first().copied())
             .unwrap_or(0) as usize;
-        let area = areas.chunks_exact(4).nth(desktop).or(areas.get(..4))?;
+        let area = areas
+            .as_chunks::<4>()
+            .0
+            .get(desktop)
+            .or(areas.first_chunk::<4>())?;
         // Signed on the wire: a strut can't push the origin below 0, but be sure.
         Some([
             i64::from(area[0] as i32),

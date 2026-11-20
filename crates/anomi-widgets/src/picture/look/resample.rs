@@ -127,7 +127,12 @@ pub(super) fn resample(
         }
         // Rounded by adding a half: `round` is a call per channel on a
         // processor without SSE4.1, and a cast holds the value to a byte.
-        for (pixel, total) in line.chunks_exact_mut(4).zip(sum.chunks_exact(4)) {
+        for (pixel, total) in line
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(sum.as_chunks::<4>().0)
+        {
             let alpha = total[3];
             if alpha > 0.0 {
                 let inverse = 1.0 / alpha;
@@ -143,11 +148,11 @@ pub(super) fn resample(
 
 /// One source row at the copy's width, each colour weighed by its alpha.
 fn across(source: &[u8], columns: &Taps, line: &mut [f32]) {
-    for (x, out) in line.chunks_exact_mut(4).enumerate() {
+    for (x, out) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let (first, weights) = columns.of(x);
         let pixels = &source[first * 4..(first + weights.len()) * 4];
         let mut sum = [0f32; 4];
-        for (pixel, &weight) in pixels.chunks_exact(4).zip(weights) {
+        for (pixel, &weight) in pixels.as_chunks::<4>().0.iter().zip(weights) {
             let alpha = f32::from(pixel[3]) * weight;
             sum[0] += f32::from(pixel[0]) * alpha;
             sum[1] += f32::from(pixel[1]) * alpha;

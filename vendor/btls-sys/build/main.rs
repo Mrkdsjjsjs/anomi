@@ -699,7 +699,14 @@ fn emit_link_directives(config: &Config) {
         };
 
     for subdir in subdirs {
-        let dir = bssl_dir.join(subdir);
+        // Yapfast: joining an empty component adds a trailing backslash on
+        // Windows. Rust's MSVC response-file quoting lets it escape the closing
+        // quote, swallowing later linker options such as /OUT and /SUBSYSTEM.
+        let dir = if subdir.is_empty() {
+            bssl_dir.to_path_buf()
+        } else {
+            bssl_dir.join(subdir)
+        };
         let dir = msvc_lib_subdir
             .map(|s| dir.join(s))
             .filter(|d| d.exists())

@@ -61,3 +61,20 @@ macOS and iOS stay skipped, as upstream.
 `src/lib.rs`, `mod generated`: allows `unnecessary_transmutes`. bindgen 0.72
 writes bitfield accessors that Rust 1.98 warns about; a registry crate's
 warnings are capped, a path dependency's are printed on every build.
+
+## Windows linker response files
+
+`build/main.rs`, `emit_link_directives`: keep the base library directory as
+it is when the subdirectory is empty. `Path::join("")` adds a trailing
+backslash on Windows. With Ninja, there is no MSVC configuration subfolder
+to append, so that backslash reached `cargo:rustc-link-search`. On long
+link commands, Rust 1.98.1 puts the arguments into an MSVC response file
+without escaping the trailing backslash before the closing quote. That
+merges subsequent options into the library path, including `/OUT` and
+`/SUBSYSTEM`: linking reports success but writes `symbols.exe` in the
+working directory instead of the requested GUI executable.
+
+Verified with LLVM 21.1.7 using a UTF-16 response file: the trailing
+backslash loses the output name and GUI subsystem; the same directory
+without it preserves both. Keep the empty-subdirectory case when updating
+this vendored crate.

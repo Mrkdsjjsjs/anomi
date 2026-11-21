@@ -28,6 +28,10 @@ pub type Mapped = (Arc<Frames>, Live, Arc<Clock>);
 pub struct Lives {
     cameras: HashMap<String, (Feed, Live)>,
     pub watched: Option<Mapped>,
+    /// Whose stream `watched` shows: one Discord moves to another server
+    /// comes in new frames, from a new worker, and keeps its `Live`, so its
+    /// last picture shows until the new worker's first.
+    whose: Option<String>,
     pub own: Option<Mapped>,
 }
 
@@ -65,7 +69,8 @@ impl Lives {
     }
 
     /// Keeps a `Live` for each feed of `voice`, and lets go of those gone:
-    /// a new feed, or new frames, gets a new one.
+    /// a new feed, or new frames, gets a new one, but for new frames of the
+    /// same person's stream.
     pub fn follow(&mut self, voice: &voice::State) {
         let active = voice.active();
         self.cameras.retain(|id, (feed, _)| {
@@ -85,8 +90,11 @@ impl Lives {
         let watched = voice
             .watching
             .as_ref()
-            .and_then(|watching| watching.frames.as_ref());
-        keep(&mut self.watched, watched.filter(|_| active));
+            .filter(|_| active)
+            .and_then(|watching| {
+                (watching.frames.as_ref()).map(|frames| (watching.user.as_str(), frames))
+            });
+        keep_watched(&mut self.watched, &mut self.whose, watched);
         let own = voice.sharing.as_ref().map(|sharing| &sharing.frames);
         keep(&mut self.own, own.filter(|_| active));
     }
@@ -166,6 +174,36 @@ fn mapped(kept: &Mapped, seen: bool, sources: &mut Vec<Source>) {
         ));
     } else {
         kept.0.pause(true);
+    }
+}
+
+/// Keeps `kept` on the frames of the stream watched, `whose` it is: new
+/// frames of the same person's stream, which Discord moved to another
+/// server, keep its `Live`, with a clock of their own; the old mapping
+/// lives on in the picture the `Live` shows until the new worker's first
+/// frame replaces it, and nobody writes it any more. Someone else's stream
+/// gets a `Live` of its own.
+fn keep_watched(
+    kept: &mut Option<Mapped>,
+    whose: &mut Option<String>,
+    watched: Option<(&str, &Arc<Frames>)>,
+) {
+    let Some((user, frames)) = watched else {
+        *kept = None;
+        *whose = None;
+        return;
+    };
+    let same = whose.as_deref() == Some(user);
+    match kept {
+        Some(mapped) if Arc::ptr_eq(&mapped.0, frames) => {}
+        Some(mapped) if same => {
+            mapped.0 = frames.clone();
+            mapped.2 = Arc::default();
+        }
+        _ => *kept = Some((frames.clone(), Live::default(), Arc::default())),
+    }
+    if !same {
+        *whose = Some(user.to_owned());
     }
 }
 

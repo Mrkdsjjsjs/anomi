@@ -1523,14 +1523,31 @@ fn watch(
                 "the stream's sound came back with its video: it stays wanted while watched"
             );
         }
-        let Some(frame) = receiver.next(Duration::from_millis(100)) else {
+        let Some(mut frame) = receiver.next(Duration::from_millis(100)) else {
             continue;
         };
         // Still on its way as the video stopped.
         if hold.held() {
             continue;
         }
-        match showing.take(&frame, &mut writer, maximum)? {
+        // A backlog, as a run a repair let go at once: each frame decoded,
+        // keeping the decoder's place, and only the newest shown, a jump
+        // rather than a run of pictures written back to back. Bounded, so
+        // the hold and the controls above still come every 100 ms.
+        let draining = Instant::now();
+        for _ in 0..stream_connection::QUEUED {
+            if draining.elapsed() >= DRAINING {
+                break;
+            }
+            let Some(after) = receiver.try_next() else {
+                break;
+            };
+            if showing.take(&frame, &mut writer, maximum, false)? == Took::Failed {
+                receiver.request_keyframe();
+            }
+            frame = after;
+        }
+        match showing.take(&frame, &mut writer, maximum, true)? {
             Took::Failed => receiver.request_keyframe(),
             Took::Shown(width, height) if !shown => {
                 shown = true;
@@ -1543,6 +1560,10 @@ fn watch(
     Ok(())
 }
 
+/// The longest a watched stream's backlog is decoded for before the newest
+/// frame decoded shows: as long as the wait for a frame, so the hold and
+/// the controls are still seen to every 100 ms or so.
+const DRAINING: Duration = Duration::from_millis(100);
 /// How long a watched stream's picture goes unseen in a hidden window,
 /// not on screen at all ([`Writer::hidden`]), before its video stops at
 /// Discord ([`Hold`]).
@@ -1573,8 +1594,9 @@ struct Showing {
     /// phone sends turned goes through `strip`, a few rows of it.
     scratch: Vec<u8>,
     strip: Vec<u8>,
-    /// The video stopped at Discord: the frames before the next keyframe
-    /// can't be decoded, so the tile keeps its last picture until then.
+    /// The video stopped at Discord, or a frame wouldn't decode: the frames
+    /// before the next keyframe can't be decoded, so the tile keeps its
+    /// last picture until then.
     keyframe_due: bool,
     /// Frames that wouldn't decode.
     failures: u64,
@@ -1589,21 +1611,25 @@ enum Took {
     /// It wouldn't decode: the streamer should send a keyframe.
     Failed,
     /// Decoded, keeping the decoder's place, and not shown: the window
-    /// shows none of the stream's frames, or the decoder holds it back.
+    /// shows none of the stream's frames, a newer frame came with it, or
+    /// the decoder holds it back.
     Decoded,
     /// Shown, at this size.
     Shown(u32, u32),
 }
 
 impl Showing {
-    /// Decodes `frame`, and while the window shows the stream's frames,
-    /// writes its picture into the shared frame, turned upright and scaled
-    /// down to fit `maximum`.
+    /// Decodes `frame`, and when it's to `show` while the window shows the
+    /// stream's frames, writes its picture into the shared frame, turned
+    /// upright and scaled down to fit `maximum`. A frame that won't decode
+    /// leaves the frames after it until the next keyframe, asked for, with
+    /// nothing to decode from.
     fn take(
         &mut self,
         frame: &ReceivedFrame,
         writer: &mut Writer,
         maximum: (u32, u32),
+        show: bool,
     ) -> Result<Took> {
         if self.keyframe_due {
             if !frame.keyframe {
@@ -1636,10 +1662,11 @@ impl Showing {
                         "a stream frame didn't decode"
                     );
                 }
+                self.keyframe_due = true;
                 return Ok(Took::Failed);
             }
         };
-        if writer.unseen() {
+        if !show || writer.unseen() {
             return Ok(Took::Decoded);
         }
         let turn = Turn {
@@ -3144,19 +3171,23 @@ mod tests {
         let (mut showing, maximum) = (Showing::default(), (320, 180));
         shared.pause(true);
         for frame in &frames[..3] {
-            let took = showing.take(frame, &mut writer, maximum).unwrap();
+            let took = showing.take(frame, &mut writer, maximum, true).unwrap();
             assert_eq!(took, Took::Decoded);
         }
         assert!(shared.take(|_, _, _| ()).is_none(), "nothing written");
         shared.pause(false);
-        let took = showing.take(&frames[3], &mut writer, maximum).unwrap();
+        let took = showing
+            .take(&frames[3], &mut writer, maximum, true)
+            .unwrap();
         assert_eq!(took, Took::Shown(320, 180), "a delta frame, at once");
         let size = shared.take(|width, height, _| (width, height));
         assert_eq!(size, Some((320, 180)));
         // A hidden window shows nothing, though it didn't pause the frames
         // (made while it's in the tray).
         shared.hide(true);
-        let took = showing.take(&frames[4], &mut writer, maximum).unwrap();
+        let took = showing
+            .take(&frames[4], &mut writer, maximum, true)
+            .unwrap();
         assert_eq!(took, Took::Decoded);
         assert!(
             shared.take(|_, _, _| ()).is_none(),
@@ -3166,11 +3197,69 @@ mod tests {
 
         showing.release();
         assert!(showing.decoder.is_none());
-        let took = showing.take(&frames[5], &mut writer, maximum).unwrap();
+        let took = showing
+            .take(&frames[5], &mut writer, maximum, true)
+            .unwrap();
         assert_eq!(took, Took::Skipped);
         assert!(shared.take(|_, _, _| ()).is_none());
-        let took = showing.take(&frames[0], &mut writer, maximum).unwrap();
+        let took = showing
+            .take(&frames[0], &mut writer, maximum, true)
+            .unwrap();
         assert_eq!(took, Took::Shown(320, 180), "from the keyframe");
+    }
+
+    /// A backlog, as a run a repair let go at once: each frame is decoded,
+    /// keeping the decoder's place, and none written but the newest, which
+    /// shows decoded from the whole chain.
+    #[test]
+    fn a_backlog_is_decoded_and_only_its_newest_shown() {
+        let frames = vp8_frames();
+        assert!(frames[0].keyframe && frames[1..6].iter().all(|frame| !frame.keyframe));
+        let shared = Frames::create(320, 180).unwrap();
+        let mut writer = Writer::open(&shared.path().unwrap()).unwrap();
+        shared.unlink();
+        let (mut showing, maximum) = (Showing::default(), (320, 180));
+        let took = showing
+            .take(&frames[0], &mut writer, maximum, true)
+            .unwrap();
+        assert_eq!(took, Took::Shown(320, 180));
+        assert!(shared.take(|_, _, _| ()).is_some());
+        for frame in &frames[1..4] {
+            let took = showing.take(frame, &mut writer, maximum, false).unwrap();
+            assert_eq!(took, Took::Decoded, "decoded, not shown");
+        }
+        assert!(shared.take(|_, _, _| ()).is_none(), "nothing written");
+        let took = showing
+            .take(&frames[4], &mut writer, maximum, true)
+            .unwrap();
+        assert_eq!(took, Took::Shown(320, 180), "the newest, a delta");
+        assert!(shared.take(|_, _, _| ()).is_some());
+    }
+
+    /// A frame that won't decode leaves the frames after it nothing to
+    /// decode from: they're skipped, the last picture staying, until the
+    /// keyframe the worker asks for.
+    #[test]
+    fn a_frame_that_wont_decode_waits_for_a_keyframe() {
+        let frames = vp8_frames();
+        let shared = Frames::create(320, 180).unwrap();
+        let mut writer = Writer::open(&shared.path().unwrap()).unwrap();
+        shared.unlink();
+        let (mut showing, maximum) = (Showing::default(), (320, 180));
+        let mut take =
+            |frame: &ReceivedFrame| showing.take(frame, &mut writer, maximum, true).unwrap();
+        assert_eq!(take(&frames[0]), Took::Shown(320, 180));
+        // Not VP8, as `decode`'s tests feed it: libvpx refuses it.
+        let broken = ReceivedFrame {
+            codec: Codec::Vp8,
+            data: b"not video".to_vec(),
+            keyframe: false,
+            orientation: yapfast_discord::rtp::Orientation::default(),
+        };
+        assert_eq!(take(&broken), Took::Failed);
+        assert!(!frames[2].keyframe);
+        assert_eq!(take(&frames[2]), Took::Skipped, "nothing to decode it from");
+        assert_eq!(take(&frames[0]), Took::Shown(320, 180), "from the keyframe");
     }
 
     /// A time `ms` milliseconds after `start`.

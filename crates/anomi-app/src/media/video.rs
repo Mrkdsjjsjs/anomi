@@ -104,8 +104,15 @@ pub fn show(state: &AppState, vm: &mut Vm, shown: &mut Shown) -> Option<Source> 
     playing.frames.clone_from(&video.frames);
     let player = player(state, video, playing);
     let at = playing.key.map(|key| (key, video.index));
-    place(&mut vm.chat.timeline, at, Some(&player));
-    place(&mut vm.chat.thread_panel.timeline, at, Some(&player));
+    // One picture reads its frames in a redraw (`anomi_vm::kind::on_read`):
+    // full screen it's the screen, and the cell beneath shows its poster.
+    let beneath = (shown.expanded).then(|| Player {
+        frame: None,
+        ..player.clone()
+    });
+    let cell = beneath.as_ref().unwrap_or(&player);
+    place(&mut vm.chat.timeline, at, Some(cell));
+    place(&mut vm.chat.thread_panel.timeline, at, Some(cell));
     let seen = shown.expanded || at.is_some_and(|(key, _)| in_view(vm, key));
     if shown.expanded {
         full(state, video, playing, player, &mut vm.chat.video);
@@ -346,10 +353,15 @@ pub fn collapse(app: &mut App) -> Task<Message> {
     app.vm.shell.close(Layer::Video);
     let shown = &mut app.shown.media.video;
     shown.full = None;
-    if !std::mem::take(&mut shown.expanded) || app.core.state.video.is_none() {
+    if !std::mem::take(&mut shown.expanded) {
         return Task::none();
     }
-    let cell = shown.cell;
+    // Its cell shows the picture again (`show`).
+    app.show(crate::project::Reach::VIDEO);
+    if app.core.state.video.is_none() {
+        return Task::none();
+    }
+    let cell = app.shown.media.video.cell;
     size(app, cell)
 }
 

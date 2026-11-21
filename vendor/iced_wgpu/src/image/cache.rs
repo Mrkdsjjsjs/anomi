@@ -138,7 +138,7 @@ impl Cache {
 
             // The host's bytes go: an `Rgba` handle's are the app's, shared,
             // and a video frame's slot is the writer's again once the window
-            // took its next frame.
+            // read its next frame.
             *memory = Memory::Device {
                 picture,
                 allocation,
@@ -228,7 +228,14 @@ fn upload(
             .take(size)
             .unwrap_or_else(|| own::Texture::new(device, layout, size));
 
+        // Anomi: a video frame's bytes held the same while they're copied,
+        // with `ANOMI_FRAMES_VERIFY` set (`iced_tiny_skia::verify`).
+        let before = (mark.frame && iced_tiny_skia::verify::on())
+            .then(|| iced_tiny_skia::verify::hash(image));
+
         texture.write(queue, image);
+
+        iced_tiny_skia::verify::after(before, image, &handle.id());
 
         Place::Own(texture)
     } else {

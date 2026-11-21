@@ -224,7 +224,7 @@ fn a_video_plays_in_its_cell_and_its_frames_change_no_view_model() {
 fn full_screen_shows_the_same_player_and_keeps_nothing_after() {
     let folder = Folder::new("media-full");
     let mut app = general(&folder);
-    let _writer = play(&mut app);
+    let mut writer = play(&mut app);
     ask(&mut app, Chat::Video(VideoIntent::Expand(true)));
     assert!(app.vm.shell.is_open(Layer::Video));
     let full = &app.vm.chat.video;
@@ -236,10 +236,33 @@ fn full_screen_shows_the_same_player_and_keeps_nothing_after() {
         "one player, two places"
     );
     assert!(!app.shown.media.alarm.idle());
+    // Its frames show full screen alone: the cell beneath, a second
+    // picture reading them in a redraw, would let the worker write over a
+    // frame still being presented; it shows its poster.
+    writer.write_timed(2, 1, 40, |rgba| rgba.fill(7));
+    assert_eq!(app.shown.media.alarm.take(), Found::View);
+    drop(app.update(Message::Frames));
+    let full = &app.vm.chat.video.player;
+    let beneath = cell_player(&app).expect("still on its cell");
+    assert!(full.frame.is_some() && beneath.frame.is_none());
+    assert_eq!(
+        &Player {
+            frame: full.frame.clone(),
+            ..beneath.clone()
+        },
+        full,
+        "the same player but for its picture"
+    );
+    let live = full.frame.clone();
 
     // Escape: back to its cell; once its way out played, nothing stays.
     ask(&mut app, shell::Intent::Close(Layer::Video));
     assert!(!app.vm.shell.is_open(Layer::Video));
+    assert_eq!(
+        cell_player(&app).and_then(|player| player.frame.clone()),
+        live,
+        "back in its cell, the picture with it"
+    );
     ask(&mut app, shell::Intent::Gone(Layer::Video));
     assert_eq!(app.vm.chat.video, Default::default());
 

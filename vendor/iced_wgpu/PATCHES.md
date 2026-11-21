@@ -182,8 +182,8 @@ copied it all into its texture on each commit. Now:
   size and bounds for equal whatever they say), pictures by their handle's
   id, caches of meshes and text by id, version and address, custom
   primitives by their bounds alone. Nothing it holds keeps a picture's or
-  a cache's memory alive (a video frame's slot is its writer's once the
-  next frame is drawn, as before). The next frame's layers are held
+  a cache's memory alive (a video frame's slot is its writer's again once
+  the window read the frame after it, as before). The next frame's layers are held
   against it as tiny-skia holds its frames' (`Scene::between`): layers that
   end both frames with the same bounds paired from the end, the rest by
   place; in a pair of the same bounds each kind of primitive by place, and
@@ -242,14 +242,23 @@ copied it all into its texture on each commit. Now:
 the window holds them against the frame before's before drawing them.
 `ANOMI_SHARED_VERIFY=1` holds each frame presented against the frame drawn
 whole and read back (`Renderer::screenshot`, a second draw and wait a
-frame: for a review only) and logs the pixels that differ. Tests:
+frame: for a review only) and logs the pixels that differ. It can't see a
+video frame its writer wrote while it was uploaded, as both draws read the
+same texture: `ANOMI_FRAMES_VERIFY=1` (`iced_tiny_skia::verify`, its
+`PATCHES.md`) hashes each video frame around its `write_texture` in
+`image/cache.rs` `upload` and warns when its bytes changed. Tests:
 `damage.rs`, the same frame changes nothing, a quad changed damages where
 it was and is and not its neighbour, its shadow and edge; a layer more
 damages what it draws, layers after it paired from the end, empty layers
 left out, a picture with another handle; damage in the window's pixels; a
 buffer lacks the changes since its own frame (ages 0 to 5, a frame of
 unknown change, history forgotten); regions overlapping merged, apart kept,
-at most eight and disjoint; `shared.rs`, damage told within the buffer;
+at most eight and disjoint; a live picture leaves no buffer stale (a new
+handle every one, two or three presents, a hover quad over its edge in a
+layer that comes and goes, text above, the window sized midway: 40
+presents into buffers held per pixel, two taken in turn at age 2 and one
+at age 1, scales 1 and 1.5, each equal to the frame once given what it
+lacks); `shared.rs`, damage told within the buffer;
 `a_change_alone_is_read_back_and_the_window_shows_the_frame_drawn_whole`
 (GPU, opt-in): a small quad under a see-through anti-aliased triangle
 changes colour, only its 14 by 12 pixels are drawn and read back (3 KiB,

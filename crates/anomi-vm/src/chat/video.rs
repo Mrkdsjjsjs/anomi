@@ -7,7 +7,9 @@
 //! that plays it ([`Video::player`]) and, while it is large, into
 //! [`FullScreen`], held as `vm.chat.video` and drawn over the window as
 //! `Layer::Video`. Both hold the same [`Player`], so the video goes full
-//! screen and back without starting again. Its picture is
+//! screen and back without starting again; the cell beneath full screen
+//! holds it without its picture, which one picture reads in a redraw
+//! ([`crate::kind::on_read`]). Its picture is
 //! [`Player::frame`], a [`Live`] the app puts each frame in, a new handle
 //! on the pixels the core wrote (`anomi-app/src/pictures/frames.rs`), never
 //! a copy: a frame builds no view, only its progress does.

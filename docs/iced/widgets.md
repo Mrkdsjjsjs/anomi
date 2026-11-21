@@ -174,7 +174,9 @@ the app made once (clone them, never make one in a view).
   its text at each frame and asks the next frame at the next whole second,
   only while the window is live (in front, or on screen where the setting
   keeps what matters going: [the background rule](README.md#the-background-rule));
-  a new second builds no view.
+  a new second builds no view. Text grown past its room (at ten minutes,
+  at an hour) lays it out again once, at the frame's own time, which iced
+  stamps up to a refresh ahead of the clock.
 - `shake::shake(content, nudge, motion)`: Discord's bar of unsaved
   changes, 60 px on the raised ground under a line, that sways and turns
   red each time `nudge` goes up (leaving was refused); `.height`,

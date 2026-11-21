@@ -86,17 +86,19 @@ impl Pipeline {
         if (right - left, bottom - top) != (image.width() as i32, image.height() as i32) {
             return false;
         }
-        crate::blit::picture(
-            image.data(),
-            image.width(),
-            image.height(),
-            (left, top),
-            clip_bounds,
-            rounded,
-            opacity,
-            opaque,
-            pixels,
-        );
+        checked(handle, || {
+            crate::blit::picture(
+                image.data(),
+                image.width(),
+                image.height(),
+                (left, top),
+                clip_bounds,
+                rounded,
+                opacity,
+                opaque,
+                pixels,
+            );
+        });
         true
     }
 
@@ -144,7 +146,9 @@ impl Pipeline {
             return true;
         };
         let under = crate::blit::Under::keep(rounded, visible, pixels);
-        if !crate::video::draw(bytes, (*width, *height), drawn, visible, pixels) {
+        if !checked(handle, || {
+            crate::video::draw(bytes, (*width, *height), drawn, visible, pixels)
+        }) {
             return false;
         }
         under.cut(pixels);
@@ -233,6 +237,20 @@ impl Pipeline {
     pub fn trim_cache(&mut self) {
         self.cache.borrow_mut().trim();
     }
+}
+
+/// Anomi: `read`, which reads `handle`'s bytes, checked while
+/// `ANOMI_FRAMES_VERIFY` asks it of a video frame ([`crate::verify`]): a
+/// frame written while it's drawn shows torn.
+fn checked<T>(handle: &raster::Handle, read: impl FnOnce() -> T) -> T {
+    let raster::Handle::Rgba { id, pixels, .. } = handle else {
+        return read();
+    };
+    let before = (crate::verify::on() && crate::premultiplied::is_frame(handle))
+        .then(|| crate::verify::hash(pixels));
+    let drawn = read();
+    crate::verify::after(before, pixels, id);
+    drawn
 }
 
 /// Anomi port (patch 1): a picture whose bytes are a buffer of

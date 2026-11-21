@@ -413,6 +413,42 @@ pixel differed.
 
 </details>
 
+### A watched stream's frames: four slots
+
+A watched stream, the preview of one's own screen and a message's video
+lend their frames to the window from a mapping of four slots
+(`yapfast_core::frames`): the window keeps the frame it shows and the one
+before it, so the worker never writes a frame a present is still copying.
+The fourth slot costs one more frame of RGBA a source, once written:
+8.3 MB (7.9 MiB) for a stream at the watch cap, 1920×1080, which a 1440p
+stream is scaled down to (at its own size it would take 14.7 MB); 3.7 MB
+at 720p, and for one's own preview, capped at 1280×720. With the fake's
+320×180 stream the worker's `RssShmem` was 688 to 692 kB with three slots
+and 920 to 924 kB with four.
+
+The processor drawing, 1600×1000 under `scripts/ui-session` (Weston), the
+fake's stream at 60 frames a second, the two builds alternated, two runs
+of each, 15 s each, CPU with one core as 100% and the main thread's in
+brackets:
+
+| | Three slots | Four slots |
+| --- | --- | --- |
+| Watching: `anomi` | 15.4%, 15.2% (9.5, 9.4) | 15.4%, 15.2% (9.5, 9.5) |
+| Watching: the stream worker | 2.5%, 2.6% | 2.5%, 2.5% |
+| Idle on a DM: `anomi`, wakeups (main / all) | 0.13% (0.13), 2.5 / 18 | 0.20%, 0.13% (0.13), 2.5–2.9 / 17.6 |
+
+With `ANOMI_FRAMES_VERIFY=1` and the fake's runs of frames, about nine let
+go at once twice a second (`/_control/stream-burst?every=500&hold=150&fps=60`):
+three slots given back on read had 113 reads a minute of a frame written
+under the window on the processor and 29 on the Radeon through shared
+memory; four slots, the old decoder queue kept, none in 150 s on either;
+the fix whole, none in 300 s on either. A video packet lost twice a
+second and repaired 80 ms on (`&lose`) cost the old 4-frame queue 370
+frames dropped as `behind` and 161 keyframe requests in two minutes; the
+queue of 32 and its drain, none, and none with the repair 150 ms on. A
+picture kept between presents compared by its bytes took 60 µs at 1080p
+(in this machine's cache), twice a present; by its id, nothing.
+
 ## Targets
 
 | Scenario | Ceiling |

@@ -17,6 +17,8 @@ pub mod premultiplied;
 pub mod stats;
 // Anomi port (patch 13): the app scales its video frames; see video.rs.
 pub mod video;
+// Anomi: a video frame's bytes checked while they're drawn, for a review.
+pub mod verify;
 
 #[cfg(feature = "image")]
 mod raster;

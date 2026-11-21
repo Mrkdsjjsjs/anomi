@@ -176,9 +176,11 @@ pub fn frame(width: u32, height: u32, pixels: Arc<Vec<u8>>, opaque: bool) -> Han
 /// Patch 13: as [`frame`], over memory `owner` keeps and lends, such as a
 /// slot of a mapping another process writes frames into: the handle keeps
 /// `owner`, and with it the memory, alive. Its bytes mustn't be written
-/// while the renderer may still draw the handle; the owner's writer waits
-/// until the window drew a newer one. Bytes that aren't `width * height *
-/// 4` make a stock handle of a copy, read as straight RGBA.
+/// while the renderer may still draw the handle; the owner's writer gets
+/// them back only once the window read the next frame, which it does on
+/// the thread that presents, after every present of this one (`anomi-app`'s
+/// `media::frames`). Bytes that aren't `width * height * 4` make a stock
+/// handle of a copy, read as straight RGBA.
 pub fn frame_of<T>(width: u32, height: u32, owner: T, opaque: bool) -> Handle
 where
     T: AsRef<[u8]> + Send + 'static,

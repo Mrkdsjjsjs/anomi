@@ -41,7 +41,12 @@ stream (`ViewerStack`) and as a count in the voice panel; a click on it
 returns to the call. This account's own stream, "Your screen", has a tile
 of its own right before its own, which opens large as others' do, without
 watching it through Discord: it shows the worker's preview. The iced
-window's order is in `anomi-app/src/project/voice/focus.rs`.
+window's order is in `anomi-app/src/project/voice/focus.rs`. A stream
+watched that Discord moves to another server comes from a new worker, in
+frames of its own; the iced window keeps the stream's picture
+(`project/voice/lives.rs`, the same `Live`) until that worker's first
+frame, rather than showing "Connecting…" again. Someone else's stream
+starts afresh.
 
 A stream from a phone says how its picture is turned (the video orientation
 RTP extension, on a frame's last packet), and Yapfast shows it upright, as
@@ -58,8 +63,13 @@ FFmpeg's reading of files people sent out of the window's process. Its
 frames carry their time, which the seek bar shows.
 `stream_worker` starts it with one job as a JSON line and reads its reports
 back. On Linux it starts `/proc/self/exe`, the running Yapfast, since Yapfast's path
-names a deleted file once a rebuild or update replaces it. Frames reach the UI through `frames`, a triple buffer in a memory-mapped
-file in the runtime directory. The file is unlinked once the worker opens it.
+names a deleted file once a rebuild or update replaces it. Frames reach the UI through `frames`, four slots in a memory-mapped
+file in the runtime directory: the worker writes its back slot and swaps it
+into the middle, and the UI takes the middle and keeps two, the frame it
+shows and the one before. A take gives the worker that one, not the frame
+shown: the window reads a frame before the present that copies its pixels
+and takes the next meanwhile, so the frame shown may still be on its way to
+the screen. The file is unlinked once the worker opens it.
 Windows won't delete a mapped file, so there it's a temporary file that
 Windows deletes once both processes close it.
 The worker's standard error goes to Yapfast's log file. If its output ends
@@ -537,8 +547,16 @@ dropped. Packets after a gap wait for it at most 300 ms, and at most 4096
 of them, 300 ms of a 50 Mbit/s stream with room to spare; one more than
 1000 past the highest means the sender started again. A frame still missing
 a packet is dropped, and so is everything after it until the next keyframe. So
-are frames while none has come yet, and after one the decoder was too far
-behind to take. The connection asks for a keyframe with a picture loss
+are frames while none has come yet, after one DAVE couldn't decrypt, and
+after one the decoder was too far behind to take: 32 whole frames wait for
+it (`stream_connection::QUEUED`), so a run the reorder buffer lets go at
+once after a repair, up to its 300 ms, fits whole. The worker takes such a
+backlog in one go: it decodes each waiting frame, keeping the decoder's
+place, for at most 100 ms, and converts and writes only the newest, a jump
+rather than the run played back to back. A frame that won't decode has
+the worker ask for a keyframe and skip the frames until one, which have
+nothing to decode from; the tile keeps its last picture meanwhile. The
+connection asks for a keyframe with a picture loss
 indication, at most every 500 ms. It sends a receiver report every second
 (packets lost, the highest received, and the streamer's last sender report
 echoed). With `YAPFAST_LOG=debug` it logs what it received every 5 s (`stream

@@ -176,4 +176,6 @@ fn middle(tile: &Tile, tallest: f32, band: f32, width: f32, chip: bool) -> (Midd
 }
 
 #[cfg(test)]
+mod steady;
+#[cfg(test)]
 mod tests;

@@ -1,8 +1,12 @@
 //! Video frames from the stream worker to the UI, through a memory-mapped
-//! file both processes open. Three slots make a triple buffer: the worker
-//! fills its back slot and swaps it into the middle; the UI swaps the middle
-//! out when it's newer than what it shows. Neither waits for the other, and
-//! neither reads a slot the other is writing.
+//! file both processes open, in four slots: the worker fills its back slot
+//! and swaps it into the middle; the UI takes the middle when it's newer
+//! than what it shows, and keeps two, the frame it shows (its front) and
+//! the one shown before it. A take gives the worker that one, not the
+//! front: the window reads a frame before the present that copies its
+//! pixels, and takes the next meanwhile, so the front may still be on its
+//! way to the screen (`anomi-app`'s `media::frames`). Neither waits for the
+//! other, and neither reads a slot the other is writing.
 //!
 //! The file lives in the runtime directory, which is memory on Linux, and is
 //! removed once the worker has it open, so the memory returns when both
@@ -23,11 +27,13 @@ use anyhow::{Context, Result, ensure};
 use memmap2::MmapMut;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"TKFR");
-const HEADER: usize = 64;
-const SLOTS: u32 = 3;
+/// The header's bytes, before the slots: [`Header`] takes 80 with four.
+const HEADER: usize = 128;
+const SLOTS: u32 = 4;
 /// Set beside the middle slot's index when the worker put a frame there that
 /// the UI hasn't taken.
 const FRESH: u32 = 4;
+const _: () = assert!(SLOTS <= FRESH, "FRESH is clear of every slot's index");
 /// [`Header::paused`]'s bits: the UI shows no frames now ([`Frames::pause`]),
 /// and its window isn't on screen at all ([`Frames::hide`]).
 const PAUSED: u32 = 1;
@@ -80,7 +86,7 @@ struct Mapping {
 impl Mapping {
     fn open(file: &File) -> Result<Self> {
         // SAFETY: only Yapfast's own processes open the file, and they touch the
-        // slots through the triple buffer, never the same slot at once.
+        // slots through the swaps of the middle, never the same slot at once.
         let map = unsafe { MmapMut::map_mut(file) }.context("could not map the video frames")?;
         ensure!(map.len() >= HEADER, "the video frames file is too short");
         let mapping = Self { capacity: 0, map };
@@ -116,9 +122,16 @@ impl Mapping {
 /// The UI's side: it creates the file and shows the newest frame.
 pub struct Frames {
     mapping: Mapping,
-    /// The slot the UI reads, while it reads it.
-    front: Mutex<u32>,
+    /// The slots the UI keeps.
+    shown: Mutex<Shown>,
     name: Mutex<Option<Name>>,
+}
+
+/// The two slots the UI keeps: the frame it took last, and the one before,
+/// which its window may still present until it reads the frame taken last.
+struct Shown {
+    front: u32,
+    before: u32,
 }
 
 /// What keeps the file's name until [`Frames::unlink`].
@@ -209,12 +222,16 @@ impl Frames {
                 unsafe { MmapMut::map_mut(&file) }.context("could not map the video frames")?;
             map[..4].copy_from_slice(&MAGIC.to_ne_bytes());
             map[4..8].copy_from_slice(&u32::try_from(capacity)?.to_ne_bytes());
-            // The worker starts with slot 0 and the UI with slot 2.
+            // The worker starts with slot 0, the middle is slot 1, and the
+            // UI keeps 2 and 3.
             map[8..12].copy_from_slice(&1u32.to_ne_bytes());
         }
         Ok(Self {
             mapping: Mapping::open(&file)?,
-            front: Mutex::new(2),
+            shown: Mutex::new(Shown {
+                front: 2,
+                before: 3,
+            }),
             name: Mutex::new(Some(name)),
         })
     }
@@ -264,7 +281,8 @@ impl Frames {
     }
 
     /// Calls `show` with the newest frame's width, height and RGBA pixels,
-    /// if one arrived since the last call.
+    /// if one arrived since the last call. Its slot stays the UI's until the
+    /// second take after this one, which gives it back to the worker.
     pub fn take<T>(&self, show: impl FnOnce(u32, u32, &[u8]) -> T) -> Option<T> {
         self.take_timed(show).map(|(shown, _)| shown)
     }
@@ -275,21 +293,26 @@ impl Frames {
         if header.middle.load(Ordering::Acquire) & FRESH == 0 {
             return None;
         }
-        let mut front = self
-            .front
+        let mut shown = self
+            .shown
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *front = header.middle.swap(*front, Ordering::AcqRel) & !FRESH;
-        let [width, height] = &header.sizes[*front as usize];
+        // The worker gets the slot shown before the front, not the front:
+        // the window reads a frame before the present that copies it, and
+        // the next is taken meanwhile, so the front may still be presented.
+        let fresh = header.middle.swap(shown.before, Ordering::AcqRel) & !FRESH;
+        shown.before = shown.front;
+        shown.front = fresh;
+        let [width, height] = &header.sizes[fresh as usize];
         let (width, height) = (
             width.load(Ordering::Relaxed),
             height.load(Ordering::Relaxed),
         );
         let length = capacity(width, height).min(self.mapping.capacity);
-        // SAFETY: the worker no longer writes this slot: it's the UI's front
-        // until the UI swaps it back.
-        let pixels = unsafe { std::slice::from_raw_parts(self.mapping.slot(*front), length) };
-        let time = header.times[*front as usize].load(Ordering::Relaxed);
+        // SAFETY: the worker no longer writes this slot: it's the UI's until
+        // the second take after this one.
+        let pixels = unsafe { std::slice::from_raw_parts(self.mapping.slot(fresh), length) };
+        let time = header.times[fresh as usize].load(Ordering::Relaxed);
         Some((show(width, height, pixels), time))
     }
 }
@@ -349,7 +372,9 @@ impl Writer {
         fill: impl FnOnce(&mut [u8]),
     ) {
         assert!(self.fits(width, height), "a frame larger than its slot");
-        // SAFETY: the back slot is the worker's alone until it's swapped in.
+        // SAFETY: the back slot is the worker's alone until it's swapped in:
+        // the UI gave it back only at the second take after the one that
+        // showed it.
         let pixels = unsafe {
             std::slice::from_raw_parts_mut(self.mapping.slot(self.back), capacity(width, height))
         };
@@ -409,6 +434,44 @@ mod tests {
 
         drop((writer, frames));
         assert!(!path.exists(), "gone once both let go");
+    }
+
+    /// A take gives the worker the slot shown before the front, never the
+    /// front: the window may still present the frame it read last while the
+    /// next is taken, so the worker writes over it only after a further
+    /// take, however many frames it makes meanwhile.
+    #[test]
+    fn the_slot_shown_before_the_front_is_the_one_given_back() {
+        let frames = Frames::create(1, 1).unwrap();
+        let mut writer = Writer::open(&frames.path().unwrap()).unwrap();
+        frames.unlink();
+        // SAFETY: a slot of the mapping `frames` keeps open, one pixel.
+        let read = |address: usize| unsafe { std::slice::from_raw_parts(address as *const u8, 4) };
+        let address = |pixels: &[u8]| pixels.as_ptr() as usize;
+
+        writer.write(1, 1, |pixels| pixels.fill(1));
+        let first = frames.take(|_, _, pixels| address(pixels)).unwrap();
+        writer.write(1, 1, |pixels| pixels.fill(2));
+        let second = frames.take(|_, _, pixels| address(pixels)).unwrap();
+        assert_ne!(first, second);
+        for value in 3..=20 {
+            writer.write(1, 1, |pixels| pixels.fill(value));
+        }
+        assert_eq!(
+            read(first),
+            [1; 4],
+            "shown before the front: still the UI's"
+        );
+        assert_eq!(read(second), [2; 4], "the front");
+
+        assert_eq!(
+            frames.take(|_, _, pixels| pixels.to_vec()),
+            Some(vec![20; 4])
+        );
+        writer.write(1, 1, |pixels| pixels.fill(21));
+        writer.write(1, 1, |pixels| pixels.fill(22));
+        assert_eq!(read(first), [22; 4], "given back by the take after");
+        assert_eq!(read(second), [2; 4], "now shown before the front");
     }
 
     /// The window hidden is told apart from frames paused: each holds

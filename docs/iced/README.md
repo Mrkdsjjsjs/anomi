@@ -146,7 +146,11 @@ decides nothing here. `--renderer auto|gpu|software` and
   each frame shown against the frame drawn whole and logs the pixels that
   differ, for a review. The log says which: "the window draws
   on …, shown through shared memory" or "…, presented to the window
-  directly".
+  directly". `ANOMI_FRAMES_VERIFY=1`, on either renderer, warns "a frame's
+  bytes changed …" for a video frame its worker wrote after lending it to
+  the window, or while the renderer read it
+  (`vendor/iced_tiny_skia/PATCHES.md`, "A frame's bytes checked while
+  they're drawn").
 - **The adapters Settings lists** come from `anomi --list-adapters`, a
   child process started once a run, the first time the page asks:
   enumerating Vulkan's adapters loads every installed driver, which would

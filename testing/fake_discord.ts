@@ -118,7 +118,21 @@
 // to datagram (`peak100msKbps`, `peak1sKbps`). POST
 // /_control/stream-nacks?count=64&every=500 has the fake report the last
 // `count` video packets of each stream lost every `every` ms, as a viewer
-// on a lossy link would (no `count`: no more). POST /_control/stream-reports
+// on a lossy link would (no `count`: no more). POST
+// /_control/stream-burst?every=500&hold=150&fps=60 holds Bob's video
+// packets to each viewer for `hold` ms of every `every` and then sends
+// them all at once, as a run of frames a repair lets go arrives, and has
+// streams watched from then on send his recording at `fps` frames a second
+// rather than 10 (no parameters: no more); with &lose it loses the first
+// video packet of each `every` instead and resends it `hold` ms after the
+// viewer asks, as over a link that long, so the viewer's own repair lets
+// the run go; while it does, or the next, a viewer's picture loss
+// indication has Bob's recording start over from its keyframe, as a
+// streamer answers one. POST /_control/stream-unreadable?every=3000 has streams
+// watched from then on announced with DAVE, whose group the viewer never
+// joins, and one of Bob's VP8 delta frames each `every` ms end in DAVE's
+// marker, as a frame of an epoch the viewer hasn't got: it can't decrypt
+// them (no `every`: no more). POST /_control/stream-reports
 // has the server send each streamer receiver reports about its video twice
 // a second, as Discord's does, so its target climbs (?off: no more).
 // FAKE_DISCORD_UDP_PORT binds
@@ -4579,6 +4593,15 @@ let streamQuirks = { unmarked: false, stray: false };
 /** A viewer that wants a stream's video at 0 gets none of its sound either
  *  (POST /_control/stream-sound-with-video). */
 let soundWithVideo = false;
+/** POST /_control/stream-burst: every `every` ms, Bob's video packets to a
+ *  viewer are held for `hold` ms and then sent all at once, as a run a
+ *  repair lets go arrives; and his recording goes at `fps` frames a second
+ *  in streams watched from then on, rather than 10. */
+let streamBurst: { every: number; hold: number; fps?: number; lose: boolean } | undefined;
+/** POST /_control/stream-unreadable: how often one of Bob's frames can't be
+ *  decrypted, in ms, by a viewer that joined DAVE's group, which none here
+ *  does. */
+let streamUnreadable = 0;
 
 /** A viewer of Bob's stream and what it was sent. */
 type Watcher = {
@@ -4599,6 +4622,10 @@ type Watcher = {
   videoWanted?: boolean;
   awaitingKeyframe?: boolean;
   restart?: boolean;
+  /** POST /_control/stream-unreadable: when its next undecryptable frame
+   *  goes, and how many went. */
+  unreadableAt?: number;
+  unreadableSent?: number;
 };
 const watchers = new Map<number, Watcher>();
 /** Each viewer's transport key, by its SSRC, to read its RTCP. */
@@ -4643,6 +4670,10 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
   // What was sent lately, to resend when the viewer asks.
   const history = new Map<number, { payload: Buffer; marker: boolean; timestamp: number; payloadType: number }>();
   let overtaken: Buffer | undefined;
+  // /_control/stream-burst with &lose: the packets lost, each with whether
+  // its late resend is under way, and the `every` they were lost in.
+  const lostLate = new Map<number, boolean>();
+  let lostIn = -1;
   const send = (payload: Buffer, marker: boolean, timestamp: number, payloadType: number) => {
     const number = sequence++ & 0xffff;
     history.set(number, { payload, marker, timestamp, payloadType });
@@ -4650,10 +4681,16 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
     const sealed = packet(payload, marker, timestamp, payloadType, ssrc, number);
     // As on the internet: one packet lost on the way, and one overtaken.
     if (number === 1003) return void watcher.repairs.dropped++;
+    const losing = !camera && streamBurst?.lose ? Math.floor(Date.now() / streamBurst.every) : -1;
+    if (losing >= 0 && losing !== lostIn) {
+      lostIn = losing;
+      lostLate.set(number, false);
+      return void watcher.repairs.dropped++;
+    }
     if (number === 1008) return void (overtaken = sealed);
-    toViewer(sealed);
+    toVideo(sealed);
     if (overtaken) {
-      toViewer(overtaken);
+      toVideo(overtaken);
       overtaken = undefined;
       watcher.repairs.reordered++;
     }
@@ -4662,6 +4699,18 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
   watcher.resend = (number) => {
     const sent = history.get(number);
     if (!sent) return;
+    // Lost under &lose: resent `hold` ms after the first ask, whatever
+    // asks come meanwhile.
+    if (lostLate.has(number)) {
+      if (!lostLate.get(number)) {
+        lostLate.set(number, true);
+        setTimeout(() => {
+          lostLate.delete(number);
+          watcher.resend?.(number);
+        }, streamBurst?.hold ?? 0);
+      }
+      return;
+    }
     const original = Buffer.alloc(2);
     original.writeUInt16BE(number);
     // Each video payload type's RTX is the one after it.
@@ -4678,9 +4727,29 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
       // Nothing to do: the viewer's socket is already gone.
     }
   };
+  // POST /_control/stream-burst: a stream's video held back for `hold` ms
+  // of every `every`, then let go at once, as a run a repair lets go comes.
+  const heldBack: Buffer[] = [];
+  let letGo: Timer | undefined;
+  const release = () => {
+    clearTimeout(letGo);
+    letGo = undefined;
+    for (const queued of heldBack.splice(0)) toViewer(queued);
+  };
+  const toVideo = (sealed: Buffer) => {
+    const burst = camera || streamBurst?.lose ? undefined : streamBurst;
+    const into = burst && burst.hold > 0 ? Date.now() % burst.every : 0;
+    if (!burst || burst.hold <= 0 || into >= burst.hold) {
+      if (heldBack.length) release();
+      return toViewer(sealed);
+    }
+    heldBack.push(sealed);
+    letGo ??= setTimeout(release, burst.hold - into);
+  };
   // testing/fixtures' recording goes at 10 frames a second, as tests
-  // expect; a camera at 30, and an env's video at the rate it was made at.
-  const fps = camera ? 30 : (watcher.recording?.fps ?? 10);
+  // expect, or as /_control/stream-burst asks; a camera at 30, and an env's
+  // video at the rate it was made at.
+  const fps = camera ? 30 : (watcher.recording?.fps ?? streamBurst?.fps ?? 10);
   // Which 100 ms of sound comes next: one each tick at 10 frames a second.
   let sound = 0;
   // The frame the recording starts from: again from its first, a keyframe,
@@ -4704,7 +4773,15 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
     if (held) {
       // No video: the sound below goes on.
     } else if (watcher.codec === "vp8") {
-      const { data } = recorded.vp8[nth % recorded.vp8.length]!;
+      const { data: recording } = recorded.vp8[nth % recorded.vp8.length]!;
+      // /_control/stream-unreadable: a delta frame (VP8's P bit set) now and
+      // then ends in DAVE's marker, of an epoch the viewer hasn't got.
+      const unreadable = !camera && streamUnreadable > 0 && (recording[0]! & 1) === 1 && Date.now() >= (watcher.unreadableAt ?? 0);
+      if (unreadable) {
+        watcher.unreadableAt = Date.now() + streamUnreadable;
+        watcher.unreadableSent = (watcher.unreadableSent ?? 0) + 1;
+      }
+      const data = unreadable ? Buffer.concat([recording, Buffer.from([0x0c, 0xfa, 0xfa])]) : recording;
       for (let at = 0; at < data.length; at += 1100) {
         const descriptor = Buffer.from([at === 0 ? 0x90 : 0x80, 0x80, 0x80 | (picture >> 8), picture & 0xff]);
         send(Buffer.concat([descriptor, data.subarray(at, at + 1100)]), at + 1100 >= data.length, timestamp, 105);
@@ -5415,6 +5492,9 @@ const udp = await Bun.udpSocket({
         if (data.length >= 8 && data[1] === 206 && (data[0]! & 0x1f) === 1) {
           const watcher = watcherOf();
           if (watcher) watcher.keyframeRequests++;
+          // Under /_control/stream-burst's &lose or /_control/stream-unreadable,
+          // Bob answers as a streamer does, from a keyframe.
+          if (watcher && watcher.stream !== "call" && (streamBurst?.lose || streamUnreadable > 0)) watcher.restart = true;
           // A stream's video wanted again comes from the keyframe asked for.
           if (watcher?.awaitingKeyframe) {
             watcher.awaitingKeyframe = false;
@@ -5537,7 +5617,8 @@ function voiceMessage(ws: Socket, text: string) {
       const watched = (streamCodec === "h265" || streamCodec === "av1") && !decodesIt ? "h264" : streamCodec;
       const codec = watching ? watched : (offered?.name ?? "VP8").toLowerCase();
       const named = watching && streamQuirks.stray ? "h264" : codec;
-      reply(4, { mode: d.data?.mode, secret_key: [...key], dave_protocol_version: 0, audio_codec: "opus", video_codec: named.toUpperCase() });
+      const dave = watching && streamUnreadable > 0 ? 1 : 0;
+      reply(4, { mode: d.data?.mode, secret_key: [...key], dave_protocol_version: dave, audio_codec: "opus", video_codec: named.toUpperCase() });
       if (watching && ws.data.ssrc) {
         // The streamer's SSRCs, as Discord announces another client's video:
         // the RTX SSRC only in the stream with the video's.
@@ -9846,6 +9927,24 @@ const server = Bun.serve<SocketData>({
       const every = Math.max(Number(url.searchParams.get("every") ?? 500), 20);
       if (count > 0) nackBursts = setInterval(() => { for (const stream of received.values()) nackRun(stream, count); }, every);
       return new Response(count > 0 ? `reporting ${count} packets lost every ${every} ms\n` : "no more losses\n");
+    }
+    if (req.method === "POST" && path === "/_control/stream-burst") {
+      const every = Math.max(Number(url.searchParams.get("every") ?? 0), 0);
+      const hold = Math.min(Math.max(Number(url.searchParams.get("hold") ?? 0), 0), every);
+      const fps = Math.min(Math.max(Number(url.searchParams.get("fps") ?? 0), 0), 120);
+      const lose = url.searchParams.has("lose") && every > 0;
+      streamBurst = every > 0 || fps > 0 ? { every, hold, fps: fps > 0 ? fps : undefined, lose } : undefined;
+      if (!streamBurst) return new Response("no more bursts\n");
+      const held = lose
+        ? `Bob's first video packet of every ${every} ms lost, resent ${hold} ms after it's asked for`
+        : hold > 0 ? `Bob's video held ${hold} ms of every ${every}, then let go at once` : "no video held";
+      return new Response(`${held}; ${fps > 0 ? `${fps} frames a second` : "the recording's rate"} in streams watched from now\n`);
+    }
+    if (req.method === "POST" && path === "/_control/stream-unreadable") {
+      streamUnreadable = Math.max(Number(url.searchParams.get("every") ?? 0), 0);
+      return new Response(streamUnreadable > 0
+        ? `one of Bob's VP8 frames each ${streamUnreadable} ms undecryptable, in streams watched from now\n`
+        : "no more undecryptable frames\n");
     }
     if (req.method === "POST" && path === "/_control/voice-discovery") {
       discoveryOff = url.searchParams.has("off");

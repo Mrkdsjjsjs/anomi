@@ -43,6 +43,12 @@ const RESENDS: usize = 128;
 const RESEND_WITHIN: Duration = Duration::from_millis(250);
 /// The most video SSRCs a watched stream puts frames together for.
 const MAX_SSRCS: usize = 4;
+/// Whole frames of a watched stream waiting for the decoder. A run the
+/// reorder buffer lets go at once after a repair (at most its 300 ms wait,
+/// 18 frames at 60 fps) fits whole, and the decoder takes it as a backlog
+/// (`yapfast_core::stream_worker`); only a decoder that can't keep up fills
+/// it. Compressed, 32 frames hold well under a megabyte.
+pub const QUEUED: usize = 32;
 /// The sender reports the last round trips are measured against, by the
 /// time in them a receiver report echoes.
 const ECHOED: usize = 4;
@@ -541,7 +547,7 @@ impl StreamReceiver {
         let shared = Shared::new((0, 0));
         *lock(&shared.offers) = decodes;
         // Frames waiting to be decoded; more means decoding can't keep up.
-        let (frames, receiver) = channel::sync_channel(4);
+        let (frames, receiver) = channel::sync_channel(QUEUED);
         // Opus frames waiting to be played: 320 ms.
         let (sounds, heard) = channel::sync_channel(16);
         let (stop, stopped) = oneshot::channel();
@@ -570,6 +576,12 @@ impl StreamReceiver {
     /// The next whole frame, waiting at most `wait`.
     pub fn next(&self, wait: Duration) -> Option<ReceivedFrame> {
         self.frames.recv_timeout(wait).ok()
+    }
+
+    /// The next whole frame if one is already waiting, as in a run a repair
+    /// let go at once; never waits.
+    pub fn try_next(&self) -> Option<ReceivedFrame> {
+        self.frames.try_recv().ok()
     }
 
     /// The stream's sound, decrypted Opus frames, for a player of its own.
@@ -1433,6 +1445,41 @@ fn take_video(
     }
 }
 
+/// Hands a frame `video` put together on to the decoder: its `data` as DAVE
+/// decrypted it, none where it couldn't. Says whether the streamer should
+/// send a keyframe. A frame that wouldn't decrypt, like one the decoder was
+/// too far behind to take, leaves the frames after it nothing to decode
+/// from, so the assembler drops them until the next keyframe.
+fn hand_on(
+    frames: &channel::SyncSender<ReceivedFrame>,
+    video: &mut Video,
+    received: &mut Received,
+    keyframe: bool,
+    data: Option<Vec<u8>>,
+) -> bool {
+    received.frames += 1;
+    let Some(data) = data else {
+        received.unreadable += 1;
+        video.assembler.wait_for_keyframe();
+        return true;
+    };
+    received.decoded += 1;
+    let frame = ReceivedFrame {
+        codec: video.assembler.codec(),
+        data,
+        keyframe,
+        orientation: video.orientation,
+    };
+    if let Err(channel::TrySendError::Full(_)) = frames.try_send(frame) {
+        // The decoder is behind; the frames after this one need it, so
+        // wait for a keyframe.
+        received.behind += 1;
+        video.assembler.wait_for_keyframe();
+        return true;
+    }
+    false
+}
+
 async fn receive_stream(
     server: &StreamServer,
     user: u64,
@@ -1602,32 +1649,14 @@ async fn receive_stream(
         }
         let now = std::time::Instant::now();
         for (&ssrc, video) in &mut incoming {
-            let codec = video.assembler.codec();
             let (ready, skipped) = video.reorder.ready(now);
             received.given_up += skipped;
             for held in ready {
                 let pushed = video.push(&held.packet());
                 lost |= pushed.lost;
                 let Some(frame) = pushed.frame else { continue };
-                received.frames += 1;
-                let Some(data) = connection.dave.decrypt(streamer_id, frame.data) else {
-                    received.unreadable += 1;
-                    continue;
-                };
-                received.decoded += 1;
-                let frame = ReceivedFrame {
-                    codec,
-                    data,
-                    keyframe: frame.keyframe,
-                    orientation: video.orientation,
-                };
-                if let Err(channel::TrySendError::Full(_)) = frames.try_send(frame) {
-                    // The decoder is behind; the frames after this one
-                    // need it, so wait for a keyframe.
-                    received.behind += 1;
-                    video.assembler.wait_for_keyframe();
-                    lost = true;
-                }
+                let data = connection.dave.decrypt(streamer_id, frame.data);
+                lost |= hand_on(&frames, video, &mut received, frame.keyframe, data);
             }
             let missing = video.reorder.to_ask(now);
             if !missing.is_empty() {
@@ -1725,6 +1754,68 @@ mod tests {
         }
         // Each stream has its own.
         assert_eq!(Video::new(Codec::H264).orientation, Orientation::default());
+    }
+
+    /// An H264 stream's video once a keyframe was put together: it waits
+    /// for none.
+    fn after_a_keyframe() -> Video {
+        let mut video = Video::new(Codec::H264);
+        let mut packetizer = Packetizer::new(7, Codec::H264);
+        let mut data = vec![0, 0, 0, 1, 0x65];
+        data.resize(3000, 1);
+        let mut keyframe = false;
+        for bytes in packetizer.packets(&data, 0, true) {
+            let pushed = video.push(&rtp::parse(&bytes).unwrap());
+            keyframe |= pushed.frame.is_some_and(|frame| frame.keyframe);
+        }
+        assert!(keyframe && !video.assembler.waiting());
+        video
+    }
+
+    /// A run of frames a repair lets go at once waits for the decoder
+    /// whole; only one past the queue, from a decoder that can't keep up,
+    /// is dropped, with the frames after it until a keyframe.
+    #[test]
+    fn a_repaired_run_waits_for_the_decoder_whole() {
+        let (frames, _decoder) = channel::sync_channel(QUEUED);
+        let mut video = after_a_keyframe();
+        let mut received = Received::default();
+        let hand = |received: &mut Received, video: &mut Video| {
+            hand_on(
+                &frames,
+                video,
+                received,
+                false,
+                Some(vec![0, 0, 0, 1, 0x41, 2]),
+            )
+        };
+        for _ in 0..20 {
+            assert!(!hand(&mut received, &mut video), "no keyframe asked for");
+        }
+        assert_eq!(received.behind, 0);
+        assert!(!video.assembler.waiting(), "a run of 20 fits");
+        for _ in 20..QUEUED {
+            assert!(!hand(&mut received, &mut video));
+        }
+        assert!(hand(&mut received, &mut video), "one past the queue");
+        assert_eq!((received.behind, received.decoded), (1, QUEUED as u64 + 1));
+        assert!(video.assembler.waiting(), "the frames after it wait");
+    }
+
+    /// A frame DAVE can't decrypt leaves the frames after it nothing to
+    /// decode from: none reaches the decoder until a keyframe, asked for.
+    #[test]
+    fn a_frame_that_wont_decrypt_waits_for_a_keyframe() {
+        let (frames, decoder) = channel::sync_channel(QUEUED);
+        let mut video = after_a_keyframe();
+        let mut received = Received::default();
+        assert!(hand_on(&frames, &mut video, &mut received, false, None));
+        assert_eq!(
+            (received.frames, received.unreadable, received.decoded),
+            (1, 1, 0)
+        );
+        assert!(video.assembler.waiting());
+        assert!(decoder.try_recv().is_err(), "nothing for the decoder");
     }
 
     /// The person's bitrate limit only lowers Discord's cap for the height,

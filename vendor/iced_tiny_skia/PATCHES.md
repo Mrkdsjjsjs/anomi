@@ -319,7 +319,8 @@ none with libyuv.
 keeps and lends: the app's frames of a message's video and of streams lie
 in a slot of a mapping the stream worker writes, and the handle's owner
 keeps the mapping alive while the renderer may draw it (the worker gets
-the slot back only once the window drew a newer frame).
+the slot back only once the window read the frame after it, and every
+present of this one is done: `yapfast_core::frames` keeps four slots).
 
 To carry over: `premultiplied::frame`, `frame_of` and the registry's `Entry`,
 `video.rs`, `Pipeline::video` after the blit in `draw_image`, and
@@ -472,6 +473,40 @@ the strip it uncovers and what changed drawn): 1.28 ms a scrolled frame,
 5 frames of 200 differed from the frame drawn whole by a row of a
 picture's edge, and moved on wrong until something redrew it. Taking only
 rows on whole pixels left little to move.
+
+### Pictures compared by their id
+
+`layer.rs` `Layer::damage`, `same_image`. Stock held each picture a frame
+kept against the frame before's with the derived `Image::eq`, whose
+`Handle::Rgba` compares its `Bytes` by content when the ids are equal:
+every present that kept a video frame read all of it, twice with a buffer
+two frames old (8.3 MB at 1080p each time), for every large picture on
+screen, whatever else changed (the speaking ring, a hover, the call's
+time). A picture is now the same when its handle's id is, drawn with the
+same filter, turn, corners, opacity, bounds and clip (an SVG: id, colour,
+turn, opacity, bounds and clip), as `vendor/iced_wgpu`'s damage compares
+pictures; both renderers' caches key a picture's pixels on that id. Test:
+two handles of one id and other bytes are no damage, another id damages
+the picture's bounds.
+
+To carry over: `same_image` where `Layer::damage` lists the images.
+
+### A frame's bytes checked while they're drawn
+
+`verify.rs` (new), `raster.rs` `Pipeline::blit`, `video`, `checked`; in
+`vendor/iced_wgpu`, `image/cache.rs` `upload`. For a review:
+`ANOMI_FRAMES_VERIFY` set (read once), the app hashes each frame it lends
+the window (`verify::lent`, at 256 words spread over it; the last 32 are
+kept), and each video frame (`premultiplied::is_frame`) the renderer reads
+is hashed the same before the read (the blit at its own size, the app's
+scaling hook at another; the GPU's `write_texture`) and after. A hash before
+that differs from the lent one means the frame's writer wrote it after it
+was lent; one after that differs from the one before, while it was drawn.
+Either is a warning, "a frame's bytes changed after they were lent, before
+they were drawn" or "… while they were drawn", naming the handle and how
+many so far (`verify::changed`). Off, it costs a load a picture drawn.
+
+To carry over: nothing; drop it with the next port.
 
 ### Two helpers public for the GPU's read-back
 

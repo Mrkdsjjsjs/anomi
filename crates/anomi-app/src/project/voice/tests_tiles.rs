@@ -5,11 +5,13 @@
 
 use std::sync::Arc;
 
+use yapfast_core::frames::Frames;
 use yapfast_core::voice::{SharePhase, Sharing, Watching};
 
 use anomi_vm::voice::tiles::{self, Fill, Key, Mark};
 use anomi_vm::voice::{Intent, stage};
 
+use super::lives::Lives;
 use super::tests::in_call;
 use crate::app::App;
 use crate::project::Reach;
@@ -168,6 +170,51 @@ fn this_accounts_screen_is_a_tile_right_before_its_own() {
     let own = &app.vm.voice.stage.tiles[0];
     assert!(own.badge && !own.chip.live, "LIVE at its top right");
     assert_eq!(own.chip.name, "Your screen");
+    drop(app);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+/// A stream Discord moves to another server comes in new frames, from a
+/// new worker: its `Live`, and the picture in it, stay until that worker's
+/// first frame, rather than "Connecting…". Someone else's stream gets a
+/// `Live` of its own.
+#[test]
+fn a_moved_stream_keeps_its_picture() {
+    let (mut app, folder) = in_call("moved-stream");
+    let watch = |user: &str, frames: &Arc<Frames>| {
+        Some(Box::new(Watching {
+            user: user.into(),
+            name: user.into(),
+            opening: false,
+            frames: Some(frames.clone()),
+            viewers: vec!["alice".into()],
+        }))
+    };
+    let frames = || Arc::new(Frames::create(4, 2).expect("frames"));
+    let mut lives = Lives::default();
+    app.core.state.voice.watching = watch("bob", &frames());
+    lives.follow(&app.core.state.voice);
+    let live = lives.watched.as_ref().expect("bob's stream").1.clone();
+    live.show(iced::widget::image::Handle::from_rgba(
+        1,
+        1,
+        vec![1, 2, 3, 255],
+    ));
+
+    let moved = frames();
+    app.core.state.voice.watching = watch("bob", &moved);
+    lives.follow(&app.core.state.voice);
+    let (shown, kept, _) = lives.watched.as_ref().expect("still bob's");
+    assert!(Arc::ptr_eq(shown, &moved), "the new worker's frames");
+    assert!(
+        *kept == live && kept.has_frame(),
+        "the same Live, its picture kept"
+    );
+
+    app.core.state.voice.watching = watch("carol", &frames());
+    lives.follow(&app.core.state.voice);
+    let carols = &lives.watched.as_ref().expect("carol's stream").1;
+    assert!(*carols != live && !carols.has_frame(), "a Live of its own");
     drop(app);
     let _ = std::fs::remove_dir_all(folder);
 }

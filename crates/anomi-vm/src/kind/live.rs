@@ -27,9 +27,19 @@ struct Shared {
 static READ: OnceLock<fn()> = OnceLock::new();
 
 /// Calls `read`, from the window's thread, each time a widget reads a frame
-/// that came since it last read one: the window drew it, or is drawing it.
-/// Whoever lends a frame's memory to the window takes it back only then.
-/// Set once; a second call is ignored.
+/// that came since it last read one: the window is drawing it, and its
+/// present, which copies the frame's pixels, may still be to come. The
+/// presents of the frame before it are done, though: the window reads and
+/// presents on that one thread, and the newest replaced that frame before
+/// this read. So whoever lends a frame's memory to the window takes back,
+/// once it's read, the memory of the frame before it, never its own
+/// (`yapfast_core::frames`). That holds while one picture reads a `Live`
+/// in a redraw: a second picture reading a newer frame in the same redraw
+/// would let its lender take back the one the first drew. A stream shows in
+/// its tile or in the corner, which opens only while the call is off screen
+/// (`anomi-app`'s `project::voice`), and a message's video full screen
+/// leaves the cell beneath the dimmed screen its poster
+/// (`anomi-app`'s `media::video`). Set once; a second call is ignored.
 pub fn on_read(read: fn()) {
     let _ = READ.set(read);
 }

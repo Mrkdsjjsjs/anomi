@@ -30,9 +30,14 @@
 //! task wakes for each made without asking anything, as long as the window
 //! isn't painted.
 //!
-//! A worker's slot is the window's until the next frame is taken, when the
-//! worker gets it back to write into. So a source's next frame is taken
-//! only once the window read the one before ([`Live::unread`]): the
+//! A worker's slot is the window's until the second frame after it is
+//! taken, when the worker gets it back to write into. A source's next frame
+//! is taken only once the window read the one before ([`Live::unread`]),
+//! and the window reads a frame in the redraw that presents it, before the
+//! present copies its pixels: so the take that follows a read may come
+//! while that frame is still presented, but it gives back the frame before
+//! it, whose presents all ended before the read (the window reads and
+//! presents on one thread, one `Live` read by one picture a redraw). The
 //! renderer never draws a slot the worker writes. The worker writes RGBA;
 //! the slot is turned into the renderer's BGRA in place, here, off the
 //! window's thread, as a feed's frame is on the thread that decoded it (the
@@ -270,15 +275,16 @@ fn slot(frames: &Arc<Frames>) -> Option<(image::Handle, u64)> {
         address,
         length,
     };
-    Some((
-        iced_tiny_skia::premultiplied::frame_of(width, height, slot, true),
-        time_ms,
-    ))
+    let frame = iced_tiny_skia::premultiplied::frame_of(width, height, slot, true);
+    // A review's check that nothing writes it under the window.
+    iced_tiny_skia::verify::lent(&frame);
+    Some((frame, time_ms))
 }
 
 /// A worker's slot, lent to the renderer: the slot `Frames::take_timed`
-/// gave last, the window's until the next frame is taken, which waits until
-/// the window read this one. The mapping lives while any handle does.
+/// gave, the window's until the second frame after it is taken, which
+/// waits until the window read the one after this. The mapping lives while
+/// any handle does.
 struct Slot {
     _frames: Arc<Frames>,
     address: usize,
@@ -289,7 +295,8 @@ impl AsRef<[u8]> for Slot {
     fn as_ref(&self) -> &[u8] {
         // SAFETY: `address` and `length` are the slot `Frames::take_timed`
         // gave, inside the mapping `_frames` keeps open; the worker doesn't
-        // write it while the window may draw it (see `Alarm::take`).
+        // write it while the window may draw it: it gets it back only once
+        // the window read a newer frame (see the module's doc).
         unsafe { std::slice::from_raw_parts(self.address as *const u8, self.length) }
     }
 }
@@ -319,59 +326,11 @@ fn bgra(address: usize, width: u32, height: u32) -> bool {
     let pixels = address as *mut u8;
     // SAFETY: the slot `Frames::take_timed` just gave holds `height` rows of
     // `width` pixels (checked by the caller); it's the window's alone until
-    // its next frame is taken, which this task does, and no reference to it
-    // lives here. libyuv swaps each pixel's bytes in place.
+    // the second frame after it is taken, which this task does, no handle
+    // over it is made yet, so nothing draws it, and no reference to it lives
+    // here. libyuv swaps each pixel's bytes in place.
     unsafe { ABGRToARGB(pixels, stride, pixels, stride, width, height) == 0 }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_videos_frames_ask_for_the_view_at_the_first_and_each_step_of_its_bar() {
-        let frames = Arc::new(Frames::create(4, 2).expect("frames"));
-        let path = frames.path().expect("its file");
-        let mut writer = yapfast_core::frames::Writer::open(&path).expect("the worker's side");
-        let (live, clock) = (Live::default(), Arc::new(Clock::default()));
-        let alarm = Alarm::default();
-        alarm.set(vec![Source::Mapped(
-            frames.clone(),
-            live.clone(),
-            clock.clone(),
-        )]);
-        assert_eq!(alarm.take(), Found::Nothing, "no frame yet");
-
-        writer.write_timed(2, 1, 40, |rgba| {
-            rgba.copy_from_slice(&[1, 2, 3, 255, 4, 5, 6, 255])
-        });
-        assert_eq!(alarm.take(), Found::View, "the first frame");
-        let shown = live.newest().expect("a frame");
-        let image::Handle::Rgba { pixels, .. } = &shown else {
-            panic!("pixels");
-        };
-        assert_eq!(
-            &pixels[..],
-            &[3, 2, 1, 255, 6, 5, 4, 255],
-            "BGRA, in the slot"
-        );
-        assert!(iced_tiny_skia::premultiplied::is_premultiplied(&shown));
-
-        writer.write_timed(2, 1, 80, |rgba| rgba.fill(9));
-        assert_eq!(alarm.take(), Found::Redraw, "the same step of the bar");
-        writer.write_timed(2, 1, 300, |rgba| rgba.fill(9));
-        assert_eq!(
-            alarm.take(),
-            Found::Nothing,
-            "the one before isn't drawn yet"
-        );
-        drop(live.newest());
-        assert_eq!(alarm.take(), Found::View, "drawn: the next, a step on");
-        assert_eq!(clock.time(), 250);
-
-        // Not shown, it waits and its worker is told.
-        alarm.set(Vec::new());
-        assert!(alarm.idle());
-        frames.unlink();
-    }
-}
+mod tests;

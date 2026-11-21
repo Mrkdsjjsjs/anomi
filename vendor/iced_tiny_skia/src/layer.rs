@@ -299,17 +299,70 @@ impl Layer {
             },
         );
 
+        // Anomi: pictures compared by their handle's id, as `vendor/iced_wgpu`'s
+        // damage does; stock's `Image::eq` held a picture's bytes against its
+        // own, byte for byte, on every frame that kept it (a video frame's
+        // 8 MB at 1080p, twice a present with buffers two frames old).
         let images = damage::list(
             &previous.images,
             &current.images,
             |image| vec![image.bounds().expand(1.0)],
-            Image::eq,
+            same_image,
         );
 
         damage.extend(text);
         damage.extend(primitives);
         damage.extend(images);
         damage
+    }
+}
+
+/// Anomi: whether two pictures draw the same: the same handle by its id
+/// (unique to an `Rgba` or `Bytes` handle's bytes, a path's hash, an SVG's
+/// data's hash), drawn alike in the same place. Both renderers' caches key
+/// a picture's pixels on that id.
+fn same_image(a: &Image, b: &Image) -> bool {
+    match (a, b) {
+        (
+            Image::Raster {
+                image: a,
+                bounds: a_bounds,
+                clip_bounds: a_clip,
+            },
+            Image::Raster {
+                image: b,
+                bounds: b_bounds,
+                clip_bounds: b_clip,
+            },
+        ) => {
+            a.handle.id() == b.handle.id()
+                && a.filter_method == b.filter_method
+                && a.rotation == b.rotation
+                && a.border_radius == b.border_radius
+                && a.opacity == b.opacity
+                && a_bounds == b_bounds
+                && a_clip == b_clip
+        }
+        (
+            Image::Vector {
+                svg: a,
+                bounds: a_bounds,
+                clip_bounds: a_clip,
+            },
+            Image::Vector {
+                svg: b,
+                bounds: b_bounds,
+                clip_bounds: b_clip,
+            },
+        ) => {
+            a.handle.id() == b.handle.id()
+                && a.color == b.color
+                && a.rotation == b.rotation
+                && a.opacity == b.opacity
+                && a_bounds == b_bounds
+                && a_clip == b_clip
+        }
+        _ => false,
     }
 }
 
@@ -430,5 +483,49 @@ impl<T> Item<T> {
             Item::Group(group, _, _) => group.as_slice(),
             Item::Cached(cache, _, _) => cache,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Size;
+    use crate::core::image::Handle;
+    use crate::graphics::Layer as _;
+
+    fn showing(handle: &Handle, bounds: Rectangle) -> Layer {
+        let window = Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0));
+        let mut layer = Layer::with_bounds(window);
+        layer.draw_raster(
+            core::Image::new(handle.clone()),
+            bounds,
+            window,
+            Transformation::IDENTITY,
+        );
+        layer
+    }
+
+    /// A picture kept is no damage, whatever its bytes say, which aren't
+    /// read: the same handle's id is the same pixels. Another id damages
+    /// where it lies.
+    #[test]
+    fn a_picture_is_its_handles_id_whatever_its_bytes() {
+        let bounds = Rectangle::new(Point::new(50.0, 60.0), Size::new(64.0, 36.0));
+        let first = Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
+        let same = Handle::Rgba {
+            id: first.id(),
+            width: 1,
+            height: 1,
+            pixels: vec![9, 9, 9, 255].into(),
+        };
+        let other = Handle::from_rgba(1, 1, vec![1, 2, 3, 255]);
+
+        let kept = Layer::damage(&showing(&first, bounds), &showing(&same, bounds));
+        assert!(kept.is_empty(), "{kept:?}");
+        let changed = Layer::damage(&showing(&first, bounds), &showing(&other, bounds));
+        assert!(
+            changed.iter().any(|region| bounds.is_within(region)),
+            "{changed:?}"
+        );
     }
 }

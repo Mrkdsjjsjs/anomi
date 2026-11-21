@@ -15,7 +15,7 @@
 //! frame let go: a picture is kept as its handle's id, a cache of meshes or
 //! text as its id, version and address, and text as iced's layers hold it
 //! (a paragraph weakly). A video frame's slot is its writer's again once
-//! the next frame is drawn, as without this.
+//! the window read the frame after it, as without this.
 
 use crate::core::image as raster;
 use crate::core::svg as vector;
@@ -1022,5 +1022,186 @@ mod tests {
             history.lacking(2, &Change::Regions(vec![caret])),
             Change::Whole
         );
+    }
+
+    /// A live video: a picture with a new handle every one, two or three
+    /// presents, a hover quad over its edge coming and going in a layer of
+    /// its own, still text above both, and the window sized midway. Each
+    /// buffer presented, given what it lacks of the frame and nothing else,
+    /// holds the frame at every pixel: two buffers taken in turn, two
+    /// frames old (Wayland), and one, a frame old (X11), at scales 1 and 1.5.
+    #[cfg(feature = "image")]
+    #[test]
+    fn a_live_picture_leaves_no_buffer_stale() {
+        for scale in [1.0, 1.5] {
+            for every in [1, 2, 3] {
+                for buffers in [2, 1] {
+                    present_a_video(scale, every, buffers);
+                }
+            }
+        }
+    }
+
+    /// 40 presents of [`a_live_picture_leaves_no_buffer_stale`], each buffer
+    /// held per pixel as what drew it: the ground, the hover, the text, or
+    /// the picture's frame.
+    #[cfg(feature = "image")]
+    fn present_a_video(scale: f32, every: usize, buffers: usize) {
+        use crate::core::image::{Handle, Image};
+        use crate::core::text::{Alignment, Ellipsis, LineHeight, Shaping, Wrapping};
+        use crate::core::{Font, Pixels, alignment, renderer};
+
+        // What drew a pixel; nothing known, before anything did.
+        const UNKNOWN: u32 = u32::MAX;
+        const GROUND: u32 = 1;
+        const HOVER: u32 = 2;
+        const TEXT: u32 = 3;
+        // The picture's pixels: its frame's number past this.
+        const FRAME: u32 = 100;
+
+        let size = Size::new((400.0 * scale) as u32, (300.0 * scale) as u32);
+        let viewport = Viewport::with_physical_size(
+            size,
+            renderer::Scale {
+                window: 1.0,
+                application: scale,
+            },
+        );
+        let (width, height) = (size.width as usize, size.height as usize);
+        let window = rectangle(0.0, 0.0, 400.0, 300.0);
+        let picture = rectangle(40.0, 30.0, 200.0, 112.5);
+        let hover = rectangle(220.0, 100.0, 60.0, 30.0);
+        let words = rectangle(300.0, 250.0, 60.0, 20.0);
+
+        // The window's pixels whose centres lie within `area`.
+        let span = |area: Rectangle| {
+            let first =
+                |at: f32, most: usize| ((at * scale - 0.5).ceil().max(0.0) as usize).min(most);
+            (
+                first(area.x, width)..first(area.x + area.width, width),
+                first(area.y, height)..first(area.y + area.height, height),
+            )
+        };
+
+        // What the frame lays on each pixel.
+        let content = |frame: u32, hovered: bool| {
+            let mut pixels = vec![GROUND; width * height];
+            let mut fill = |area: Rectangle, value: u32| {
+                let (columns, rows) = span(area);
+                for row in rows {
+                    pixels[row * width + columns.start..row * width + columns.end].fill(value);
+                }
+            };
+            fill(picture, FRAME + frame);
+            if hovered {
+                fill(hover, HOVER);
+            }
+            fill(words, TEXT);
+            pixels
+        };
+
+        let layers = |handle: &Handle, hovered: bool| {
+            let mut ground = layer(window, &[(window, RED)]);
+            ground.draw_raster(
+                Image::new(handle.clone()),
+                picture,
+                window,
+                Transformation::IDENTITY,
+            );
+            let mut layers = vec![ground];
+            if hovered {
+                layers.push(layer(hover, &[(hover, BLUE)]));
+            }
+            let mut text = Layer::with_bounds(words);
+            text.draw_text(
+                crate::core::Text {
+                    content: "12:34".to_owned(),
+                    bounds: words.size(),
+                    size: Pixels(14.0),
+                    line_height: LineHeight::default(),
+                    font: Font::default(),
+                    align_x: Alignment::default(),
+                    align_y: alignment::Vertical::Top,
+                    shaping: Shaping::Basic,
+                    wrapping: Wrapping::default(),
+                    ellipsis: Ellipsis::default(),
+                    hint_factor: None,
+                },
+                words.position(),
+                Color::WHITE,
+                words,
+                Transformation::IDENTITY,
+            );
+            text.flush();
+            layers.push(text);
+            layers
+        };
+
+        let mut history = History::default();
+        let mut shown: Option<Scene> = None;
+        let mut held = vec![vec![UNKNOWN; width * height]; buffers];
+        // The present each buffer was last presented in, for its age.
+        let mut presented: Vec<Option<usize>> = vec![None; buffers];
+        let mut handle = Handle::from_rgba(1, 1, vec![0_u8; 4]);
+        let mut frame = 0;
+
+        for step in 0..40_usize {
+            if step > 0 && step.is_multiple_of(every) {
+                handle = Handle::from_rgba(1, 1, vec![0_u8; 4]);
+                frame += 1;
+            }
+            // Five presents in ten, coming and going with the picture or
+            // between its frames.
+            let hovered = (step / 5) % 2 == 1;
+
+            if step == 20 {
+                // Sized: what the buffers hold is no longer known, and
+                // softbuffer keeps their age.
+                history.forget();
+                shown = None;
+                for buffer in &mut held {
+                    buffer.fill(UNKNOWN);
+                }
+            }
+
+            let scene = Scene::of(&layers(&handle, hovered));
+            let change = match &shown {
+                Some(before) => Change::Regions(regions(Scene::between(before, &scene), &viewport)),
+                None => Change::Whole,
+            };
+            let buffer = step % buffers;
+            let age = presented[buffer].map_or(0, |at| (step - at) as u8);
+            let lacking = match history.lacking(age, &change) {
+                Change::Whole => vec![Rectangle::with_size(size)],
+                Change::Regions(regions) => regions,
+            };
+
+            let current = content(frame, hovered);
+            for region in &lacking {
+                let columns = region.x as usize..(region.x + region.width) as usize;
+                for row in region.y as usize..(region.y + region.height) as usize {
+                    let pixels = row * width + columns.start..row * width + columns.end;
+                    held[buffer][pixels.clone()].copy_from_slice(&current[pixels]);
+                }
+            }
+
+            if held[buffer] != current {
+                let at = (held[buffer].iter().zip(&current))
+                    .position(|(held, drawn)| held != drawn)
+                    .unwrap_or_default();
+                panic!(
+                    "scale {scale}, a frame every {every}, {buffers} buffer(s): present {step} \
+                     left ({}, {}) at {} where the frame has {}",
+                    at % width,
+                    at / width,
+                    held[buffer][at],
+                    current[at],
+                );
+            }
+
+            history.presented(change);
+            shown = Some(scene);
+            presented[buffer] = Some(step);
+        }
     }
 }

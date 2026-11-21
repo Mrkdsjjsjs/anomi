@@ -8,7 +8,7 @@ use anomi_vm::fixtures::voice::tiles as samples;
 use anomi_vm::voice::tiles::{Chip, Fill, Key, Tile};
 
 use super::super::{INSET, PILL, chip, controls, live, viewers};
-use super::{Middle, Room};
+use super::{CLEAR, Middle, Room};
 
 /// The smallest tile: the strip's least width, 16:9.
 const SMALLEST: Size = Size::new(120.0, 67.5);
@@ -180,6 +180,42 @@ fn the_badge_and_the_chip_stay_where_the_viewers_go() {
     let large = Room::of(&sharing, Size::new(420.0, 236.25));
     assert_eq!(large.viewers, [true, true]);
     assert!(large.button, "the gear under the pointer");
+}
+
+/// What a tile has room for depends on its size alone: the same at the
+/// same size, from the strip's least width to a monitor's, at 16:9 and at
+/// the strip's height, and a hundredth of a pixel either side of each
+/// height where a part comes or goes; a camera's tile too. A tile laid out
+/// again at its size is the same tile, so a frame that redraws it lays
+/// nothing out.
+#[test]
+fn a_tiles_room_is_the_same_at_the_same_size() {
+    let mut tiles = states();
+    tiles.push(("camera", samples::with_camera().swap_remove(2)));
+    let strip = 85.5;
+    let thresholds = [
+        2.0 * INSET + chip::HEIGHT,
+        2.0 * INSET + live::HEIGHT + CLEAR + chip::HEIGHT,
+        2.0 * INSET + controls::BUTTON + CLEAR + chip::HEIGHT,
+    ];
+    let steady = |name: &str, tile: &Tile, size: Size| {
+        let (laid, again) = (Room::of(tile, size), Room::of(tile, size));
+        assert_eq!(laid, again, "{name} at {size:?}");
+    };
+    for &(name, ref tile) in &tiles {
+        for quarter in 480..=7680 {
+            let width = quarter as f32 / 4.0;
+            steady(name, tile, Size::new(width, width * 0.5625));
+            steady(name, tile, Size::new(width, strip));
+        }
+        for height in thresholds {
+            for width in (120..=1920).step_by(8) {
+                for offset in [-0.01, 0.0, 0.01] {
+                    steady(name, tile, Size::new(width as f32, height + offset));
+                }
+            }
+        }
+    }
 }
 
 #[test]

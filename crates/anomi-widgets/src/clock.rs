@@ -6,7 +6,11 @@
 //! whole second, only while the window is live (`Motion::live`). Hidden,
 //! or resting unfocused, nothing ticks; coming back draws the time it is
 //! then. It's laid out again only when the text grows past the room it was
-//! given, as at ten minutes and at an hour.
+//! given, as at ten minutes and at an hour, and that layout shapes the time
+//! of the frame that asked for it: iced stamps a frame on the refresh it
+//! shows on, up to a refresh ahead of the clock, and a layout at the
+//! clock's time could shape the second before, which the next pass of the
+//! frame would find grown again, and so on.
 
 use std::time::{Duration, Instant};
 
@@ -84,11 +88,13 @@ impl Clock {
     }
 }
 
-/// The text shaped as it was last drawn, and the room it was laid out in.
+/// The text shaped as it was last drawn, the room it was laid out in, and
+/// the last frame's time, which a layout shapes while it's still ahead.
 #[derive(Default)]
 struct State {
     paragraph: Paragraph,
     limits: Option<layout::Limits>,
+    stamp: Option<Instant>,
 }
 
 impl widget::Meta for Clock {}
@@ -109,7 +115,8 @@ impl<Message> widget::Widget<Message, Theme, Renderer> for Clock {
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
         let state = tree.state.downcast_mut::<State>();
         state.limits = Some(*limits);
-        let text = self.text(Instant::now());
+        let now = Instant::now();
+        let text = self.text(state.stamp.map_or(now, |stamp| stamp.max(now)));
         let size =
             text_widget::layout(&mut state.paragraph, renderer, limits, &text, self.format());
         tree.size = size;
@@ -150,6 +157,7 @@ impl<Message> widget::Widget<Message, Theme, Renderer> for Clock {
             return;
         };
         let state = tree.state.downcast_mut::<State>();
+        state.stamp = Some(*now);
         let text = self.text(*now);
         if text != state.paragraph.content()
             && let Some(limits) = state.limits
@@ -193,5 +201,82 @@ impl<Message> widget::Widget<Message, Theme, Renderer> for Clock {
             iced::Color::TRANSPARENT,
             viewport,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::advanced::shell::{Bus, Invalidation, Waker};
+
+    use super::*;
+    use crate::name::tests::support::{laid, renderer};
+
+    /// A call's time a second before it widens: "10:00" from ten seconds
+    /// on, "9:59" before, as at ten minutes.
+    fn shown(elapsed: Duration) -> String {
+        let text = if elapsed >= Duration::from_secs(10) {
+            "10:00"
+        } else {
+            "9:59"
+        };
+        text.to_owned()
+    }
+
+    /// What a frame stamped `now` asks of the window.
+    fn frame(
+        timer: &mut Clock,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        now: Instant,
+    ) -> Invalidation {
+        let mut bus = Bus::<()>::new();
+        let mut shell = Shell::new(&window::Headless, Waker::noop(), &mut bus);
+        let layout = Layout::new(tree.size);
+        let viewport = Rectangle::with_size(tree.size);
+        widget::Widget::<(), Theme, Renderer>::update(
+            timer,
+            tree,
+            &Event::Window(window::Event::RedrawRequested(now)),
+            layout,
+            mouse::Cursor::Unavailable,
+            renderer,
+            &mut shell,
+            &viewport,
+        );
+        shell.invalidation()
+    }
+
+    /// Lays it out again, as iced does within a frame that invalidated it.
+    fn lay_out(timer: &mut Clock, tree: &mut Tree, renderer: &Renderer) {
+        let limits = layout::Limits::new(Size::ZERO, Size::new(400.0, 40.0));
+        widget::Widget::<(), Theme, Renderer>::layout(timer, tree, renderer, &limits);
+    }
+
+    fn content(tree: &Tree) -> String {
+        tree.state
+            .downcast_ref::<State>()
+            .paragraph
+            .content()
+            .to_owned()
+    }
+
+    /// A frame stamped on the refresh after the second turns, the clock
+    /// still before it (iced rounds a frame's stamp up), widens the text
+    /// once: the layout it asks for shapes the frame's time, so the next
+    /// pass of the frame finds the text as wide as it was laid out.
+    #[test]
+    fn a_frame_ahead_of_the_clock_lays_it_out_once() {
+        let renderer = renderer();
+        let start = Instant::now() - Duration::from_secs(9);
+        let mut timer = clock(Elapsed::Since(start), shown, true);
+        let mut tree = laid(&mut timer, Size::new(400.0, 40.0));
+        assert_eq!(content(&tree), "9:59");
+        let stamp = start + Duration::from_millis(10_005);
+        let widened = frame(&mut timer, &mut tree, &renderer, stamp);
+        assert!(matches!(widened, Invalidation::Layout(_)), "{widened:?}");
+        lay_out(&mut timer, &mut tree, &renderer);
+        assert_eq!(content(&tree), "10:00", "the frame's time");
+        let again = frame(&mut timer, &mut tree, &renderer, stamp);
+        assert_eq!(again, Invalidation::None, "laid out once");
     }
 }

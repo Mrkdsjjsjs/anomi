@@ -734,6 +734,12 @@ impl Assembler {
         self.waiting = true;
     }
 
+    /// Whether it drops frames until the next keyframe.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> bool {
+        self.waiting
+    }
+
     pub fn push(&mut self, packet: &Packet) -> Pushed {
         let gap = self
             .expected

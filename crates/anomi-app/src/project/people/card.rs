@@ -232,7 +232,6 @@ fn effect(state: &AppState, profile: &CoreProfile) -> Option<Effect> {
                 loop_delay: layer.loop_delay,
             })
             .collect(),
-        intermittent: effect.intermittent,
     })
 }
 

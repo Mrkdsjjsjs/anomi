@@ -60,7 +60,6 @@ fn make() -> Effect {
                 ..EffectLayer::default()
             },
         ],
-        intermittent: false,
     }
 }
 

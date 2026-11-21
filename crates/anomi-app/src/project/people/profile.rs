@@ -316,6 +316,7 @@ mod tests {
     use yapfast_core::chat::{EffectLayer, Profile, ProfileEffect};
 
     use anomi_vm::Vm;
+    use anomi_vm::shell::Layer;
 
     use super::{Shown, show};
     use crate::pictures::Requests;
@@ -323,9 +324,10 @@ mod tests {
     const STILL: &str = "https://cdn.discordapp.com/assets/profile_effects/still.png#effect";
     const LAYER: &str = "https://cdn.discordapp.com/assets/profile_effects/intro.png#effect";
 
-    /// What Bob's popout watches, made with animations `moving` or under
-    /// Never: his effect described, its pictures not come yet.
-    fn noted(moving: bool) -> Vec<String> {
+    /// Bob's popout, or his full profile when `large`, made with animations
+    /// `moving` or under Never: his effect described, its pictures not come
+    /// yet.
+    fn made(moving: bool, large: bool) -> (Vm, Shown) {
         let mut core = Application::default();
         let layer = EffectLayer {
             src: LAYER.into(),
@@ -350,6 +352,7 @@ mod tests {
         };
         core.state.profile = Some(Arc::new(ProfileView {
             profile,
+            large,
             ..ProfileView::default()
         }));
         let (mut vm, mut shown) = (Vm::default(), Shown::default());
@@ -360,8 +363,24 @@ mod tests {
             &mut shown,
             &mut Requests::default(),
         );
+        (vm, shown)
+    }
+
+    /// What Bob's popout watches.
+    fn noted(moving: bool) -> Vec<String> {
+        let (_, shown) = made(moving, false);
         let made = shown.popout.as_ref().expect("the popout's card");
         made.pictures.addresses().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn the_full_profile_carries_the_effect_and_asks_for_its_layers() {
+        let (vm, shown) = made(true, true);
+        assert!(vm.shell.is_open(Layer::FullProfile));
+        let effect = vm.people.full_profile.card.effect.as_ref();
+        assert_eq!(effect.map(|effect| effect.layers.len()), Some(1));
+        let made = shown.popout.as_ref().expect("the full profile's card");
+        assert!(made.pictures.addresses().any(|address| address == LAYER));
     }
 
     #[test]

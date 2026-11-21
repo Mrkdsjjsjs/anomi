@@ -64,7 +64,7 @@ pub(super) fn next_change(layer: &EffectLayer, at: u64) -> Option<u64> {
 /// What an effect shows at a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Look {
-    /// It doesn't play: its still, or nothing for an intermittent one.
+    /// It doesn't play: its still.
     #[default]
     Rest,
     /// It's about to: nothing, while its pictures come and for its delay.

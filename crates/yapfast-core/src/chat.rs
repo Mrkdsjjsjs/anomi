@@ -965,8 +965,9 @@ pub struct ProfileEffect {
     pub still: Option<String>,
     /// Its layers, the lowest first.
     pub layers: Vec<EffectLayer>,
-    /// Discord's animationType 2 (INTERMITTENT): it shows nothing while it
-    /// doesn't play; 0 and 1 show the still.
+    /// Discord's animationType 2 (INTERMITTENT): its client shows nothing
+    /// while it doesn't play; 0 and 1 show the still. Anomi shows the still
+    /// of either, so that a layer that can't come leaves no card empty.
     pub intermittent: bool,
 }
 

@@ -222,7 +222,6 @@ fn an_effect_without_layers_never_plays() {
     let still = Effect {
         still: sample::petals().still,
         layers: Vec::new(),
-        intermittent: false,
     };
     let mut widget = effect(&still, front());
     let mut rig = Rig::new(&widget);

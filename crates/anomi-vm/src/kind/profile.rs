@@ -12,13 +12,12 @@ use iced::widget::image;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Effect {
     /// What shows while it doesn't play, once it came: Discord's static
-    /// frame. None draws nothing at rest.
+    /// frame, whatever the effect's kind (an INTERMITTENT one included,
+    /// which Discord's client hides at rest), so that an effect whose layers
+    /// can't play never leaves its card empty. None draws nothing at rest.
     pub still: Option<image::Handle>,
     /// Its layers, the lowest first.
     pub layers: Vec<EffectLayer>,
-    /// It shows nothing while it doesn't play (Discord's INTERMITTENT);
-    /// otherwise its still shows then.
-    pub intermittent: bool,
 }
 
 impl Effect {
@@ -139,7 +138,6 @@ mod tests {
                     ..EffectLayer::default()
                 },
             ],
-            intermittent: false,
         };
         assert_eq!(effect.end(), 4500);
         assert!(effect.loops());

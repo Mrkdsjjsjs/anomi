@@ -744,9 +744,12 @@ each layer in place of `src`, the same one in all), `loop`, `start`,
 `duration` and `loopDelay` in milliseconds, `position` and `zIndex` (the
 fields are camelCase, as the client reads them).
 
-An item's `animationType` says how it looks while it doesn't play: 1
-(PERSISTENT), or none, shows the still; 2 (INTERMITTENT) shows nothing
-(`ProfileEffect::intermittent`).
+An item's `animationType` says how Discord's client shows it while it
+doesn't play: 1 (PERSISTENT), or none, shows the still; 2 (INTERMITTENT)
+shows nothing (`ProfileEffect::intermittent`). Anomi shows the still of
+both: an effect whose layers can't play (one too large to download, or one
+that doesn't decode) would otherwise leave its card empty where Discord's
+shows it playing.
 
 Anomi plays an effect as Discord's client does, on the profile popout, the
 full profile and the DM's panel (`Play::Open`):
@@ -759,10 +762,13 @@ full profile and the DM's panel (`Play::Open`):
 - It plays while `motion.watched()`, its clock as its layers' pictures
   are: the window in front, or on screen under Background's Everything, and
   used in the last 15 s. Otherwise, as unfocused under the default, idle or
-  under Never, it shows its still, or nothing for an intermittent one, and
-  back in use it goes on from where it stood.
-- If the layers haven't all come 5 s after the card opened, it shows that
-  at-rest look until they have.
+  under Never, it shows its still, and back in use it goes on from where
+  it stood.
+- If the layers haven't all come 5 s after the card opened, it shows its
+  still until they have. A layer may weigh up to 16 MiB
+  (`MAX_EFFECT_BYTES`; other pictures 4 MiB): the shop's heaviest weigh
+  nearly 5 MiB. One refused, or one that doesn't decode, is logged as a
+  warning, and the still stays.
 - An effect with no layer that loops ends with its last layer, and then
   shows its at-rest look.
 
@@ -911,7 +917,7 @@ still, under the pointer too, which is Anomi's meaning of Never where
 Discord's client still plays on hover, and nothing moving is asked for:
 no moving avatar, icon or banner (`pictures::moving_url` gives none), no
 `/animated` collectible (`animated_url` gives none) and no effect's layer,
-so an effect shows its still, or nothing if it's intermittent. Changed, it
+so an effect shows its still. Changed, it
 applies at once: the places that hold a moving picture take their stills
 again, and back on they ask for them (`set_moving_pictures`). Whatever the
 settings, a window on screen but not focused plays only under Background's

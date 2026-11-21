@@ -87,7 +87,10 @@ fn an_effect_plays_on_hover_once_then_holds_still() {
     assert_eq!(play.next(&layers, once, start), Some(start + ms(2001)));
     assert!(play.frame(true, true, true, once, start + ms(1200)));
     assert_eq!(play.at(), 1200);
-    assert!(!play.frame(true, true, true, once, start + ms(2100)), "over");
+    assert!(
+        !play.frame(true, true, true, once, start + ms(2100)),
+        "over"
+    );
     assert_eq!(play.look(), Look::Rest);
     assert_eq!(play.next(&layers, once, start + ms(2100)), None);
     assert!(

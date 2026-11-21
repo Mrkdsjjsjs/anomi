@@ -22,10 +22,7 @@ use crate::picture::{Frames, forget, register};
 fn moving() -> iced::widget::image::Handle {
     let still = iced::widget::image::Handle::from_rgba(1, 1, vec![0u8; 4]);
     let frames = vec![vec![0; 4], vec![1; 4], vec![2; 4]];
-    register(
-        &still,
-        Arc::new(Frames::new(1, 1, frames, vec![100; 3], 0)),
-    );
+    register(&still, Arc::new(Frames::new(1, 1, frames, vec![100; 3], 0)));
     still
 }
 
@@ -86,7 +83,11 @@ fn a_moving_face_plays_only_while_hovered() {
     assert_eq!(rig.frame(&mut item, at(150)), 0, "away, it holds");
     rig.point_at(&mut item, Point::new(36.0, 20.0));
     assert_eq!(rig.frame(&mut item, at(200)), 0, "from its first frame");
-    assert_eq!(rig.frame(&mut item, at(350)), 1, "under the pointer, it plays");
+    assert_eq!(
+        rig.frame(&mut item, at(350)),
+        1,
+        "under the pointer, it plays"
+    );
     rig.point_at(&mut item, Point::new(150.0, 150.0));
     assert_eq!(rig.frame(&mut item, at(360)), 0, "gone, its first frame");
     forget(&face);

@@ -38,6 +38,13 @@
 // every eighth in Mods (with a role icon), and banners on their profiles.
 // POST /_control/crowd-start makes someone new post in the last of them, or
 // in #general, 50 times a second, and /_control/crowd-stop stops them.
+// `--effect-files DIR` gives Bob a real profile effect in place of the
+// Petals: DIR/effect.json is its item as Discord's shop describes it, with
+// each picture (`src`, `staticFrameSrc`, `reducedMotionSrc`,
+// `thumbnailPreviewSrc`) named by its file in DIR, which the fake serves as
+// /assets/profile_effects/{sku}/{name}.png. The files are Discord's own
+// (`cdn.discordapp.com/assets/profile_effects/effects/...`), which a test of
+// the real format downloads there; the fake doesn't ship them.
 // `--animated` gives people pictures and names that move, as Nitro does:
 // Bob's and Carol's avatars (a_bob1, a_carol1), every `--authors` writer's
 // and `--members` member's, Carol's banner (a_carolwave) and "Server"'s icon
@@ -486,6 +493,7 @@ const { values: args } = parseArgs({
     nitro: { type: "boolean", default: false },
     folders: { type: "boolean", default: false },
     "cdn-delay": { type: "string", default: "0" },
+    "effect-files": { type: "string" },
     unread: { type: "string", default: "5" },
     env: { type: "string" },
   },
@@ -908,6 +916,24 @@ const serverLooks: Record<string, Pick<User, "decoration" | "nameplate" | "style
 for (const look of Object.values(serverLooks)) if (look.nameplate) nameplateSkus.add(look.nameplate.sku);
 
 const profileEffects = new Set<string>([PROFILE_EFFECT, ...(animated ? [PROFILE_EFFECT_INTERMITTENT] : [])]);
+
+/** `--effect-files`: the directory Bob's effect's pictures come from. */
+const effectFiles = args["effect-files"];
+
+/** Bob's effect under `--effect-files`: the shop's item in DIR/effect.json,
+ *  its pictures' file names made the fake's addresses. */
+function realEffect(sku: string, layer: (name: string) => string) {
+  const item = JSON.parse(readFileSync(`${effectFiles}/effect.json`, "utf8"));
+  const at = (name: unknown) => typeof name === "string" ? layer(name.replace(/\.png$/, "")) : undefined;
+  for (const key of ["staticFrameSrc", "reducedMotionSrc", "thumbnailPreviewSrc"]) {
+    if (key in item) item[key] = at(item[key]);
+  }
+  for (const effect of item.effects) effect.src = at(effect.src);
+  return {
+    sku_id: sku, store_listing_id: "1", type: 1, name: item.title, summary: item.description, premium_type: 2,
+    items: [{ ...item, type: 1, sku_id: sku }],
+  };
+}
 
 /** A profile effect's picture, 450 by 880 and clear but for a few petals, which
  *  differ by name. The intro and the loop are animated, the others still. */
@@ -5333,6 +5359,13 @@ const udp = await Bun.udpSocket({
   hostname: args.host,
   port: Number(process.env.FAKE_DISCORD_UDP_PORT ?? 0),
   socket: {
+    // A packet sent to a client that closed its socket comes back refused
+    // on the next read, which ends Bun where nothing takes the error: a
+    // call that hung up is none of the fake's. Bun gives the error last.
+    error(...given: unknown[]) {
+      const error = given.at(-1) as { code?: string } | undefined;
+      if (error?.code !== "ECONNREFUSED") console.error("udp:", error);
+    },
     data(socket, data, port, address) {
       // IP discovery: type 1, length 70, SSRC, then the answer fills in the address.
       if (discoveryOff && data.length === 74 && data.readUInt16BE(0) === 1) return;
@@ -6898,6 +6931,7 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     const sku = m[1]!;
     if (!profileEffects.has(sku)) return notFound("Unknown Collectibles Product", 10000);
     const layer = (name: string) => `${url.origin}/assets/profile_effects/${sku}/${name}.png`;
+    if (effectFiles && sku === PROFILE_EFFECT) return json(realEffect(sku, layer));
     return json({
       sku_id: sku, store_listing_id: "1", type: 1, name: "Petals", summary: "Falling petals", premium_type: 2,
       items: [
@@ -9517,9 +9551,14 @@ const server = Bun.serve<SocketData>({
       return new Response(svg, { headers: { "content-type": "image/svg+xml" } });
     }
     // Activities' pictures: games' icons and assets, and Spotify's covers.
-    const effectLayer = req.method === "GET" ? path.match(/^\/assets\/profile_effects\/(\d+)\/(\w+)\.png$/) : null;
+    // Discord's own files have names such as `reduced-motion_967b0b15`.
+    const effectLayer = req.method === "GET" ? path.match(/^\/assets\/profile_effects\/(\d+)\/([\w-]+)\.png$/) : null;
     if (effectLayer && profileEffects.has(effectLayer[1]!)) {
-      return new Response(effectPicture(effectLayer[2]!), { headers: { "content-type": "image/png" } });
+      const [, sku, name] = effectLayer;
+      const picture = effectFiles && sku === PROFILE_EFFECT
+        ? readFileSync(`${effectFiles}/${name}.png`)
+        : effectPicture(name!);
+      return new Response(picture, { headers: { "content-type": "image/png" } });
     }
     // A frame's layers: a brass bar with a knob for the staple, and a
     // brass edge down either side for the border.

@@ -74,8 +74,8 @@ the app made once (clone them, never make one in a view).
 - `effect::effect(&effect, motion).radius(card_radius).play(Play::Open)`
   `.on_wanted(msg)` over a card: it waits for every layer's picture and
   half a second more, drawing nothing, then plays while the card shows and
-  `motion.watched()`; at rest its still, or nothing for an
-  `effect.intermittent` one. `Play::Hover` plays under the pointer,
+  `motion.watched()`; at rest, and once it has waited 5 s for a layer,
+  its still. `Play::Hover` plays under the pointer,
   `Play::While(bool)` as told, `Play::Held` never.
   `frame::frame(&layers, Side::Back|Front)` `.large(bool)` behind and over
   it (order in `frame`'s doc).

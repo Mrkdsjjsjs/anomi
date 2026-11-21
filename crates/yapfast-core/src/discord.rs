@@ -69,6 +69,14 @@ pub const SPAM: &str = "Spam";
 /// Icons and avatars are small; anything larger isn't one.
 #[cfg(feature = "discord")]
 const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
+/// A profile effect's layer is an APNG of the card's size and a few dozen
+/// frames, and the shop's heaviest weigh more than a picture may: Spring
+/// Bloom's intro 4.9 MiB, an idle layer of Clove's Ruse and of Jolly Roger
+/// 4.2 MiB. Held to the pictures' limit, such a layer never came, and the
+/// card it plays over waited for it in vain. Three times the heaviest
+/// leaves room for the effects since.
+#[cfg(feature = "discord")]
+const MAX_EFFECT_BYTES: usize = 16 * 1024 * 1024;
 /// Profile banners, at the full profile's width; Discord's are 5:2.
 #[cfg(feature = "discord")]
 const BANNER_SIZE: (u32, u32) = (600, 240);
@@ -1531,7 +1539,10 @@ impl PictureLoads {
         let Some(reading) = self.buffers.take(&pending.batch).await else {
             return;
         };
-        let (data, buffer) = match discord.kept_picture(&pending.url, MAX_PICTURE_BYTES).await {
+        let (data, buffer) = match discord
+            .kept_picture(&pending.url, largest(&pending.url))
+            .await
+        {
             Some(kept) => {
                 tracing::trace!(url = %pending.url, bytes = kept.len(), "read a Discord picture from cache");
                 (kept, Some(reading))
@@ -1572,7 +1583,7 @@ impl PictureLoads {
         };
         let (width, height) = if pending.url.contains("/banners/") {
             BANNER_SIZE
-        } else if pending.url.ends_with(chat::EFFECT_PICTURE) {
+        } else if is_effect_picture(&pending.url) {
             EFFECT_SIZE
         } else if is_frame_layer(&pending.url) {
             FRAME_SIZE
@@ -1602,7 +1613,11 @@ impl PictureLoads {
         match decoded {
             Ok(Some(picture)) => pending.show(picture),
             _ => {
-                tracing::debug!(url = %pending.url, "could not decode a Discord picture");
+                if is_effect_picture(&pending.url) {
+                    tracing::warn!(url = %pending.url, "could not decode a profile effect's picture: its card shows its still");
+                } else {
+                    tracing::debug!(url = %pending.url, "could not decode a Discord picture");
+                }
                 locked(&self.failed).insert(pending.url.clone());
             }
         }
@@ -1761,7 +1776,7 @@ async fn download(
         let turn = download_turn(turns, batch, backoff).await.ok_or(false)?;
         tries += 1;
         let started = Instant::now();
-        let result = discord.download_now(url, MAX_PICTURE_BYTES).await;
+        let result = discord.download_now(url, largest(url)).await;
         match result {
             Ok(data) => {
                 locked(backoff).succeeded();
@@ -1777,12 +1792,34 @@ async fn download(
                 if retryable && tries < PICTURE_TRIES {
                     tracing::debug!(%error, %url, tries, "will download a Discord picture again");
                 } else {
-                    tracing::debug!(%error, %url, "could not download a Discord picture");
+                    if is_effect_picture(url) {
+                        // Its card shows the still in its place: say why.
+                        tracing::warn!(%error, %url, "could not download a profile effect's picture");
+                    } else {
+                        tracing::debug!(%error, %url, "could not download a Discord picture");
+                    }
                     return Err(!retryable);
                 }
             }
         }
         drop(turn);
+    }
+}
+
+/// Whether `url` is a profile effect's layer or still, as the core marks
+/// them ([`chat::EFFECT_PICTURE`]).
+#[cfg(feature = "discord")]
+fn is_effect_picture(url: &str) -> bool {
+    url.ends_with(chat::EFFECT_PICTURE)
+}
+
+/// The most the picture at `url` may weigh, downloaded or read from disk.
+#[cfg(feature = "discord")]
+fn largest(url: &str) -> usize {
+    if is_effect_picture(url) {
+        MAX_EFFECT_BYTES
+    } else {
+        MAX_PICTURE_BYTES
     }
 }
 
@@ -1794,6 +1831,20 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_profile_effects_layers_may_weigh_more_than_a_picture() {
+        let cdn = "https://cdn.discordapp.com";
+        let layer = format!("{cdn}/assets/profile_effects/effects/cloves-ruse/idle.png#effect");
+        assert!(is_effect_picture(&layer));
+        let picture = largest(&format!("{cdn}/avatars/1/a.png?size=128"));
+        // The idle layer of Clove's Ruse, the intro of Spring Bloom: each
+        // over a picture's limit, and the effect never played.
+        for weight in [4_404_333, 5_152_953] {
+            assert!(weight > picture);
+            assert!(weight <= largest(&layer));
+        }
+    }
 
     #[test]
     fn a_frames_layers_decode_larger_than_a_decorations_still() {

@@ -47,7 +47,11 @@ impl<Message> ProfileEffect<'_, Message> {
     ) -> Option<Instant> {
         let layers = &self.effect.layers;
         let timing = timing(layers);
-        if state.timing.replace(timing).is_some_and(|was| was != timing) {
+        if state
+            .timing
+            .replace(timing)
+            .is_some_and(|was| was != timing)
+        {
             // Another effect: its play starts over, as a change of what's
             // asked does.
             state.playback.restart();
@@ -80,7 +84,6 @@ impl<Message> ProfileEffect<'_, Message> {
             }
         }
         if state.playback.look() == Look::Rest
-            && !self.effect.intermittent
             && let Some(still) = &self.effect.still
             && let Some((drawn, _)) = self.place(bounds, Vector::ZERO, size_of(renderer, still))
         {
@@ -124,7 +127,14 @@ fn timing(layers: &[EffectLayer]) -> u64 {
     layers.len().hash(&mut hasher);
     for layer in layers {
         let place = (layer.x.to_bits(), layer.y.to_bits());
-        (layer.start, layer.duration, layer.looped, layer.loop_delay, place).hash(&mut hasher);
+        (
+            layer.start,
+            layer.duration,
+            layer.looped,
+            layer.loop_delay,
+            place,
+        )
+            .hash(&mut hasher);
     }
     hasher.finish()
 }

@@ -1,15 +1,18 @@
 //! A profile effect over a card: its layers, moving pictures laid over the
 //! whole card, each shown from its start for its duration and again after
-//! its delay when it loops; while it doesn't play, its still, or nothing
-//! for an intermittent one (Discord's INTERMITTENT). Clicks go through it.
-//! Its [`Play`] says when it plays:
+//! its delay when it loops; while it doesn't play, its still, whatever its
+//! kind. Discord's client shows nothing of an INTERMITTENT effect at rest;
+//! here an effect never leaves its card empty for longer than it waits for
+//! its layers, which may never come (one too large, or broken), so the
+//! still shows, as it did before effects played from the open. Clicks go
+//! through it. Its [`Play`] says when it plays:
 //!
 //! - [`Play::Open`], a popout's, a full profile's and the docked DM
 //!   panel's, plays as Discord's card does: from the moment it shows, once
 //!   every layer's picture has come (the app asks for them all as the card
 //!   is made) and `DELAY`, half a second, after, its intro once and its
-//!   loops until the card goes. It draws nothing while it waits, and shows
-//!   as at rest once it has waited `WAIT`, five seconds, for its pictures.
+//!   loops until the card goes. It draws nothing while it waits, and its
+//!   still once it has waited `WAIT`, five seconds, for its pictures.
 //! - [`Play::Hover`] plays while the pointer is on it, each layer as its
 //!   picture comes; [`Play::While`] while the place says; [`Play::Held`]
 //!   never, as the editor's cell has it.
@@ -80,8 +83,8 @@ pub enum Play {
     /// From the moment it shows, as Discord's card plays it: once every
     /// layer's picture has come and half a second after, its intro once
     /// and its loops until it goes. It draws nothing while it waits, and
-    /// shows as at rest once it has waited five seconds for its pictures,
-    /// until they come.
+    /// its still once it has waited five seconds for its pictures, until
+    /// they come.
     Open,
 }
 
@@ -277,8 +280,7 @@ impl<Message: Clone> widget::Widget<Message, Theme, Renderer> for ProfileEffect<
             // On its way: nothing, as Discord's card shows nothing then.
             Look::Waiting => {}
             Look::Rest => {
-                if !self.effect.intermittent
-                    && let Some(still) = &self.effect.still
+                if let Some(still) = &self.effect.still
                     && let Some((drawn, shape)) =
                         self.place(bounds, Vector::ZERO, size_of(renderer, still))
                 {

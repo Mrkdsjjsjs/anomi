@@ -189,11 +189,15 @@ fn a_prism_scrolls_its_colours_left_a_cycle_every_two_seconds() {
     // Half way, half a cycle on: blue at the left, red half way along.
     let half = vec![(0.0, blue), (0.5, red), (1.0, blue)];
     assert_eq!(prism_stops(&given, 100.0, Some(1000)), half);
-    // A quarter on, the colours between stand at the ends.
+    // A quarter on, the colours between stand at the ends: purple, blue a
+    // quarter along, red three quarters, purple.
     let quarter = prism_stops(&given, 100.0, Some(500));
-    assert_eq!(quarter.len(), 5, "{quarter:?}");
-    assert!(close(quarter[0].1, Color::from_rgb(0.5, 0.0, 0.5)));
+    let purple = Color::from_rgb(0.5, 0.0, 0.5);
+    assert_eq!(quarter.len(), 4, "{quarter:?}");
+    assert!(close(quarter[0].1, purple));
     assert!((quarter[1].0 - 0.25).abs() < 1e-6 && quarter[1].1 == blue);
+    assert!((quarter[2].0 - 0.75).abs() < 1e-6 && quarter[2].1 == red);
+    assert!(quarter[3].0 == 1.0 && close(quarter[3].1, purple));
     // A name narrower than 38 px shows only that much of a cycle.
     let narrow = vec![(0.0, red), (1.0, blue)];
     assert_eq!(prism_stops(&given, 19.0, None), narrow);

@@ -52,9 +52,7 @@ fn unwatched_it_rests_and_wants_nothing() {
         ..front()
     };
     for motion in [Motion::default(), idle, never] {
-        let mut widget = effect(&petals, motion)
-            .play(Play::Open)
-            .on_wanted("wanted");
+        let mut widget = effect(&petals, motion).play(Play::Open).on_wanted("wanted");
         let mut rig = Rig::new(&widget);
         let asked = rig.frame(&mut widget, Instant::now());
         assert_eq!(asked, RedrawRequest::Wait, "{motion:?}");

@@ -1,16 +1,26 @@
 //! When a profile effect plays and which of its layers show: the clock of
 //! `ProfileEffect` and the `shown` of `EffectLayerView`
-//! (`ui/controls.slint:860`, `:833`).
+//! (`ui/controls.slint:860`, `:833`), with the wait of Discord's card,
+//! which shows an effect only once every layer's picture has come, and
+//! half a second after.
 //!
 //! Slint ticked a `Timer` 24 times a second while the effect played and
 //! added 41 ms each time. Here the play's time is the frame times' own,
 //! moved on only between two frames it played in, and the widget asks for
-//! a frame only when a layer shows or hides, or the play ends; the frames
-//! between are its pictures' own, asked for by their players.
+//! a frame only when a layer shows or hides, the play ends, its delay ends
+//! or its wait for its pictures runs out; the frames between are its
+//! pictures' own, asked for by their players.
 
 use std::time::{Duration, Instant};
 
 use super::EffectLayer;
+
+/// How long a card's effect waits, once every layer's picture has come,
+/// before its layers' time 0, as Discord's card does.
+pub(super) const DELAY: Duration = Duration::from_millis(500);
+/// How long it waits for its layers' pictures before it shows as at rest,
+/// until they come.
+pub(super) const WAIT: Duration = Duration::from_secs(5);
 
 /// Whether `layer` shows `at` milliseconds into the play: from its start
 /// for its duration, and, when it loops, again after each delay, or for
@@ -51,79 +61,160 @@ pub(super) fn next_change(layer: &EffectLayer, at: u64) -> Option<u64> {
     })
 }
 
-/// Where a play is: Slint's `time`, `finished` and `playing`.
+/// What an effect shows at a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Look {
+    /// It doesn't play: its still, or nothing for an intermittent one.
+    #[default]
+    Rest,
+    /// It's about to: nothing, while its pictures come and for its delay.
+    Waiting,
+    /// Its layers.
+    Playing,
+}
+
+/// What a play runs through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Course {
+    /// When its last layer ends, in milliseconds of its layers' time: an
+    /// effect that doesn't loop is over then.
+    pub end: u64,
+    /// Some layer loops, so it plays for as long as it's asked.
+    pub loops: bool,
+    /// How long it waits, once ready, before its layers' time 0.
+    pub delay: Duration,
+}
+
+/// Where a play is: Slint's `time`, `finished` and `playing`, and how long
+/// it has waited.
 #[derive(Debug, Default)]
 pub(super) struct Playback {
     /// It was asked to play at the frame before; a change starts the play
     /// over, as `changed play => { root.time = 0; }`.
     asked: bool,
-    /// How far into the play it is.
+    /// How far into the play it is, its delay included.
     time: Duration,
     /// The frame time `time` last moved at, while it played.
     last: Option<Instant>,
-    playing: bool,
+    /// The delay it was last given.
+    delay: Duration,
+    /// The frame time it was first asked at in this play while its
+    /// pictures hadn't all come.
+    since: Option<Instant>,
+    /// Its time moves: it's asked, may play, is ready and isn't over.
+    running: bool,
+    /// It's asked and may play, but its pictures haven't all come.
+    pending: bool,
+    look: Look,
 }
 
 impl Playback {
     /// Takes the frame at `now`: starts over when `asked` changed, and moves
     /// on while it's asked, `may` play (the window plays and there's
-    /// something to) and isn't over. Says whether it plays.
+    /// something to), is `ready` (its pictures came, where it waits for
+    /// them) and isn't over. Says whether its layers show.
     ///
-    /// An effect whose layers don't loop is over `end` milliseconds in, and
-    /// holds still from then on until asked again.
-    pub fn frame(&mut self, asked: bool, may: bool, end: u64, loops: bool, now: Instant) -> bool {
+    /// Its layers show `course.delay` into the play. Until then it waits
+    /// and shows nothing, as it does while asked and not ready, unless it
+    /// has waited [`WAIT`] for its pictures: then it shows as at rest. An
+    /// effect whose layers don't loop is over `course.end` milliseconds
+    /// into their time, and shows as at rest from then on until asked
+    /// again.
+    pub fn frame(
+        &mut self,
+        asked: bool,
+        may: bool,
+        ready: bool,
+        course: Course,
+        now: Instant,
+    ) -> bool {
         if asked != self.asked {
             self.asked = asked;
-            self.time = Duration::ZERO;
-            self.last = None;
+            self.restart();
         }
-        let over = |time: Duration| !loops && millis(time) > end;
-        if asked && may && !over(self.time) {
+        let Course { end, loops, delay } = course;
+        self.delay = delay;
+        let over = |time: Duration| !loops && millis(time.saturating_sub(delay)) > end;
+        let goes = asked && may && ready;
+        if goes && !over(self.time) {
             if let Some(last) = self.last {
                 self.time += now.saturating_duration_since(last);
             }
             self.last = Some(now);
         }
-        self.playing = asked && may && !over(self.time);
-        if !self.playing {
+        self.running = goes && !over(self.time);
+        if !self.running {
             // Behind another window or held: the time it isn't in front
             // isn't the play's.
             self.last = None;
         }
-        self.playing
-    }
-
-    /// It played at the last frame.
-    pub fn playing(&self) -> bool {
-        self.playing
-    }
-
-    /// How far into the play it is, in milliseconds.
-    pub fn at(&self) -> u64 {
-        millis(self.time)
-    }
-
-    /// When a frame is next due for the play itself, while it plays: the
-    /// first layer to show or hide, or the end of an effect that doesn't
-    /// loop.
-    pub fn next(
-        &self,
-        layers: &[EffectLayer],
-        end: u64,
-        loops: bool,
-        now: Instant,
-    ) -> Option<Instant> {
-        if !self.playing {
-            return None;
+        self.pending = asked && may && !ready;
+        if self.pending {
+            self.since.get_or_insert(now);
         }
-        let at = self.at();
-        let ends = (!loops && at <= end).then_some(end + 1);
-        let soonest = layers
-            .iter()
-            .filter_map(|layer| next_change(layer, at))
-            .chain(ends)
-            .min()?;
-        Some(now + Duration::from_millis(soonest).saturating_sub(self.time))
+        let waited = self
+            .since
+            .is_some_and(|since| now.saturating_duration_since(since) >= WAIT);
+        self.look = if self.running && self.time >= delay {
+            Look::Playing
+        } else if (self.running || self.pending) && !waited {
+            Look::Waiting
+        } else {
+            Look::Rest
+        };
+        self.look == Look::Playing
+    }
+
+    /// Starts the play over, as a change of what's asked does.
+    pub fn restart(&mut self) {
+        self.time = Duration::ZERO;
+        self.last = None;
+        self.since = None;
+    }
+
+    /// Its layers showed at the last frame.
+    pub fn playing(&self) -> bool {
+        self.look == Look::Playing
+    }
+
+    /// What it showed at the last frame.
+    pub fn look(&self) -> Look {
+        self.look
+    }
+
+    /// It was asked and might have played at the last frame, but its
+    /// pictures hadn't all come.
+    pub fn pending(&self) -> bool {
+        self.pending
+    }
+
+    /// How far into its layers' time it is, in milliseconds: 0 until its
+    /// delay is over.
+    pub fn at(&self) -> u64 {
+        millis(self.time.saturating_sub(self.delay))
+    }
+
+    /// When a frame is next due for the play itself: while it plays, the
+    /// first layer to show or hide or the end of an effect that doesn't
+    /// loop; while in its delay, the delay's end; while it waits for its
+    /// pictures, the end of [`WAIT`].
+    pub fn next(&self, layers: &[EffectLayer], course: Course, now: Instant) -> Option<Instant> {
+        let Course { end, loops, delay } = course;
+        if self.running {
+            let Some(into) = self.time.checked_sub(delay) else {
+                return Some(now + (delay - self.time));
+            };
+            let at = millis(into);
+            let ends = (!loops && at <= end).then_some(end + 1);
+            let soonest = layers
+                .iter()
+                .filter_map(|layer| next_change(layer, at))
+                .chain(ends)
+                .min()?;
+            return Some(now + Duration::from_millis(soonest).saturating_sub(into));
+        }
+        let waited = self.since.filter(|_| self.pending)? + WAIT;
+        (waited > now).then_some(waited)
     }
 }
 
@@ -132,141 +223,4 @@ fn millis(time: Duration) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The fake Discord's "Petals": an intro once, and a loop that waits a
-    /// second between rounds.
-    fn petals() -> [EffectLayer; 2] {
-        [
-            EffectLayer {
-                duration: 2000,
-                ..EffectLayer::default()
-            },
-            EffectLayer {
-                y: 20.0,
-                start: 1500,
-                duration: 3000,
-                looped: true,
-                loop_delay: 1000,
-                ..EffectLayer::default()
-            },
-        ]
-    }
-
-    fn ms(millis: u64) -> Duration {
-        Duration::from_millis(millis)
-    }
-
-    #[test]
-    fn a_layer_shows_from_its_start_for_its_duration() {
-        let [intro, _] = petals();
-        assert!(shown(&intro, 0));
-        assert!(shown(&intro, 2000));
-        assert!(!shown(&intro, 2001));
-        assert_eq!(next_change(&intro, 0), Some(2001));
-        assert_eq!(next_change(&intro, 2001), None);
-    }
-
-    #[test]
-    fn a_looping_layer_waits_its_delay_between_rounds() {
-        let [_, round] = petals();
-        assert!(!shown(&round, 1499));
-        assert_eq!(next_change(&round, 0), Some(1500));
-        assert!(shown(&round, 1500));
-        assert!(shown(&round, 4500));
-        assert!(!shown(&round, 4501), "the delay");
-        assert_eq!(next_change(&round, 4000), Some(4501));
-        assert_eq!(next_change(&round, 4600), Some(5500));
-        assert!(shown(&round, 5500), "round again");
-    }
-
-    #[test]
-    fn a_loop_without_a_delay_shows_for_good() {
-        let layer = EffectLayer {
-            duration: 500,
-            looped: true,
-            ..EffectLayer::default()
-        };
-        assert!(shown(&layer, 10_000));
-        assert_eq!(next_change(&layer, 10), None);
-    }
-
-    #[test]
-    fn an_effect_plays_on_hover_once_then_holds_still() {
-        let layers = [petals()[0].clone()];
-        let start = Instant::now();
-        let mut play = Playback::default();
-        assert!(!play.frame(false, true, 2000, false, start));
-        assert!(play.frame(true, true, 2000, false, start));
-        assert_eq!(
-            play.next(&layers, 2000, false, start),
-            Some(start + ms(2001))
-        );
-        assert!(play.frame(true, true, 2000, false, start + ms(1200)));
-        assert_eq!(play.at(), 1200);
-        assert!(
-            !play.frame(true, true, 2000, false, start + ms(2100)),
-            "over"
-        );
-        assert_eq!(play.next(&layers, 2000, false, start + ms(2100)), None);
-        assert!(
-            !play.frame(true, true, 2000, false, start + ms(9000)),
-            "held still"
-        );
-        // The pointer leaves and comes back: it plays from the start again.
-        assert!(!play.frame(false, true, 2000, false, start + ms(9100)));
-        assert!(play.frame(true, true, 2000, false, start + ms(9200)));
-        assert_eq!(play.at(), 0);
-    }
-
-    #[test]
-    fn a_looping_effect_plays_while_hovered() {
-        let layers = petals();
-        let start = Instant::now();
-        let mut play = Playback::default();
-        assert!(play.frame(true, true, 4500, true, start));
-        assert_eq!(
-            play.next(&layers, 4500, true, start),
-            Some(start + ms(1500))
-        );
-        assert!(play.frame(true, true, 4500, true, start + ms(60_000)));
-        assert_eq!(play.at(), 60_000);
-    }
-
-    #[test]
-    fn behind_another_window_the_play_stands_still() {
-        let start = Instant::now();
-        let mut play = Playback::default();
-        assert!(play.frame(true, true, 2000, false, start));
-        assert!(play.frame(true, true, 2000, false, start + ms(500)));
-        assert!(!play.frame(true, false, 2000, false, start + ms(600)));
-        assert_eq!(play.next(&petals(), 2000, false, start + ms(600)), None);
-        // In front again a minute later: it goes on from where it stopped.
-        assert!(play.frame(true, true, 2000, false, start + ms(60_600)));
-        assert!(play.frame(true, true, 2000, false, start + ms(60_700)));
-        assert_eq!(play.at(), 600);
-    }
-
-    #[test]
-    fn the_next_frame_lands_on_the_millisecond_a_layer_changes() {
-        let layers = petals();
-        let start = Instant::now();
-        let mut play = Playback::default();
-        play.frame(true, true, 4500, true, start);
-        play.frame(
-            true,
-            true,
-            4500,
-            true,
-            start + Duration::from_micros(1_499_600),
-        );
-        let due = play.next(
-            &layers,
-            4500,
-            true,
-            start + Duration::from_micros(1_499_600),
-        );
-        assert_eq!(due, Some(start + ms(1500)));
-    }
-}
+mod tests;

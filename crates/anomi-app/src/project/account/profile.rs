@@ -13,11 +13,12 @@ use anomi_vm::people::badges::{Badge, Badges, Level};
 use crate::pictures;
 use crate::project::rows;
 
-/// The parts of `own` the account's popover draws.
+/// The parts of `own` the account's popover draws: its banner's moving
+/// version once it came, which the popover plays while open.
 pub fn profile(state: &AppState, own: &CoreProfile) -> Profile {
     let cosmetics = state.cosmetics;
     Profile {
-        banner: pictures::find(state, own.banner.as_deref()),
+        banner: rows::moving_or_still(state, own.banner.as_deref()),
         accent: accent(state, own).map(rows::rgb),
         theme: own
             .theme
@@ -65,13 +66,15 @@ pub fn badges(state: &AppState, badges: &[ProfileBadge]) -> Badges {
     }
 }
 
-/// Each picture [`profile`] draws: the banner, the avatar its colour may
-/// come from, the tag's badge and the badges'.
+/// Each picture [`profile`] draws: the banner and its moving version, the
+/// avatar its colour may come from, the tag's badge and the badges'.
 pub fn addresses(cosmetics: Cosmetics, profile: &CoreProfile, each: &mut impl FnMut(&str)) {
     let tag = cosmetics
         .tag(profile.tag.as_ref())
         .and_then(|tag| tag.badge.as_deref());
-    for address in [profile.banner.as_deref(), profile.avatar.as_deref(), tag]
+    let banner = profile.banner.as_deref();
+    let moving = pictures::moving_url(banner);
+    for address in [banner, moving.as_deref(), profile.avatar.as_deref(), tag]
         .into_iter()
         .flatten()
     {

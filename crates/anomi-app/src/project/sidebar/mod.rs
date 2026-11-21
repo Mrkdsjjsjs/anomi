@@ -11,9 +11,10 @@
 //!   shown on top of the rows each time.
 //! - The pictures the DM rows show are asked for as the list reports the
 //!   rows in view ([`seen`]); the core leaves list pictures to the
-//!   interface. The server's banner is asked for as the header shows it,
-//!   the icons of the games people in its voice channels play as the
-//!   channels are built.
+//!   interface. The server's banner, and its moving version, are asked for
+//!   as the header shows it, the icons of the games people in its voice
+//!   channels play as the channels are built. The DM pointed at and the
+//!   open one show their moving pictures once they came.
 //! - The card beside someone's row under a voice channel ([`hover`]) is
 //!   built only while it shows, after everything else.
 
@@ -90,6 +91,8 @@ struct Key {
     reset: u64,
     /// The DM under the pointer, whose pictures move.
     pointed: Option<String>,
+    /// Moving versions may be asked for (`pictures::moving_pictures`).
+    moving: bool,
 }
 
 impl Key {
@@ -115,6 +118,7 @@ impl Key {
             call: super::rail::call_room(state).map(str::to_owned),
             reset: state.reset_version,
             pointed: pointed.map(str::to_owned),
+            moving: pictures::moving_pictures(),
         }
     }
 
@@ -147,6 +151,7 @@ impl Key {
             && self.call.as_deref() == super::rail::call_room(state)
             && self.reset == state.reset_version
             && self.pointed.as_deref() == pointed
+            && self.moving == pictures::moving_pictures()
     }
 
     /// The filter as the rows match it.
@@ -228,11 +233,14 @@ fn build(
         Navigation::DirectMessages => {
             let dms = dms::build(state, key);
             dms::seen(state, &shown.seen, requests);
+            dms::want_selected(state, key, requests);
             Place::Dms(dms)
         }
         Navigation::Server(id) => {
             let header = header::build(core, id);
-            requests.want(state, header::banner(state, id));
+            let banner = header::banner(state, id);
+            requests.want(state, banner);
+            requests.want(state, pictures::moving_url(banner).as_deref());
             requests.want(state, people::game_icons(state));
             let channels = channels::build(core, id, key, &mut shown.places, &mut shown.rights);
             Place::Server(Server { header, channels })
@@ -247,8 +255,8 @@ pub(super) fn seen(state: &AppState, shown: &mut Shown, ids: Vec<String>, reques
     shown.seen = ids;
 }
 
-/// The DM under the pointer: its moving nameplate and decoration are asked
-/// for, and its row shows them once they came.
+/// The DM under the pointer: its moving avatar, decoration and nameplate
+/// are asked for, and its row shows them once they came.
 pub(crate) fn pointed(
     state: &AppState,
     shown: &mut Shown,
@@ -259,7 +267,10 @@ pub(crate) fn pointed(
         .as_deref()
         .and_then(|id| state.rooms.iter().find(|room| room.id == id))
     {
-        requests.want(state, dms::moving(state, room).iter().map(String::as_str));
+        requests.want(
+            state,
+            dms::moving(state, room, true).iter().map(String::as_str),
+        );
     }
     shown.pointed = room;
 }

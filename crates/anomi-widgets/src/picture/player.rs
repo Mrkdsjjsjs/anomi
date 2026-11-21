@@ -8,7 +8,10 @@
 //! `rounds`, and its `Timer`, which ran while `Motion.playing` and the
 //! picture showed. Here nothing runs: a playing picture asks the window for
 //! a redraw when its next frame is due, and one held still, scrolled away
-//! or behind another window asks for none.
+//! or behind another window asks for none. What only decorates, an avatar,
+//! a decoration or a banner, plays from its first frame each time it starts
+//! or resumes ([`Player::from_start`]), and only while it holds one of the
+//! `MOVING` slots ([`Player::capped`]).
 //!
 //! A copy with corners or cut to its box is made at the very pixels drawn,
 //! so one whose size changes at every frame, as a GIF tile while the picker
@@ -40,10 +43,10 @@ use iced::{ContentFit, Rectangle, Size};
 
 use anomi_theme::{Motion, Renderer};
 
-use super::clock;
-use super::look::{self, Fit, Look};
+use super::look::{Fit, copy};
 use super::moving::{self, Moving};
 use super::store::{self, Key, Kind};
+use super::{clock, slots};
 
 mod shape;
 
@@ -79,18 +82,34 @@ pub struct Player {
     /// The still before `seen` showed for less than `SETTLE`: `seen` is a
     /// feed's frame.
     feed: bool,
-    /// A picture that plays for ever starts from its first frame too.
+    /// It plays from its first frame each time it starts or resumes, and
+    /// shows that frame while it doesn't play.
     from_start: bool,
+    /// It plays only while it holds one of the `MOVING` slots (`slots`).
+    capped: bool,
+    /// When the frame after the one showing was due, as it last played.
+    due: Option<Instant>,
     /// The latest frame time it was given, which it's drawn at: its clock
     /// never goes back, and a feed's frame isn't taken for a still that held
     /// by a draw on another clock.
     now: Option<Instant>,
 }
 
+/// Past the frame it said was due by this much, a place wasn't updated
+/// meanwhile, as the top of a `hover` while the pointer is away.
+const MISSED: Duration = Duration::from_millis(250);
+/// Holding its last frame, a place not updated for this long has been away.
+const AWAY: Duration = Duration::from_secs(1);
+
 impl Player {
-    /// A place whose moving picture starts from its first frame when it
-    /// first plays, as a picture made anew does, whether it plays a number
-    /// of times or for ever: a profile effect's layer each time it shows.
+    /// A place whose moving picture starts from its first frame each time
+    /// it starts or resumes playing, as a picture made anew does, whether
+    /// it plays a number of times or for ever: a profile effect's layer
+    /// each time it shows, an avatar as the pointer comes onto its row.
+    /// It shows its first frame while it doesn't play, and it resumes when
+    /// the update before didn't play, or came long before (it missed its
+    /// next frame by a quarter of a second, or held its last frame for a
+    /// second), as the top of a `hover` isn't updated while it's away.
     /// [`Player::default`] shows one that plays for ever at the shared
     /// clock's frame, so every place of one animation shows the same.
     pub fn from_start() -> Self {
@@ -98,6 +117,22 @@ impl Player {
             from_start: true,
             ..Self::default()
         }
+    }
+
+    /// One of the pictures of which at most [`MOVING`](super::MOVING)
+    /// distinct ones play at once: an avatar, a decoration, a rail's face,
+    /// a banner. Beyond them it holds its first frame and asks for no
+    /// redraw, and tries again at the next frame something else asks for.
+    pub fn capped(mut self) -> Self {
+        self.capped = true;
+        self
+    }
+
+    /// Sets [`Player::from_start`] and [`Player::capped`] as a widget's
+    /// builder says, at each update: its tree state is made once.
+    pub(crate) fn set_mode(&mut self, from_start: bool, capped: bool) {
+        self.from_start = from_start;
+        self.capped = capped;
     }
 
     /// Takes a frame's time: moves to the frame due, and says when the next
@@ -112,13 +147,14 @@ impl Player {
         motion: Motion,
         now: Instant,
     ) -> Option<Instant> {
-        let now = self.now.map_or(now, |was| was.max(now));
+        let before = self.now;
+        let now = before.map_or(now, |was| was.max(now));
         self.follow(still, now);
         self.now = Some(now);
         let shows = bounds.intersects(viewport);
         let settle = self.hold(bounds.size(), now).filter(|_| shows);
         let fed = self.feeding(now).filter(|_| shows);
-        let next = self.play(shows, motion, now);
+        let next = self.play(shows, motion, now, before);
         settle.into_iter().chain(fed).chain(next).min()
     }
 
@@ -148,9 +184,19 @@ impl Player {
     /// Moves to the frame due while it `shows` and someone may be watching
     /// (`motion.watched()`: in front, animations on, the window in use), and
     /// says when the next is. Idle, it holds, as the Slint app held its
-    /// emoji while nobody used the window (`run_emoji_animations`).
-    fn play(&mut self, shows: bool, motion: Motion, now: Instant) -> Option<Instant> {
-        self.playing = false;
+    /// emoji while nobody used the window (`run_emoji_animations`); one
+    /// [`Player::from_start`] shows its first frame. A capped one without a
+    /// slot shows its first frame too, and asks for nothing. `before` is the
+    /// frame time of the update before.
+    fn play(
+        &mut self,
+        shows: bool,
+        motion: Motion,
+        now: Instant,
+        before: Option<Instant>,
+    ) -> Option<Instant> {
+        let played = std::mem::take(&mut self.playing);
+        let due = self.due.take();
         let moving = self.moving.as_ref()?;
         if !shows {
             return None;
@@ -158,7 +204,21 @@ impl Player {
         if !motion.watched() {
             // Stops the clock only if nothing else plays in this frame.
             clock::pause(now);
+            if self.from_start {
+                self.frame = 0;
+            }
             return None;
+        }
+        if self.capped && !self.seen.is_some_and(|id| slots::claim(id, now)) {
+            clock::pause(now);
+            self.frame = 0;
+            return None;
+        }
+        // Resumed: after a frame it didn't play in, or one long before.
+        let away = before.is_some_and(|before| now.saturating_duration_since(before) > AWAY);
+        let missed = due.map_or(away, |due| now > due + MISSED);
+        if self.from_start && (!played || missed) {
+            self.start = None;
         }
         self.playing = true;
         let elapsed = clock::tick(now);
@@ -170,7 +230,8 @@ impl Player {
         };
         let at = clock::frame_at(moving.delays(), plays, elapsed.saturating_sub(start));
         self.frame = at.index;
-        at.wait.map(|wait| now + wait)
+        self.due = at.wait.map(|wait| now + wait);
+        self.due
     }
 
     /// The frame showing, for the tests.
@@ -205,6 +266,7 @@ impl Player {
             arrived: Some(now),
             feed,
             from_start: self.from_start,
+            capped: self.capped,
             ..Self::default()
         };
     }
@@ -319,32 +381,6 @@ fn source_size(renderer: &Renderer, handle: &image::Handle) -> Option<(u32, u32)
             .measure_image(handle)
             .map(|size| (size.width, size.height)),
     }
-}
-
-/// `handle`'s copy as `look` draws it; none for a picture it can't read.
-/// A copy reads straight RGBA, so a picture already in the renderer's
-/// format, as a copy or a frame is, draws as it is rather than read wrong.
-fn copy(handle: &image::Handle, look: &Look) -> Option<image::Handle> {
-    if iced_tiny_skia::premultiplied::is_premultiplied(handle) {
-        return None;
-    }
-    let pixels = match handle {
-        image::Handle::Rgba {
-            width,
-            height,
-            pixels,
-            ..
-        } => look::make(pixels, *width, *height, look),
-        image::Handle::Bytes(_, bytes) => {
-            let decoded = ::image::load_from_memory(bytes).ok()?.into_rgba8();
-            look::make(decoded.as_raw(), decoded.width(), decoded.height(), look)
-        }
-        image::Handle::Path(_, path) => {
-            let decoded = ::image::open(path).ok()?.into_rgba8();
-            look::make(decoded.as_raw(), decoded.width(), decoded.height(), look)
-        }
-    };
-    Some(look::handle(look, pixels))
 }
 
 #[cfg(test)]

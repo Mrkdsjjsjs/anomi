@@ -54,11 +54,15 @@ the app made once (clone them, never make one in a view).
   `Hover`, `Panel`, `Raised`, `Chat`). `avatar::portrait(&avatar, size)`
   for the rest: `.shape(..)`, `.ground(..)`, `.presence(..)`, `.dot(..)`,
   `.opacity(..)`, `.decoration(Some(&handle))`, `.speaking(bool)`,
-  `.motion(m)`, `.view()`. `avatar::circle`, `avatar::gap(size)` for a row
-  without one.
+  `.motion(m)`, `.view()`. An animated face and decoration play only with
+  a live `.motion(m)`, from their first frame each time they start or
+  resume, and are capped (`picture::MOVING`); hand `Motion::default()`
+  where they shouldn't move, and `motion.awake()` to a speaking call tile.
+  `avatar::circle`, `avatar::gap(size)` for a row without one.
 - `name::styled_name(&text, row.style)`: `.size()`, `.weight()`,
-  `.ink(Ink)`, `.width()`, `.opacity()`. Takes `Option<kind::NameStyle>`
-  as it is (`name::Style` is that type).
+  `.ink(Ink)`, `.width()`, `.opacity()`, `.motion(m)` (prism, neon, toon
+  and pop loop while `m.watched()`; without it, at rest). Takes
+  `Option<kind::NameStyle>` as it is (`name::Style` is that type).
 - `nameplate::nameplate(row_content, Place::{Member, Dm, Account}, motion)`
   `.plate(&row.plate).selected(..)`; wrap the name column in
   `nameplate::extent(..)` so the plate knows where the text ends.
@@ -67,16 +71,27 @@ the app made once (clone them, never make one in a view).
   `presence::status_text(&status, motion).view()`,
   `presence::voice_spot(&spot, on_press, motion).view()`;
   `badge::badge(&count)` (empty draws nothing), `badge::discord_badge`.
-- `effect::effect(&effect, motion).radius(card_radius).play(Play::Hover)`
-  `.on_wanted(msg)` over a card; `frame::frame(&layers, Side::Back|Front)`
-  `.large(bool)` behind and over it (order in `frame`'s doc).
+- `effect::effect(&effect, motion).radius(card_radius).play(Play::Open)`
+  `.on_wanted(msg)` over a card: it waits for every layer's picture and
+  half a second more, drawing nothing, then plays while the card shows and
+  `motion.watched()`; at rest its still, or nothing for an
+  `effect.intermittent` one. `Play::Hover` plays under the pointer,
+  `Play::While(bool)` as told, `Play::Held` never.
+  `frame::frame(&layers, Side::Back|Front)` `.large(bool)` behind and over
+  it (order in `frame`'s doc).
 
 **Pictures and covers.**
 - `picture::picture(handle)`: `.side(px)` or `.width()/.height()`,
   `.round()`, `.radius(r)`, `.fit(Fit::Cover|Contain|Top)`, `.opacity()`,
-  `.motion(m)` (moving pictures play only with it). Corners are real (a
+  `.motion(m)` (moving pictures play only with it). What only decorates,
+  a banner as a profile shows, adds `.from_start()` (from its first frame
+  each time it starts or resumes, and that frame while it doesn't play)
+  and `.capped()` (at most `picture::MOVING`, 8, distinct capped pictures
+  play at once; the others hold their first frame). Corners are real (a
   copy with them cleared), on any ground. A widget of your own that draws
-  pictures keeps a `picture::Player` per picture (as `rail_item` does).
+  pictures keeps a `picture::Player` per picture (as `rail_item` does;
+  `Player::from_start().capped()` for a cosmetic one). A rail item's
+  picture plays only under the pointer, its folder's previews never.
   `picture::blurred(&handle)` for a spoiler under `cover::spoiler(..)`.
 - `picture::live(&live)`: a moving picture's newest frame, read from its
   `kind::Live` as it draws; a frame within two pixels of its box is drawn

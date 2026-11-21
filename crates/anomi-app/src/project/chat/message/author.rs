@@ -3,6 +3,8 @@
 //! cosmetics), the message it replies to or the command it answers.
 
 use iced::Color;
+use iced::widget::image;
+use yapfast_core::application::AppState;
 use yapfast_core::chat::{ChatMessage, NoticeKind};
 use yapfast_core::discord;
 use yapfast_lang::tr;
@@ -10,7 +12,7 @@ use yapfast_lang::tr;
 use anomi_vm::chat::message::{Author, Command, Header, Notice, Reply};
 use anomi_vm::kind::{Avatar, NameStyle, Tag};
 
-use super::Context;
+use super::{Context, Look};
 use crate::pictures;
 use crate::project::rows;
 
@@ -44,15 +46,11 @@ pub(super) fn author(cx: &Context<'_>, message: &ChatMessage, blocked: bool) -> 
                 style
             }
         });
+    let faces = faces(state, cx.look, message, false);
     Author {
         name: message.author.clone(),
-        avatar: rows::avatar(
-            state,
-            &message.author,
-            &message.author,
-            message.avatar.as_deref(),
-        ),
-        decoration: pictures::find(state, cosmetics.decoration(message.decoration.as_deref())),
+        avatar: faces.avatar,
+        decoration: faces.decoration,
         color: message.color.map(rows::rgb),
         style,
         tag: cosmetics.tag(message.tag.as_ref()).map(|tag| Tag {
@@ -62,6 +60,44 @@ pub(super) fn author(cx: &Context<'_>, message: &ChatMessage, blocked: bool) -> 
         }),
         bot: message.bot,
         known: !message.sender.is_empty(),
+    }
+}
+
+/// An author's picture and decoration as their message's row shows them,
+/// with the addresses of their moving versions.
+pub(crate) struct Faces {
+    pub avatar: Avatar,
+    pub decoration: Option<image::Handle>,
+    /// The moving versions shown while lit, to ask for and to watch; none
+    /// while dark.
+    pub moving: Vec<String>,
+}
+
+/// The author's picture and decoration: while the message is `lit` (the
+/// pointer on it, which plays them, as in Discord's client), their moving
+/// versions once they came; else, and until then, the stills. Not for a
+/// blocked person's message, which shows neither.
+pub(crate) fn faces(state: &AppState, look: &Look, message: &ChatMessage, lit: bool) -> Faces {
+    let avatar = message.avatar.as_deref();
+    let decoration = look.cosmetics.decoration(message.decoration.as_deref());
+    let author = &message.author;
+    if !lit {
+        return Faces {
+            avatar: rows::avatar(state, author, author, avatar),
+            decoration: pictures::find(state, decoration),
+            moving: Vec::new(),
+        };
+    }
+    let moving_decoration = decoration
+        .map(pictures::animated_url)
+        .filter(|moving| !moving.is_empty() && Some(moving.as_str()) != decoration);
+    Faces {
+        avatar: rows::moving_avatar(state, author, author, avatar),
+        decoration: rows::moving_collectible(state, decoration),
+        moving: pictures::moving_url(avatar)
+            .into_iter()
+            .chain(moving_decoration)
+            .collect(),
     }
 }
 

@@ -5,9 +5,9 @@
 //! between rounds, timed as the fake's product (`PROFILE_EFFECT`).
 //!
 //! The still is the fake's own, 450 by 880, which the card draws at its
-//! width. The layers' frames, which only a hovered card in the app shows,
-//! are drawn at a fifth of that and five to a round, so a sample holds
-//! half a MiB of them rather than the fake's 80.
+//! width. The layers' frames, which only a card playing it in the app
+//! shows, are drawn at a fifth of that and five to a round, so a sample
+//! holds half a MiB of them rather than the fake's 80.
 
 use std::cell::OnceCell;
 use std::sync::Arc;
@@ -60,6 +60,7 @@ fn make() -> Effect {
                 ..EffectLayer::default()
             },
         ],
+        intermittent: false,
     }
 }
 

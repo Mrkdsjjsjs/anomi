@@ -20,7 +20,8 @@ use crate::project::account::profile::{accent, badges};
 use crate::project::rows;
 
 /// Someone's card from what the core shows of them; with `moving`, its
-/// banner plays once its GIF came.
+/// avatar, decoration and banner show their moving versions once they came,
+/// which its head plays.
 pub fn card(core: &Application, view: &ProfileView, moving: bool) -> Card {
     let state = &core.state;
     let profile = &view.profile;
@@ -31,16 +32,21 @@ pub fn card(core: &Application, view: &ProfileView, moving: bool) -> Card {
     let own = discord && relation == Relation::Me;
     let menu = core.person_choices(&profile.id);
     let messages = menu.contains(&MenuChoice::Message);
+    let (name, avatar) = (&profile.name, profile.avatar.as_deref());
+    let decoration = cosmetics.decoration(profile.decoration.as_deref());
     Card {
         id: profile.id.clone(),
         name: profile.name.clone(),
-        avatar: rows::avatar(
-            state,
-            &profile.name,
-            &profile.name,
-            profile.avatar.as_deref(),
-        ),
-        decoration: pictures::find(state, cosmetics.decoration(profile.decoration.as_deref())),
+        avatar: if moving {
+            rows::moving_avatar(state, name, name, avatar)
+        } else {
+            rows::avatar(state, name, name, avatar)
+        },
+        decoration: if moving {
+            rows::moving_collectible(state, decoration)
+        } else {
+            pictures::find(state, decoration)
+        },
         name_style: lines::name_style(state, profile.style.as_deref(), false),
         presence: rows::presence(profile.presence),
         handle: profile.handle.clone(),
@@ -205,8 +211,9 @@ fn friends_since(state: &AppState, user: &str) -> String {
 }
 
 /// The profile effect they equip, while effects play. Its pictures are
-/// looked up without being asked for: the card asks for them as it is
-/// about to play it (`EffectWanted`).
+/// looked up without being noted: the card notes and asks for them as it's
+/// made (`super::profile::note_effect`), all of them while animations may
+/// play, else its still alone.
 fn effect(state: &AppState, profile: &CoreProfile) -> Option<Effect> {
     let effect = effect_of(state, profile)?;
     let find = |address: &str| state.pictures.get(address).and_then(pictures::shown);
@@ -225,6 +232,7 @@ fn effect(state: &AppState, profile: &CoreProfile) -> Option<Effect> {
                 loop_delay: layer.loop_delay,
             })
             .collect(),
+        intermittent: effect.intermittent,
     })
 }
 
@@ -286,16 +294,13 @@ pub fn presence_or_offline(presence: Option<Presence>) -> anomi_vm::kind::Presen
     rows::presence(Some(presence.unwrap_or(Presence::Offline)))
 }
 
-/// The banner: its moving GIF once it came, as Discord's card plays it
+/// The banner: its moving WebP once it came, as Discord's card plays it
 /// from the moment it opens, else its still. With animations off (not
-/// `moving`) the GIF isn't asked for (`banner-moving`,
-/// `ui/people.slint:1466`). Looked up through `pictures::find`, the GIF is
-/// asked for with the card's other pictures.
+/// `moving`, or Never) the WebP isn't asked for. Looked up through
+/// `pictures::find`, it is asked for with the card's other pictures.
 fn banner(state: &AppState, still: Option<&str>, moving: bool) -> anomi_vm::kind::Expected {
-    let gif = still
-        .filter(|_| moving)
-        .and_then(yapfast_core::chat::moving_banner);
-    match gif.and_then(|gif| pictures::find(state, Some(&gif))) {
+    let webp = pictures::moving_url(still.filter(|_| moving));
+    match webp.and_then(|webp| pictures::find(state, Some(&webp))) {
         Some(handle) => anomi_vm::kind::Expected::Ready(handle),
         None => rows::expected(state, still),
     }
@@ -314,7 +319,7 @@ mod tests {
     use crate::pictures::{self, Watch};
 
     const STILL: &str = "https://cdn.discordapp.com/banners/1/a_wave.png?size=600";
-    const GIF: &str = "https://cdn.discordapp.com/banners/1/a_wave.gif?size=600";
+    const WEBP: &str = "https://cdn.discordapp.com/banners/1/a_wave.webp?size=600&animated=true";
 
     fn picture() -> Arc<Picture> {
         pictures::install();
@@ -339,24 +344,30 @@ mod tests {
     }
 
     #[test]
-    fn a_moving_banner_plays_once_its_gif_came() {
+    fn a_moving_banner_plays_once_its_webp_came() {
         let mut state = AppState::default();
         let still = picture();
         state.pictures.insert(STILL.into(), still.clone());
         let (before, asked) = shown(&state, STILL, true);
-        assert!(is(&before, &still), "the still until the GIF comes");
-        assert!(asked.iter().any(|address| address == GIF), "{asked:?}");
-        let gif = picture();
-        state.pictures.insert(GIF.into(), gif.clone());
-        assert!(is(&shown(&state, STILL, true).0, &gif));
+        assert!(is(&before, &still), "the still until the WebP comes");
+        assert!(asked.iter().any(|address| address == WEBP), "{asked:?}");
+        let webp = picture();
+        state.pictures.insert(WEBP.into(), webp.clone());
+        assert!(is(&shown(&state, STILL, true).0, &webp));
         // With animations off it is neither asked for nor shown.
         let (off, asked) = shown(&state, STILL, false);
         assert!(is(&off, &still));
-        assert!(!asked.iter().any(|address| address == GIF), "{asked:?}");
+        assert!(!asked.iter().any(|address| address == WEBP), "{asked:?}");
+        // Nor under "Play GIFs, emoji and stickers" = Never.
+        pictures::set_moving_pictures(false);
+        let (never, asked) = shown(&state, STILL, true);
+        pictures::set_moving_pictures(true);
+        assert!(is(&never, &still));
+        assert_eq!(asked, [STILL]);
     }
 
     #[test]
-    fn a_still_banner_asks_for_no_gif() {
+    fn a_still_banner_asks_for_no_moving_one() {
         let state = AppState::default();
         let plain = "https://cdn.discordapp.com/banners/1/wave.png?size=600";
         let (shown, asked) = shown(&state, plain, true);

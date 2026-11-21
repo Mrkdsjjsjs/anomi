@@ -1,8 +1,25 @@
-//! A profile effect over a card: its still at rest, and while it plays its
-//! layers, moving pictures laid over the whole card, each shown from its
-//! start for its duration, and again after its delay when it loops. It
-//! plays while the pointer is on it, once for an effect that doesn't loop,
-//! and holds still otherwise; clicks go through it.
+//! A profile effect over a card: its layers, moving pictures laid over the
+//! whole card, each shown from its start for its duration and again after
+//! its delay when it loops; while it doesn't play, its still, or nothing
+//! for an intermittent one (Discord's INTERMITTENT). Clicks go through it.
+//! Its [`Play`] says when it plays:
+//!
+//! - [`Play::Open`], a popout's, a full profile's and the docked DM
+//!   panel's, plays as Discord's card does: from the moment it shows, once
+//!   every layer's picture has come (the app asks for them all as the card
+//!   is made) and `DELAY`, half a second, after, its intro once and its
+//!   loops until the card goes. It draws nothing while it waits, and shows
+//!   as at rest once it has waited `WAIT`, five seconds, for its pictures.
+//! - [`Play::Hover`] plays while the pointer is on it, each layer as its
+//!   picture comes; [`Play::While`] while the place says; [`Play::Held`]
+//!   never, as the editor's cell has it.
+//!
+//! It plays only while `motion.watched()`, as its layers' pictures do: in
+//! front, or visible under Everything, animations on and the window used
+//! in the last 15 s. Otherwise it shows as at rest, and goes on from where
+//! it stood once it may again. One whose layers don't loop plays once,
+//! then shows as at rest. Other layers or timings, a different effect,
+//! start its play over; its pictures coming don't.
 //!
 //! Each time a layer shows it gets a new [`Player::from_start`]: its
 //! picture starts from its first frame, whether it plays a number of times
@@ -15,23 +32,22 @@
 //! (`ui/people.slint:2016`), the server profile editor's effect cell holds
 //! it still (`ui/server.slint:963`).
 //!
-//! A layer whose picture hasn't come draws nothing; with
-//! [`ProfileEffect::on_wanted`] it says so as it comes to show, so the app
-//! asks for the layers' pictures only for a card someone points at, as
-//! `EffectLayerView` asked for its own as it showed (`:851`).
+//! With [`ProfileEffect::on_wanted`] it says, once a play, that a layer's
+//! picture is wanted: under `Open` while it waits for one, otherwise as a
+//! layer comes to show without it, as `EffectLayerView` asked for its own
+//! as it showed (`:851`).
 //!
-//! Nothing ticks: while it plays it asks for a frame when a layer shows or
-//! hides and when it ends, and each layer's [`Player`] asks for its own
-//! frames; held still, behind another window or with animations off, it
-//! draws its still and asks for none. The scale its pictures are copied at
-//! is the app's to set (`picture::set_scale`).
+//! Nothing ticks: it asks for a frame when a layer shows or hides, when it
+//! ends, when its delay ends and when its wait runs out, and each layer's
+//! [`Player`] asks for its own frames; at rest, hidden or with animations
+//! off it asks for none. The scale its pictures are copied at is the app's
+//! to set (`picture::set_scale`).
 
 mod playback;
 pub mod sample;
+mod step;
 #[cfg(test)]
 pub(crate) mod tests;
-
-use std::time::Instant;
 
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout::{self, Layout};
@@ -45,7 +61,7 @@ use iced::{Event, Length, Rectangle, Size, Vector, window};
 use anomi_theme::{Motion, Renderer, Theme};
 
 use crate::picture::{Fit, Player, Shape};
-use playback::{Playback, shown};
+use playback::{Look, Playback};
 
 /// The effect as a profile's view-model carries it.
 pub use anomi_vm::kind::{Effect, EffectLayer};
@@ -61,6 +77,12 @@ pub enum Play {
     /// While this holds, for a place that knows better than its own
     /// bounds; a change starts it over, as a hover does.
     While(bool),
+    /// From the moment it shows, as Discord's card plays it: once every
+    /// layer's picture has come and half a second after, its intro once
+    /// and its loops until it goes. It draws nothing while it waits, and
+    /// shows as at rest once it has waited five seconds for its pictures,
+    /// until they come.
+    Open,
 }
 
 /// An effect laid over a card; see [`effect`].
@@ -94,8 +116,8 @@ impl<Message> ProfileEffect<'_, Message> {
         self
     }
 
-    /// Sends `message` when a layer comes to show before its picture has
-    /// come, once a play: the app asks for the layers' pictures then.
+    /// Sends `message` once a play when a layer's picture is wanted: the
+    /// app asks for the layers' pictures then.
     pub fn on_wanted(mut self, message: Message) -> Self {
         self.on_wanted = Some(message);
         self
@@ -126,6 +148,7 @@ impl<Message> ProfileEffect<'_, Message> {
             Play::Hover => hovered,
             Play::Held => false,
             Play::While(play) => play,
+            Play::Open => true,
         }
     }
 
@@ -164,6 +187,8 @@ struct State {
     still: Player,
     /// It said in this play that a layer's picture is wanted.
     wanted: bool,
+    /// The layers' count and timings it plays (`step::timing`).
+    timing: Option<u64>,
 }
 
 impl<Message> widget::Meta for ProfileEffect<'_, Message> {}
@@ -238,91 +263,29 @@ impl<Message: Clone> widget::Widget<Message, Theme, Renderer> for ProfileEffect<
         let Some(clip) = bounds.intersection(viewport) else {
             return;
         };
-        renderer.with_layer(clip, |renderer| {
-            if !state.playback.playing() {
-                if let Some(still) = &self.effect.still
+        renderer.with_layer(clip, |renderer| match state.playback.look() {
+            Look::Playing => {
+                for (layer, player) in self.effect.layers.iter().zip(&state.layers) {
+                    if let (Some(player), Some(picture)) = (player, &layer.picture)
+                        && let Some((drawn, shape)) =
+                            self.place(bounds, offset(layer), size_of(renderer, picture))
+                    {
+                        player.draw(renderer, picture, drawn, shape, 1.0, &clip);
+                    }
+                }
+            }
+            // On its way: nothing, as Discord's card shows nothing then.
+            Look::Waiting => {}
+            Look::Rest => {
+                if !self.effect.intermittent
+                    && let Some(still) = &self.effect.still
                     && let Some((drawn, shape)) =
                         self.place(bounds, Vector::ZERO, size_of(renderer, still))
                 {
                     state.still.draw(renderer, still, drawn, shape, 1.0, &clip);
                 }
-                return;
-            }
-            for (layer, player) in self.effect.layers.iter().zip(&state.layers) {
-                if let (Some(player), Some(picture)) = (player, &layer.picture)
-                    && let Some((drawn, shape)) =
-                        self.place(bounds, offset(layer), size_of(renderer, picture))
-                {
-                    player.draw(renderer, picture, drawn, shape, 1.0, &clip);
-                }
             }
         });
-    }
-}
-
-impl<Message> ProfileEffect<'_, Message> {
-    /// Whether to say now that a layer's picture is wanted: one shows
-    /// without it, and that wasn't said yet in this play.
-    fn wants(&self, state: &mut State) -> bool {
-        if !state.playback.playing() {
-            state.wanted = false;
-            return false;
-        }
-        let at = state.playback.at();
-        let missing = |layer: &EffectLayer| layer.picture.is_none() && shown(layer, at);
-        let missing = self.effect.layers.iter().any(missing);
-        let wants = missing && !state.wanted;
-        state.wanted |= missing;
-        wants
-    }
-
-    /// Takes the frame at `now`: moves the play on, starts the players of
-    /// the layers that came to show and drops those of the layers that
-    /// hid, and says when the next frame is due.
-    fn frame(
-        &self,
-        state: &mut State,
-        bounds: Rectangle,
-        renderer: &Renderer,
-        viewport: &Rectangle,
-        now: Instant,
-    ) -> Option<Instant> {
-        let layers = &self.effect.layers;
-        let (end, loops) = (self.effect.end(), self.effect.loops());
-        let asked = self.asked(state.hovered);
-        let may = self.motion.playing() && !layers.is_empty();
-        let playing = state.playback.frame(asked, may, end, loops, now);
-        let at = state.playback.at();
-        let mut due = state.playback.next(layers, end, loops, now);
-        let mut sooner = |next: Option<Instant>| due = due.into_iter().chain(next).min();
-        state.layers.resize_with(layers.len(), || None);
-        for (layer, slot) in layers.iter().zip(&mut state.layers) {
-            let picture = layer
-                .picture
-                .as_ref()
-                .filter(|_| playing && shown(layer, at));
-            let Some(picture) = picture else {
-                *slot = None;
-                continue;
-            };
-            let player = slot.get_or_insert_with(Player::from_start);
-            if let Some((drawn, _)) = self.place(bounds, offset(layer), size_of(renderer, picture))
-            {
-                sooner(player.update(picture, drawn, viewport, self.motion, now));
-            }
-        }
-        if !playing
-            && let Some(still) = &self.effect.still
-            && let Some((drawn, _)) = self.place(bounds, Vector::ZERO, size_of(renderer, still))
-        {
-            // A still, as Slint's `Image`: it never moves.
-            sooner(
-                state
-                    .still
-                    .update(still, drawn, viewport, Motion::default(), now),
-            );
-        }
-        due
     }
 }
 

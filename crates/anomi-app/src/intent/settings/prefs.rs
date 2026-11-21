@@ -90,13 +90,15 @@ pub(super) fn messages(app: &mut App, intent: messages::Intent) -> Task<Message>
         I::Animate(animate) => {
             let never = animate == messages::Animate::Never;
             app.motion.never = never;
-            keep(app, |saved| {
+            app.layout.edit(|saved| {
                 saved.animate = if never {
                     Animate::Never
                 } else {
                     Animate::Focused
                 };
-            })
+            });
+            animate_changed(app, !never);
+            Task::none()
         }
         I::LinkPreviews(on) => keep_everywhere(app, |saved| saved.link_previews = Some(on)),
         I::CollapseLong(on) => keep_everywhere(app, |saved| saved.collapse_long = on),
@@ -118,6 +120,21 @@ pub(super) fn messages(app: &mut App, intent: messages::Intent) -> Task<Message>
             Task::none()
         }
     }
+}
+
+/// "Play GIFs, emoji and stickers" changed: under Never no moving version is
+/// asked for, and the places that show one take their stills again; back
+/// on, they ask for them. The places that hold one read the switch in their
+/// keys and are built again; the message the pointer is on is lit again.
+fn animate_changed(app: &mut App, moving: bool) {
+    crate::pictures::set_moving_pictures(moving);
+    app.refresh();
+    let timeline = &mut app.vm.chat.timeline;
+    let (shown, requests) = (&mut app.shown.timeline, &mut app.pictures);
+    crate::project::chat::timeline::light(&app.core, timeline, shown, requests);
+    let timeline = &mut app.vm.chat.thread_panel.timeline;
+    let (shown, requests) = (&mut app.shown.aside, &mut app.pictures);
+    crate::project::chat::timeline::light(&app.core, timeline, shown, requests);
 }
 
 pub(super) fn notifications(app: &mut App, intent: notifications::Intent) -> Task<Message> {

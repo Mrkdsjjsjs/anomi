@@ -125,6 +125,36 @@ fn the_card_is_built_again_only_when_what_it_shows_changes() {
 }
 
 #[test]
+fn the_cards_avatar_moves_once_its_webp_came() {
+    let mut state = alice();
+    let still = "https://cdn.discordapp.com/avatars/1/a_alice.png?size=128";
+    let moving = "https://cdn.discordapp.com/avatars/1/a_alice.webp?size=128&animated=true";
+    state.account_avatar = Some(still.into());
+    let (mut account, mut shown, mut requests) =
+        (Account::default(), Shown::default(), Requests::default());
+    show(&state, &mut account, &mut shown, &mut requests);
+    let asked = requests.take(std::time::Instant::now());
+    let wanted = asked.iter().any(|action| {
+        matches!(action, Action::LoadPictures(urls) if urls.iter().any(|url| url == moving))
+    });
+    assert!(wanted, "its moving version is asked for");
+    crate::pictures::install();
+    let picture = std::sync::Arc::new(yapfast_core::chat::Picture {
+        width: 1,
+        height: 1,
+        rgba: yapfast_core::chat::Pixels::new(1, 1, vec![1, 2, 3, 255]),
+        ..Default::default()
+    });
+    state.pictures.insert(moving.into(), picture.clone());
+    show(&state, &mut account, &mut shown, &mut Requests::default());
+    let shown_id = account.avatar.picture.as_ref().map(|handle| handle.id());
+    assert_eq!(
+        shown_id,
+        crate::pictures::handle(&picture).map(|handle| handle.id())
+    );
+}
+
+#[test]
 fn outside_a_call_the_buttons_say_how_the_next_is_joined() {
     let state = alice();
     let mut layout = layout();

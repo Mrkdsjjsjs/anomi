@@ -3,7 +3,10 @@
 //! (`profile_effect: {id, expires_at}`); the layers it plays come from the
 //! shop's product, `GET /collectibles-products/{sku}`, whose item Discord's
 //! client builds its `ProfileEffect` from. See
-//! <https://docs.discord.food/resources/collectibles>.
+//! <https://docs.discord.food/resources/collectibles>. The item's
+//! `animationType` says what shows while the effect doesn't play: its still
+//! (1, PERSISTENT, and when it is missing) or nothing (2, INTERMITTENT), as
+//! [`Effect::intermittent`] keeps.
 
 use serde_json::Value;
 
@@ -36,6 +39,9 @@ pub struct Effect {
     pub layers: Vec<Layer>,
     /// The picture that shows while it doesn't play.
     pub still: Option<String>,
+    /// Discord's `animationType` 2, INTERMITTENT: nothing shows while it
+    /// doesn't play, not even the still; 1, PERSISTENT, shows the still.
+    pub intermittent: bool,
 }
 
 /// The effect a profile response names: the server's, else the user's own.
@@ -110,6 +116,7 @@ pub fn parse(sku: &str, product: &Value, pick: usize) -> Option<Effect> {
             .or(item["reducedMotionSrc"].as_str())
             .or(item["thumbnailPreviewSrc"].as_str())
             .map(address),
+        intermittent: item["animationType"].as_u64() == Some(2),
     })
 }
 
@@ -162,6 +169,23 @@ mod tests {
         assert_eq!((looping.looped, looping.y), (true, 12));
         assert!(effect.still.unwrap().ends_with("/petals/still.png"));
         assert_eq!(parse("9", &json!({"items": [{"type": 1}]}), 0), None);
+    }
+
+    #[test]
+    fn an_intermittent_effect_shows_nothing_at_rest_and_the_others_their_still() {
+        let still = "https://cdn.discordapp.com/assets/c/still.png";
+        let effect = |kind: Option<u64>| {
+            let mut item = json!({"effects": [], "staticFrameSrc": still});
+            if let Some(kind) = kind {
+                item["animationType"] = json!(kind);
+            }
+            parse("9", &json!({"items": [item]}), 0).unwrap()
+        };
+        assert!(effect(Some(2)).intermittent);
+        assert!(!effect(Some(1)).intermittent);
+        assert!(!effect(None).intermittent, "a missing type shows the still");
+        // Its still is read all the same; what draws it decides.
+        assert!(effect(Some(2)).still.is_some());
     }
 
     #[test]

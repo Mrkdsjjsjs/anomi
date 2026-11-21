@@ -2,10 +2,11 @@
 //! name with its marks, the activity under it, the nameplate behind it, 42 px
 //! tall. The Slint side: the row of `MemberPanel` (`ui/people.slint:265`).
 //!
-//! A row draws twice, as iced's `hover` lays one over the other: at rest,
-//! and as it looks under the pointer (its wash, its nameplate and avatar
-//! playing). A click opens the member's card beside the row, a right click
-//! their menu at the pointer.
+//! A row draws twice, as iced's `hover` lays one over the other: at rest
+//! (a selected member's avatar and decoration playing, as Discord's do),
+//! and as it looks under the pointer (its wash, its nameplate, avatar and
+//! name playing). A click opens the member's card beside the row, a right
+//! click their menu at the pointer.
 
 use iced::widget::{container, hover, mouse_area, row};
 use iced::{Alignment, Fill, Padding, Rectangle};
@@ -44,10 +45,15 @@ pub fn view<'a>(
     gems: bool,
     motion: Motion,
 ) -> Element<'a, Intent> {
-    let rest = body(member, selected, false, gems, Motion::default());
-    let over = body(member, selected, true, gems, motion);
-    // The app swaps in the moving decoration and nameplate while the
-    // pointer is on the row, and the still ones as it leaves.
+    // At rest the lines and the nameplate hold still, a selected row's
+    // plate too; under the pointer everything plays.
+    let still = Motion::default();
+    let resting = resting_face(selected, motion);
+    let rest = body(member, selected, false, gems, resting, still);
+    let over = body(member, selected, true, gems, motion, motion);
+    // The app swaps in the moving avatar and decoration while the pointer
+    // is on the row or it's selected, the moving nameplate while pointed,
+    // and the still ones as it leaves.
     let pointed = mouse_area(hover(rest, over))
         .on_enter(Intent::Pointed(Some(member.id.clone())))
         .on_exit(Intent::Pointed(None));
@@ -66,17 +72,26 @@ fn card_anchor(row: Rectangle) -> Rectangle {
     }
 }
 
-/// The row in its look at rest or under the pointer.
+/// How the face of the row at rest plays: while the member is selected
+/// (their card open), still otherwise.
+fn resting_face(selected: bool, motion: Motion) -> Motion {
+    if selected { motion } else { Motion::default() }
+}
+
+/// The row in its look at rest or under the pointer: its face (avatar and
+/// decoration) playing with `face_motion`, its lines and nameplate with
+/// `motion`.
 fn body<'a>(
     member: &'a Member,
     selected: bool,
     hovered: bool,
     gems: bool,
+    face_motion: Motion,
     motion: Motion,
 ) -> Element<'a, Intent> {
     let plated = member.plate.picture.is_some();
     let content = row![
-        face::view(member, motion),
+        face::view(member, face_motion),
         lines::column(member, gems, hovered, motion)
     ]
     .spacing(SPACING)
@@ -112,4 +127,21 @@ fn body<'a>(
             ..container::Style::default()
         })
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use anomi_theme::Motion;
+
+    #[test]
+    fn a_row_at_rest_plays_its_face_only_while_selected() {
+        let front = Motion {
+            front: true,
+            ..Motion::default()
+        };
+        assert!(resting_face(true, front).watched());
+        assert!(!resting_face(false, front).watched());
+    }
 }

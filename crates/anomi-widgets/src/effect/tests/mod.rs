@@ -1,11 +1,13 @@
 //! The effect over a card: it plays on hover, once for one that doesn't
 //! loop, asks for frames only then, holds still otherwise, and lets clicks
 //! through. The widget is driven through its `update` with a headless
-//! shell, which says what it asked of the window. What it draws: `looks`;
-//! pictures of it and of the frame for review: `gallery`.
+//! shell, which says what it asked of the window. As a card opens it plays:
+//! `open`. What it draws: `looks`; pictures of it and of the frame for
+//! review: `gallery`.
 
 mod gallery;
 mod looks;
+mod open;
 pub(crate) mod support;
 
 use std::time::{Duration, Instant};
@@ -87,6 +89,11 @@ impl Rig {
 
     fn playing(&self) -> bool {
         self.tree.state.downcast_ref::<State>().playback.playing()
+    }
+
+    /// What it showed at the last frame.
+    fn look(&self) -> Look {
+        self.tree.state.downcast_ref::<State>().playback.look()
     }
 
     /// Which layers have a player, so show.
@@ -215,6 +222,7 @@ fn an_effect_without_layers_never_plays() {
     let still = Effect {
         still: sample::petals().still,
         layers: Vec::new(),
+        intermittent: false,
     };
     let mut widget = effect(&still, front());
     let mut rig = Rig::new(&widget);

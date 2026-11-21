@@ -127,7 +127,8 @@ pub(crate) fn shift(app: &mut App, held: bool) {
         crate::project::chat::timeline::light(
             &app.core,
             &mut app.vm.chat.timeline,
-            &app.shown.timeline,
+            &mut app.shown.timeline,
+            &mut app.pictures,
         );
     }
 }
@@ -209,7 +210,8 @@ fn message(app: &mut App, intent: MessageIntent) -> Task<Message> {
     parts::message(app, intent)
 }
 
-/// The message the pointer is on lies lit, with its bar.
+/// The message the pointer is on lies lit, with its bar; its author's
+/// moving pictures are asked for as the update ends (`App::update`).
 fn light(app: &mut App, key: Option<u64>) {
     if app.shown.timeline.lit == key {
         return;
@@ -218,7 +220,8 @@ fn light(app: &mut App, key: Option<u64>) {
     crate::project::chat::timeline::light(
         &app.core,
         &mut app.vm.chat.timeline,
-        &app.shown.timeline,
+        &mut app.shown.timeline,
+        &mut app.pictures,
     );
 }
 

@@ -16,6 +16,9 @@ pub struct Effect {
     pub still: Option<image::Handle>,
     /// Its layers, the lowest first.
     pub layers: Vec<EffectLayer>,
+    /// It shows nothing while it doesn't play (Discord's INTERMITTENT);
+    /// otherwise its still shows then.
+    pub intermittent: bool,
 }
 
 impl Effect {
@@ -136,6 +139,7 @@ mod tests {
                     ..EffectLayer::default()
                 },
             ],
+            intermittent: false,
         };
         assert_eq!(effect.end(), 4500);
         assert!(effect.loops());

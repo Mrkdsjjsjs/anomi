@@ -129,12 +129,15 @@ pub(super) struct Colours {
     pub main: Color,
     pub light1: Color,
     pub light2: Color,
-    pub dark1: Color,
     pub dark2: Color,
     /// Toon's edge.
     pub toon: Color,
     /// Neon's edge.
     pub neon: Color,
+    /// Neon's letters at the peaks of their flicker: the client's
+    /// `hsl(from main h calc(min(1, s) * (s * 1.1 + 10)) 85)`, the main
+    /// colour more saturated at 85% lightness.
+    pub flicker: Color,
 }
 
 impl Colours {
@@ -158,13 +161,15 @@ impl Colours {
         let (hue, saturation, lightness) = to_hsl(unpack(main));
         let shade =
             |lightness: f64| color(pack(from_hsl(hue, saturation, lightness.clamp(0., 1.))));
+        // CSS reads `s` in percent; `min(1, s)` keeps a grey grey.
+        let percent = saturation * 100.;
+        let flicker = (percent.min(1.) * (percent * 1.1 + 10.)).clamp(0., 100.) / 100.;
         Some(Self {
             count: given.len(),
             colors,
             main: color(main),
             light1: shade((1.2 * lightness).min(1.)),
             light2: shade((1.6 * lightness).min(1.)),
-            dark1: shade((0.6 * lightness).max(0.)),
             dark2: shade((0.2 * lightness).max(0.)),
             toon: shade((0.4 * lightness).max(0.12)),
             neon: color(pack(from_hsl(
@@ -172,6 +177,7 @@ impl Colours {
                 (1.2 * saturation).min(1.),
                 (lightness + 0.1).min(0.6),
             ))),
+            flicker: color(pack(from_hsl(hue, flicker, 0.85))),
         })
     }
 
@@ -213,12 +219,39 @@ mod tests {
     fn shades_follow_the_clients_hsl_steps() {
         let green = Colours::of(&style(1, &[0x00ff99]), true).expect("colours");
         assert_eq!(rgb(green.main), 0x00ff99);
-        // Lightness .5 becomes .6 and .3.
+        // Lightness .5 becomes .6 and .1.
         let lightness = |color: Color| to_hsl(unpack(rgb(color))).2;
         assert!((lightness(green.light1) - 0.6).abs() < 0.01);
-        assert!((lightness(green.dark1) - 0.3).abs() < 0.01);
+        assert!((lightness(green.dark2) - 0.1).abs() < 0.01);
         // Neon's edge is a bit lighter than the colour, at most .6.
         assert!((lightness(green.neon) - 0.6).abs() < 0.01);
+    }
+
+    #[test]
+    fn neon_flickers_to_its_colour_at_85_percent_lightness() {
+        let hsl = |color: Color| to_hsl(unpack(rgb(color)));
+        let green = Colours::of(&style(3, &[0x00ff99]), true).expect("colours");
+        let (hue, saturation, lightness) = hsl(green.flicker);
+        assert!((lightness - 0.85).abs() < 0.01, "{lightness}");
+        // Full already: more saturated is full.
+        assert!(saturation > 0.97, "{saturation}");
+        assert!(
+            (hue - hsl(green.main).0).abs() < 2.0,
+            "the colour's hue: {hue}"
+        );
+        // A grey stays grey: `min(1, s)` is 0 for it.
+        let grey = Colours::of(&style(3, &[0x808080]), true).expect("colours");
+        let [r, g, b, _] = grey.flicker.into_rgba8();
+        assert!(r == g && g == b, "{r} {g} {b}");
+        assert!((hsl(grey.flicker).2 - 0.85).abs() < 0.01);
+        // A pale colour is made more saturated: 11% becomes 22%.
+        let pale = Colours::of(&style(3, &[0x99a3ad]), true).expect("colours");
+        let before = hsl(pale.main).1;
+        let after = hsl(pale.flicker).1;
+        assert!(
+            (after - (before * 1.1 + 0.1)).abs() < 0.03,
+            "{before} to {after}"
+        );
     }
 
     #[test]

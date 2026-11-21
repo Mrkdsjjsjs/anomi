@@ -13,12 +13,12 @@ use iced::{Border, Event, Length, Point, Rectangle, Size, Vector};
 use iced::{keyboard, window};
 
 use anomi_theme::motion::{GLIDE, QUICK, SLIDE};
-use anomi_theme::{Renderer, Theme, metrics};
+use anomi_theme::{Motion, Renderer, Theme, metrics};
 
 use super::{Face, MENU_AT, RailItem, face, paint};
 use crate::picture::Player;
 
-struct State {
+pub(super) struct State {
     hovered: bool,
     focused: bool,
     /// A left press that began on the item.
@@ -34,8 +34,15 @@ struct State {
     /// The frame the animations are drawn at.
     now: Instant,
     /// The tile's picture, or a folder's servers': copies at the pixels
-    /// drawn, their corners cut by the renderer, playing while they move.
-    players: Vec<Player>,
+    /// drawn, their corners cut by the renderer. The tile's plays from its
+    /// first frame while the pointer is on it, capped; a folder's hold.
+    pub(super) players: Vec<Player>,
+}
+
+/// A picture's place on the rail: it plays from its first frame and is
+/// capped, as an avatar.
+fn player() -> Player {
+    Player::from_start().capped()
 }
 
 impl Focusable for State {
@@ -71,7 +78,7 @@ impl<Message: Clone> widget::Widget<Message, Theme, Renderer> for RailItem<'_, M
             // Picked up, it grows from its size on the rail.
             lift: Animation::new(1.0),
             now: Instant::now(),
-            players: (0..self.pictures()).map(|_| Player::default()).collect(),
+            players: (0..self.pictures()).map(|_| player()).collect(),
         })
     }
 
@@ -328,7 +335,9 @@ impl<Message: Clone> widget::Widget<Message, Theme, Renderer> for RailItem<'_, M
 }
 
 impl<Message> RailItem<'_, Message> {
-    /// Plays the pictures it shows, asking for a frame when one is due.
+    /// Plays the pictures it shows, asking for a frame when one is due: the
+    /// tile's while the pointer is on it, as Discord's rail plays an
+    /// animated icon; a folder's servers never.
     fn play_pictures(
         &self,
         state: &mut State,
@@ -337,14 +346,19 @@ impl<Message> RailItem<'_, Message> {
         shell: &mut Shell<'_, Message>,
         now: Instant,
     ) {
-        state.players.resize_with(self.pictures(), Player::default);
-        let mut play = |player: &mut Player, handle: &image::Handle, bounds: Rectangle| {
-            if let Some(due) = player.update(handle, bounds, viewport, self.motion, now) {
+        state.players.resize_with(self.pictures(), player);
+        let face = if state.hovered {
+            self.motion
+        } else {
+            Motion::default()
+        };
+        let mut play = |player: &mut Player, handle: &image::Handle, bounds: Rectangle, motion| {
+            if let Some(due) = player.update(handle, bounds, viewport, motion, now) {
                 shell.request_redraw_at(due);
             }
         };
         match &self.face {
-            Face::Picture(handle) => play(&mut state.players[0], handle, tile),
+            Face::Picture(handle) => play(&mut state.players[0], handle, tile, face),
             Face::Folder {
                 open: false,
                 previews,
@@ -356,6 +370,7 @@ impl<Message> RailItem<'_, Message> {
                             &mut state.players[index],
                             handle,
                             paint::preview_bounds(tile, index),
+                            Motion::default(),
                         );
                     }
                 }

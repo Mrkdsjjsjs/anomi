@@ -53,6 +53,17 @@ pub(crate) struct Shown {
     /// the rows were made with.
     pub(super) pointed: Option<String>,
     pointed_built: Option<String>,
+    /// The member whose card is open (`Members::selected`) as the rows were
+    /// made: their picture and decoration play too.
+    selected_built: String,
+}
+
+#[cfg(test)]
+impl Shown {
+    /// Whether a row shows the picture at `address`, or will once it came.
+    pub(crate) fn watches(&self, address: &str) -> bool {
+        self.pictures.addresses().any(|watched| watched == address)
+    }
 }
 
 /// The key the headings' pictures are noted under.
@@ -66,6 +77,8 @@ struct Look {
     hide_nameplates: bool,
     owner: Option<String>,
     in_server: bool,
+    /// Moving versions may be asked for (`pictures::moving_pictures`).
+    moving: bool,
 }
 
 impl Look {
@@ -78,6 +91,7 @@ impl Look {
             room,
             cosmetics: state.cosmetics,
             hide_nameplates: state.hide_nameplates,
+            moving: pictures::moving_pictures(),
         }
     }
 }
@@ -129,13 +143,17 @@ pub(super) fn show(
     };
     let look = Look::of(core);
     let mut moved: HashSet<u64> = shown.pictures.moved(state).into_iter().collect();
+    // The rows the pointer or the open card came onto or left are made
+    // again, their pictures playing or held.
     if shown.pointed != shown.pointed_built {
         let both = [&shown.pointed, &shown.pointed_built];
         moved.extend(both.into_iter().flatten().map(|id| key(id)));
-        if let Some(member) =
-            (shown.pointed.as_deref()).and_then(|id| list?.iter().find(|member| member.id == id))
-        {
-            requests.want(state, moving(state, member).iter().map(String::as_str));
+    }
+    if members.selected != shown.selected_built {
+        for id in [&members.selected, &shown.selected_built] {
+            if !id.is_empty() {
+                moved.insert(key(id));
+            }
         }
     }
     let now = yapfast_core::clock::now_ms();
@@ -148,13 +166,16 @@ pub(super) fn show(
     if same && shown.look.as_ref() == Some(&look) && moved.is_empty() && !expired {
         return;
     }
-    build(state, &look, list, &moved, expired, members, shown);
+    let playing = build(state, &look, list, &moved, expired, members, shown);
+    requests.want(state, playing.iter().map(String::as_str));
     shown.pointed_built.clone_from(&shown.pointed);
+    shown.selected_built.clone_from(&members.selected);
     shown.look = Some(look);
     seen_now(state, shown, requests);
 }
 
-/// Makes the rows again, keeping each unchanged member's.
+/// Makes the rows again, keeping each unchanged member's; gives the moving
+/// pictures of the rows made playing, to ask for.
 fn build(
     state: &AppState,
     look: &Look,
@@ -163,8 +184,9 @@ fn build(
     expired: bool,
     members: &mut Members,
     shown: &mut Shown,
-) {
+) -> Vec<String> {
     let now = yapfast_core::clock::now_ms();
+    let mut playing = Vec::new();
     let reuse = shown.look.as_ref() == Some(look);
     let old_source = shown.source.take();
     let old: &[ChatMember] = old_source.as_deref().map_or(&[], Vec::as_slice);
@@ -205,22 +227,22 @@ fn build(
             .flatten()
             .and_then(|at| old_made.get(at).cloned());
         let pointed = shown.pointed.as_deref() == Some(member.id.as_str());
+        let selected = !members.selected.is_empty() && members.selected == member.id;
         let row = found.unwrap_or_else(|| {
             for address in addresses(state, member) {
                 shown.pictures.note(state, address, id);
             }
-            let moving = if pointed {
-                moving(state, member)
-            } else {
-                Vec::new()
-            };
-            for address in &moving {
-                shown.pictures.note(state, address, id);
+            if pointed || selected {
+                let moving = moving(state, member, pointed);
+                for address in &moving {
+                    shown.pictures.note(state, address, id);
+                }
+                playing.extend(moving);
             }
             if let Some(emoji) = lines::line_emoji(member.activity.as_deref()) {
                 shown.pictures.note(state, &emoji, id);
             }
-            Arc::new(row(state, look, member, now, pointed))
+            Arc::new(row(state, look, member, now, (pointed, selected)))
         });
         rows.push(Row::Member(row.clone()));
         places.push(Some(index));
@@ -239,6 +261,7 @@ fn build(
     shown.places = places;
     shown.source = list.cloned();
     members.rows = rows;
+    playing
 }
 
 /// Whether a member's row shows the same: all but their group, whose
@@ -292,18 +315,25 @@ fn heading(state: &AppState, members: &[ChatMember], index: usize) -> Option<Hea
     })
 }
 
-/// A member's row (`MemberRow`).
-fn row(state: &AppState, look: &Look, member: &ChatMember, now: u64, pointed: bool) -> Member {
+/// A member's row (`MemberRow`): pointed at or with their card open
+/// (`selected`), their picture and decoration show their moving versions
+/// once they came, and pointed at, their nameplate too (a selected row's
+/// holds still, as playing it costs some 7% of a core while it stays).
+fn row(
+    state: &AppState,
+    look: &Look,
+    member: &ChatMember,
+    now: u64,
+    (pointed, selected): (bool, bool),
+) -> Member {
     let cosmetics = look.cosmetics;
-    // Under the pointer, the moving picture once it came, else the still.
-    let shown = |still: Option<&str>| {
-        let moving = still
-            .filter(|_| pointed)
-            .map(pictures::animated_url)
-            .filter(|moving| !moving.is_empty());
-        moving
-            .and_then(|moving| pictures::find(state, Some(&moving)))
-            .or_else(|| pictures::find(state, still))
+    let plays = pointed || selected;
+    let shown = |still: Option<&str>, moves: bool| {
+        if moves {
+            rows::moving_collectible(state, still)
+        } else {
+            pictures::find(state, still)
+        }
     };
     let (status, bullet) = lines::subline(state, &member.activities, member.activity.as_deref());
     let plate = member
@@ -311,17 +341,22 @@ fn row(state: &AppState, look: &Look, member: &ChatMember, now: u64, pointed: bo
         .as_ref()
         .filter(|_| !look.hide_nameplates)
         .map(|plate| Nameplate {
-            picture: shown(Some(&plate.picture)),
+            picture: shown(Some(&plate.picture), pointed),
             palette: plate
                 .colors
                 .map(|[dark, light]| [rows::rgb(dark), rows::rgb(light)]),
         })
         .unwrap_or_default();
+    let avatar = member.avatar.as_deref();
     Member {
         id: member.id.clone(),
         name: member.name.clone(),
-        avatar: rows::avatar(state, &member.name, &member.name, member.avatar.as_deref()),
-        decoration: shown(cosmetics.decoration(member.decoration.as_deref())),
+        avatar: if plays {
+            rows::moving_avatar(state, &member.name, &member.name, avatar)
+        } else {
+            rows::avatar(state, &member.name, &member.name, avatar)
+        },
+        decoration: shown(cosmetics.decoration(member.decoration.as_deref()), plays),
         presence: rows::presence(member.presence),
         color: member.color.map(rows::rgb),
         name_style: lines::name_style(state, member.style.as_deref(), look.in_server),

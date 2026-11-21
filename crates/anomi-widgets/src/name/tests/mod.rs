@@ -1,9 +1,11 @@
 //! The styled name: laid out as wide as its text and eliding when given
 //! less, in its face; drawn the way its style and width say; its glyphs
-//! traced, emoji kept as text.
+//! traced, emoji kept as text; moving only while it may.
 
 mod gallery;
+mod keyframes;
 mod looks;
+mod motion;
 pub(crate) mod support;
 
 use iced::{Color, Point, Size};

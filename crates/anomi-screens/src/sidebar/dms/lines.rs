@@ -66,6 +66,9 @@ fn has_detail(dm: &DmRow) -> bool {
     !dm.detail.is_empty() || !dm.status.text.is_empty() || dm.status.emoji != Default::default()
 }
 
+/// The name, its tag and its mark. A style that moves plays with `motion`,
+/// which only the copy under the pointer has: the open DM's holds still at
+/// rest.
 fn name_line<'a>(dm: &'a DmRow, look: Look, faded: bool, motion: Motion) -> Element<'a, Intent> {
     let ink: fn(&Palette) -> Color = match (look.selected || look.unread, look.hovered) {
         (true, _) => |palette| palette.text,
@@ -80,6 +83,7 @@ fn name_line<'a>(dm: &'a DmRow, look: Look, faded: bool, motion: Motion) -> Elem
             .weight(iced::font::Weight::Medium)
             .ink(ink)
             .opacity(if faded { FAINT } else { 1.0 })
+            .motion(motion)
     ]
     .spacing(GAP)
     .align_y(Alignment::Center);

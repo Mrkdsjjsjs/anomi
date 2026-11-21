@@ -171,6 +171,62 @@ fn a_picture_coming_builds_only_the_rows_that_show_it() {
 }
 
 #[test]
+fn the_lit_authors_moving_picture_plays_once_it_came_and_the_dark_row_holds_its_still() {
+    use yapfast_core::chat::{Picture, Pixels};
+    let (mut core, mut timeline, mut shown) = general();
+    let still = "https://cdn.discordapp.com/avatars/1/a_sam.png?size=128";
+    let moving = "https://cdn.discordapp.com/avatars/1/a_sam.webp?size=128&animated=true";
+    let messages = Arc::make_mut(&mut core.state.messages);
+    Arc::make_mut(&mut messages[0]).avatar = Some(still.into());
+    crate::pictures::install();
+    let picture = || {
+        Arc::new(Picture {
+            width: 1,
+            height: 1,
+            rgba: Pixels::new(1, 1, vec![1, 2, 3, 255]),
+            ..Default::default()
+        })
+    };
+    let (still_picture, moving_picture) = (picture(), picture());
+    core.state
+        .pictures
+        .insert(still.into(), still_picture.clone());
+    core.state.picture_changes += 1;
+    again(&core, &mut timeline, &mut shown);
+    let id = |picture: &Picture| crate::pictures::handle(picture).map(|handle| handle.id());
+    let face = |timeline: &Timeline| {
+        let avatar = &timeline.rows[0].message.author.avatar;
+        avatar.picture.as_ref().map(|handle| handle.id())
+    };
+    assert_eq!(face(&timeline), id(&still_picture));
+    // The pointer comes onto Sam's message: its moving version is asked for.
+    shown.lit = Some(timeline.rows[0].key);
+    let mut requests = Requests::default();
+    super::light(&core, &mut timeline, &mut shown, &mut requests);
+    let asked = requests.take(std::time::Instant::now());
+    let wanted = asked.iter().any(|action| {
+        matches!(action, Action::LoadPictures(urls) if urls.iter().any(|url| url == moving))
+    });
+    assert!(wanted, "the moving version is asked for");
+    assert_eq!(
+        face(&timeline),
+        id(&still_picture),
+        "the still until it comes"
+    );
+    // It comes: the lit row shows it.
+    core.state
+        .pictures
+        .insert(moving.into(), moving_picture.clone());
+    core.state.picture_changes += 1;
+    again(&core, &mut timeline, &mut shown);
+    assert_eq!(face(&timeline), id(&moving_picture));
+    // The pointer leaves: the still again.
+    shown.lit = None;
+    super::light(&core, &mut timeline, &mut shown, &mut Requests::default());
+    assert_eq!(face(&timeline), id(&still_picture));
+}
+
+#[test]
 fn the_new_divider_and_a_new_day_mark_their_rows() {
     let (mut core, mut timeline, mut shown) = general();
     let item = core.state.messages[1].item.clone();

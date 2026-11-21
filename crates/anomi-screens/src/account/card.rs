@@ -6,6 +6,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use iced::font::Weight;
 use iced::widget::{column, container, row, space, stack, text};
 use iced::{Alignment, Fill, Length, Padding};
 
@@ -18,6 +19,7 @@ use anomi_widgets::avatar::{Ground, portrait};
 use anomi_widgets::button::{device_toggle, icon_button};
 use anomi_widgets::icon::Icon;
 use anomi_widgets::menu::opener;
+use anomi_widgets::name::{Ink, styled_name};
 use anomi_widgets::nameplate::{Place, nameplate};
 use anomi_widgets::presence::status_text;
 use yapfast_lang::tr;
@@ -61,23 +63,24 @@ const AVATAR_DOT_AT: (f32, f32) = (26.0, 23.0);
 const DOT_DROP: f32 = 4.0;
 
 pub fn view(account: &Account, motion: Motion) -> impl View<Intent> + '_ {
-    // At rest nothing moves: the avatar, its decoration and the status's
-    // emoji play while the pointer is on the card (`animate: account-panel.hot`).
+    // At rest nothing moves: the avatar, its decoration, the status's emoji
+    // and the name's style play while the pointer is on the card (`animate:
+    // account-panel.hot`).
     let still = Motion::default();
     let hot = Rc::new(Cell::new(false));
-    let rest = lines(name(account), status_line(account, still));
-    let playing = lines(name(account), status_line(account, motion));
+    let rest = lines(name(account, still), status_line(account, still));
+    let playing = lines(name(account, motion), status_line(account, motion));
     // Under the pointer the status gives way to the username, as Discord's
     // does; with none to show the pointer changes nothing.
     let hovered: Element<'_, Intent> = if account.username.is_empty() {
-        lines(name(account), status_line(account, motion)).boxed()
+        lines(name(account, motion), status_line(account, motion)).boxed()
     } else {
         let username = text(account.username.as_str())
             .size(typography::size::LABEL)
             .style(catalog::text::muted)
             .wrapping(text::Wrapping::None)
             .ellipsis(text::Ellipsis::End);
-        lines(name(account), username).boxed()
+        lines(name(account, motion), username).boxed()
     };
     let identity = pointed(
         [lead(account, still).boxed(), lead(account, motion).boxed()],
@@ -158,13 +161,14 @@ pub fn view(account: &Account, motion: Motion) -> impl View<Intent> + '_ {
     watch(layers.width(Fill).height(metrics::ACCOUNT_HEIGHT), hot)
 }
 
-fn name(account: &Account) -> impl View<Intent> + '_ {
-    text(account.name.as_str())
+/// The name in its style, as the popover draws it, bold in the primary ink
+/// without one, eliding in its box; a style that moves plays with `motion`.
+fn name(account: &Account, motion: Motion) -> impl View<Intent> + '_ {
+    styled_name(&account.name, account.popover.profile.name_style)
         .size(typography::size::BODY)
-        .font(typography::BOLD)
-        .style(catalog::text::primary)
-        .wrapping(text::Wrapping::None)
-        .ellipsis(text::Ellipsis::End)
+        .weight(Weight::Bold)
+        .ink(Ink::Token(|palette| palette.text))
+        .motion(motion)
 }
 
 /// Their custom status or what they play, with its emoji or icon.

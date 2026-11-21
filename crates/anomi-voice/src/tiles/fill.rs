@@ -19,7 +19,7 @@ use iced::{Alignment, Background, Border, Color, Fill, Padding, Size};
 use anomi_theme::prelude::*;
 use anomi_theme::typography;
 use anomi_vm::kind::{Avatar, Live};
-use anomi_vm::voice::tiles::{Fill as Filling, Intent, Tile};
+use anomi_vm::voice::tiles::{Fill as Filling, Intent, Outline, Tile};
 use anomi_widgets::avatar::portrait;
 use anomi_widgets::icon::{Icon, icon};
 use anomi_widgets::picture::{Fit, live, picture};
@@ -51,7 +51,7 @@ pub(super) const STATUS: f32 = typography::size::SMALL;
 pub fn view<'a>(tile: &'a Tile, room: Room, radius: f32, motion: Motion) -> Element<'a, Intent> {
     let middle = room.middle;
     let content: Element<'a, Intent> = match &tile.fill {
-        Filling::Avatar { avatar, connected } => face(avatar, *connected),
+        Filling::Avatar { avatar, connected } => face(avatar, *connected, speaking(tile, motion)),
         Filling::Camera(frame)
         | Filling::Watched {
             frame: Some(frame), ..
@@ -90,13 +90,25 @@ pub fn view<'a>(tile: &'a Tile, room: Room, radius: f32, motion: Motion) -> Elem
         .boxed()
 }
 
-/// Their picture in the middle, sized by the tile; a not yet connected
-/// one's under a veil of the ground at half strength, which is what half
-/// its opacity looks like on that ground.
-fn face(avatar: &Avatar, connected: bool) -> Element<'_, Intent> {
+/// How someone's picture plays on their tile: while they speak, as
+/// Discord's does, and on past the 15 s without input, as a call is
+/// watched without touching the window; still while they don't. Hidden or
+/// with animations off, it holds all the same.
+fn speaking(tile: &Tile, motion: Motion) -> Motion {
+    if tile.outline == Outline::Speaking {
+        motion.awake()
+    } else {
+        Motion::default()
+    }
+}
+
+/// Their picture in the middle, sized by the tile, playing with `motion`;
+/// a not yet connected one's under a veil of the ground at half strength,
+/// which is what half its opacity looks like on that ground.
+fn face(avatar: &Avatar, connected: bool, motion: Motion) -> Element<'_, Intent> {
     responsive(move |size: Size| {
         let side = (size.height * AVATAR_SHARE).min(AVATAR_MAX).floor();
-        let face = portrait(avatar, side).view();
+        let face = portrait(avatar, side).motion(motion).view();
         let face: Element<'_, Intent> = if connected {
             face.boxed()
         } else {
@@ -228,4 +240,41 @@ fn screen_starting(status: &str, room: Room) -> Element<'_, Intent> {
     .center_y(Fill)
     .width(Fill)
     .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use anomi_theme::Motion;
+
+    #[test]
+    fn a_face_plays_while_they_speak_idle_or_not() {
+        let idle = Motion {
+            front: true,
+            idle: true,
+            ..Motion::default()
+        };
+        let talking = Tile {
+            outline: Outline::Speaking,
+            ..Tile::default()
+        };
+        assert!(speaking(&talking, idle).watched());
+        let quiet = Tile {
+            outline: Outline::Line,
+            ..Tile::default()
+        };
+        assert!(!speaking(&quiet, idle).watched());
+        // Hidden or with animations off, nothing moves.
+        let hidden = Motion {
+            unseen: true,
+            ..idle
+        };
+        assert!(!speaking(&talking, hidden).watched());
+        let never = Motion {
+            never: true,
+            ..idle
+        };
+        assert!(!speaking(&talking, never).watched());
+    }
 }

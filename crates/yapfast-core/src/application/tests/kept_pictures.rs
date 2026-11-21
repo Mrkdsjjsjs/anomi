@@ -208,6 +208,7 @@ fn profile_effects_are_kept_a_few_at_a_time_and_their_pictures_go_with_the_card(
                 looped: false,
                 loop_delay: 0,
             }],
+            intermittent: false,
         })
     };
     let mut app = connected();
@@ -321,6 +322,109 @@ fn a_cards_frame_and_moving_banner_go_with_it() {
         assert!(!app.state.pictures.contains_key(gone), "{gone} goes");
         assert!(!app.requested_pictures.contains(gone), "{gone} goes");
     }
+}
+
+/// A card open on someone whose banner is `banner`.
+fn card_with_banner(banner: &str) -> Option<Arc<ProfileView>> {
+    Some(Arc::new(ProfileView {
+        profile: Profile {
+            id: "1".into(),
+            banner: Some(banner.into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+}
+
+#[test]
+fn a_cards_moving_webp_banner_goes_with_it() {
+    // A profile's own banner, and the one a member set for a server.
+    for (banner, moving) in [
+        (
+            "https://cdn.discordapp.com/banners/1/a_77.png?size=600",
+            "https://cdn.discordapp.com/banners/1/a_77.webp?size=600&animated=true",
+        ),
+        (
+            "https://cdn.discordapp.com/guilds/10/users/1/banners/a_78.png?size=600",
+            "https://cdn.discordapp.com/guilds/10/users/1/banners/a_78.webp?size=600&animated=true",
+        ),
+    ] {
+        let mut app = connected();
+        app.state.profile = card_with_banner(banner);
+        app.requested_pictures.insert(moving.into());
+        app.apply(Event::Picture {
+            url: moving.into(),
+            picture: Arc::new(Picture::default()),
+        });
+        app.dispatch(Action::CloseAside);
+        assert!(app.state.pictures.contains_key(moving), "{moving} stays");
+        app.dispatch(Action::CloseProfile);
+        assert!(!app.state.pictures.contains_key(moving), "{moving} goes");
+        assert!(!app.requested_pictures.contains(moving), "{moving} goes");
+        assert!(app.effect_pictures.is_empty());
+    }
+}
+
+#[test]
+fn a_moving_banner_no_card_names_is_kept_as_other_pictures_are() {
+    let mut app = connected();
+    // The server header's, while a card with a banner of its own shows.
+    let header = "https://cdn.discordapp.com/banners/10/a_s.webp?size=600&animated=true";
+    app.state.profile = card_with_banner("https://cdn.discordapp.com/banners/1/a_77.png?size=600");
+    app.requested_pictures.insert(header.into());
+    app.apply(Event::Picture {
+        url: header.into(),
+        picture: Arc::new(Picture::default()),
+    });
+    assert!(app.effect_pictures.is_empty(), "it isn't the card's");
+    app.dispatch(Action::CloseProfile);
+    assert!(app.state.pictures.contains_key(header), "it stays");
+    assert!(app.requested_pictures.contains(header));
+}
+
+#[test]
+fn moving_pictures_that_came_stay_past_the_trim_while_their_stills_show() {
+    let mut app = connected();
+    let avatar = "https://cdn.discordapp.com/avatars/2/a_ann.png?size=128";
+    let banner = "https://cdn.discordapp.com/banners/1/a_77.png?size=600";
+    let elsewhere = "https://cdn.discordapp.com/avatars/3/a_off.webp?size=128&animated=true";
+    app.apply(Event::Timeline {
+        room: "dm".into(),
+        messages: timeline(vec![ChatMessage {
+            avatar: Some(avatar.into()),
+            ..message("e:$ann", false)
+        }]),
+    });
+    app.state.profile = card_with_banner(banner);
+    let moving_avatar = chat::moving_picture(avatar).unwrap();
+    let moving_banner = chat::moving_picture(banner).unwrap();
+    let moving = [
+        moving_avatar.clone(),
+        moving_banner.clone(),
+        elsewhere.to_owned(),
+    ];
+    for url in moving
+        .into_iter()
+        .chain((0..=KEPT_PICTURES).map(|index| format!("{index}.png")))
+    {
+        app.requested_pictures.insert(url.clone());
+        app.apply(Event::Picture {
+            url,
+            picture: Arc::new(Picture::default()),
+        });
+    }
+    for shown in [&moving_avatar, &moving_banner] {
+        assert!(app.state.pictures.contains_key(shown), "{shown} stays");
+        assert!(
+            app.requested_pictures.contains(shown),
+            "{shown} isn't asked again"
+        );
+    }
+    assert!(
+        !app.state.pictures.contains_key(elsewhere),
+        "one whose still shows nowhere goes"
+    );
+    assert!(!app.state.pictures.contains_key("0.png"));
 }
 
 #[test]

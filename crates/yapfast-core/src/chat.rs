@@ -965,6 +965,9 @@ pub struct ProfileEffect {
     pub still: Option<String>,
     /// Its layers, the lowest first.
     pub layers: Vec<EffectLayer>,
+    /// Discord's animationType 2 (INTERMITTENT): it shows nothing while it
+    /// doesn't play; 0 and 1 show the still.
+    pub intermittent: bool,
 }
 
 impl ProfileEffect {
@@ -993,6 +996,208 @@ pub fn moving_banner(url: &str) -> Option<String> {
     hash.starts_with("a_").then(|| format!("{start}.gif?{end}"))
 }
 
+/// The address of a picture's moving version, as Discord's client asks for
+/// it: an avatar (`/avatars/{u}/`), a member's avatar
+/// (`/guilds/{g}/users/{u}/avatars/`), a server icon (`/icons/{g}/`) or a
+/// banner (`/banners/{id}/`, `/guilds/{g}/users/{u}/banners/`) whose hash
+/// starts with `a_`, as an animated WebP; none for any other address.
+/// `…/avatars/1/a_x.png?size=128` -> `…/avatars/1/a_x.webp?size=128&animated=true`;
+/// without a query, `….png` -> `….webp?animated=true`.
+pub fn moving_picture(url: &str) -> Option<String> {
+    let (url, fragment) = match url.split_once('#') {
+        Some((url, fragment)) => (url, Some(fragment)),
+        None => (url, None),
+    };
+    let (path, query) = match url.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (url, None),
+    };
+    let stem = path.strip_suffix(".png")?;
+    let mut segments = stem.rsplit('/');
+    let hash = segments.next()?;
+    if hash.len() <= "a_".len() || !hash.starts_with("a_") {
+        return None;
+    }
+    let id = |segment: Option<&str>| {
+        segment.is_some_and(|segment| {
+            !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit())
+        })
+    };
+    let pictured = match segments.next()? {
+        // `/guilds/{g}/users/{u}/avatars/` and `/guilds/{g}/users/{u}/banners/`.
+        "avatars" | "banners" => {
+            id(segments.next())
+                && segments.next() == Some("users")
+                && id(segments.next())
+                && segments.next() == Some("guilds")
+        }
+        // `/avatars/{u}/`, `/icons/{g}/` and `/banners/{id}/`, but not
+        // `/role-icons/`, `/splashes/` and the like.
+        owner if id(Some(owner)) => {
+            matches!(segments.next(), Some("avatars" | "icons" | "banners"))
+        }
+        _ => false,
+    };
+    if !pictured {
+        return None;
+    }
+    let mut moving = String::with_capacity(url.len() + 24);
+    moving.push_str(stem);
+    moving.push_str(".webp?");
+    if let Some(query) = query.filter(|query| !query.is_empty()) {
+        moving.push_str(query);
+        moving.push('&');
+    }
+    moving.push_str("animated=true");
+    if let Some(fragment) = fragment {
+        moving.push('#');
+        moving.push_str(fragment);
+    }
+    Some(moving)
+}
+
+#[cfg(test)]
+mod moving_picture_tests {
+    use super::{moving_banner, moving_picture};
+
+    const CDN: &str = "https://cdn.discordapp.com";
+
+    fn moving(path: &str) -> Option<String> {
+        moving_picture(&format!("{CDN}{path}"))
+    }
+
+    fn at(path: &str) -> Option<String> {
+        Some(format!("{CDN}{path}"))
+    }
+
+    #[test]
+    fn an_animated_avatar_moves_as_a_webp_keeping_its_size() {
+        assert_eq!(
+            moving("/avatars/1/a_x.png?size=128"),
+            at("/avatars/1/a_x.webp?size=128&animated=true")
+        );
+    }
+
+    #[test]
+    fn an_address_without_a_query_gains_one() {
+        assert_eq!(
+            moving("/avatars/1/a_x.png"),
+            at("/avatars/1/a_x.webp?animated=true")
+        );
+        assert_eq!(
+            moving("/avatars/1/a_x.png?"),
+            at("/avatars/1/a_x.webp?animated=true")
+        );
+    }
+
+    #[test]
+    fn a_members_avatar_and_banner_move_too() {
+        assert_eq!(
+            moving("/guilds/10/users/1/avatars/a_x.png?size=128"),
+            at("/guilds/10/users/1/avatars/a_x.webp?size=128&animated=true")
+        );
+        assert_eq!(
+            moving("/guilds/10/users/1/banners/a_x.png?size=600"),
+            at("/guilds/10/users/1/banners/a_x.webp?size=600&animated=true")
+        );
+    }
+
+    #[test]
+    fn a_server_icon_and_banners_move() {
+        assert_eq!(
+            moving("/icons/10/a_x.png?size=128"),
+            at("/icons/10/a_x.webp?size=128&animated=true")
+        );
+        assert_eq!(
+            moving("/banners/1/a_x.png?size=600"),
+            at("/banners/1/a_x.webp?size=600&animated=true")
+        );
+    }
+
+    #[test]
+    fn the_test_servers_addresses_move_as_discords_do() {
+        assert_eq!(
+            moving_picture("http://127.0.0.1:4000/avatars/1/a_x.png?size=128").as_deref(),
+            Some("http://127.0.0.1:4000/avatars/1/a_x.webp?size=128&animated=true")
+        );
+    }
+
+    #[test]
+    fn a_mark_after_the_address_stays_at_its_end() {
+        assert_eq!(
+            moving("/avatars/1/a_x.png?size=128#mark"),
+            at("/avatars/1/a_x.webp?size=128&animated=true#mark")
+        );
+    }
+
+    #[test]
+    fn a_still_hash_has_no_moving_version() {
+        assert_eq!(moving("/avatars/1/x.png?size=128"), None);
+        assert_eq!(moving("/avatars/1/a_.png?size=128"), None);
+        assert_eq!(moving("/icons/10/ab_x.png?size=128"), None);
+    }
+
+    #[test]
+    fn a_default_avatar_has_no_moving_version() {
+        assert_eq!(moving("/embed/avatars/1.png"), None);
+        assert_eq!(moving("/embed/avatars/a_1.png"), None);
+    }
+
+    #[test]
+    fn role_icons_emoji_and_stickers_have_none() {
+        assert_eq!(moving("/role-icons/5/a_x.png?size=64"), None);
+        assert_eq!(moving("/emojis/5.png?size=64"), None);
+        assert_eq!(moving("/emojis/a_5.png?size=64"), None);
+        assert_eq!(moving("/stickers/5.png?size=160"), None);
+        assert_eq!(moving("/stickers/a_5.png"), None);
+    }
+
+    #[test]
+    fn collectibles_splashes_and_other_icons_have_none() {
+        assert_eq!(
+            moving("/avatar-decoration-presets/a_1.png?size=96&passthrough=true"),
+            None
+        );
+        assert_eq!(
+            moving("/assets/collectibles/avatar-decorations/a_1/asset.png"),
+            None
+        );
+        assert_eq!(moving("/media/v1/collectibles-shop/9/a_1/static"), None);
+        assert_eq!(moving("/splashes/10/a_x.png?size=600"), None);
+        assert_eq!(moving("/discovery-splashes/10/a_x.png?size=600"), None);
+        assert_eq!(moving("/app-icons/7/a_x.png?size=128"), None);
+        assert_eq!(moving("/channel-icons/7/a_x.png?size=128"), None);
+    }
+
+    #[test]
+    fn an_address_already_moving_or_not_a_png_has_none() {
+        assert_eq!(moving("/avatars/1/a_x.webp?size=128&animated=true"), None);
+        assert_eq!(moving("/avatars/1/a_x.webp?size=128"), None);
+        assert_eq!(moving("/banners/1/a_x.gif?size=600"), None);
+    }
+
+    #[test]
+    fn a_path_of_the_wrong_shape_has_none() {
+        assert_eq!(moving("/avatars/a_x.png"), None, "no owner");
+        assert_eq!(moving("/avatars/bob/a_x.png"), None, "not an id");
+        assert_eq!(moving("/users/1/avatars/a_x.png"), None, "no server");
+        assert_eq!(moving("/guilds/10/members/1/avatars/a_x.png"), None);
+        assert_eq!(moving("/guilds/10/users/1/icons/a_x.png"), None);
+    }
+
+    #[test]
+    fn the_slint_clients_moving_banner_stays_a_gif() {
+        assert_eq!(
+            moving_banner(&format!("{CDN}/banners/1/a_77.png?size=600")),
+            at("/banners/1/a_77.gif?size=600")
+        );
+        assert_eq!(
+            moving_banner(&format!("{CDN}/banners/1/77.png?size=600")),
+            None
+        );
+    }
+}
+
 /// Marks the address of a profile effect's picture, which decodes at the
 /// card's size rather than an avatar's.
 pub const EFFECT_PICTURE: &str = "#effect";
@@ -1017,6 +1222,7 @@ impl From<&yapfast_discord::profile_effect::Effect> for ProfileEffect {
                     loop_delay: layer.loop_delay,
                 })
                 .collect(),
+            intermittent: effect.intermittent,
         }
     }
 }

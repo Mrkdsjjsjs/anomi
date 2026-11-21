@@ -588,3 +588,181 @@ async fn edits_the_main_profile_as_discords_client_does() {
     post_control(server, "/_control/profile-reset", "");
     snapshot_where(discord, renamed("Alice")).await;
 }
+
+/// What `--animated` and `--callers` add: avatars, an icon and banners whose
+/// moving versions come as `.webp?…&animated=true` while their `.png` stays
+/// still, counted as they're asked for; name styles that move; an effect
+/// that shows nothing at rest; and callers in the Lounge.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn serves_moving_pictures_names_and_callers_when_animated() {
+    const CAROL: &str = "1400000000000000003";
+    const DAVE: &str = "1400000000000000004";
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        snapshot,
+        guild,
+        general,
+        lounge,
+        bob,
+    } = Fixture::start_with_args(
+        "serves_moving_pictures_names_and_callers_when_animated",
+        &["--animated", "--callers", "3"],
+    )
+    .await;
+    // "Server"'s icon moves.
+    let icon = snapshot.servers[0].icon.clone().unwrap_or_default();
+    assert!(
+        icon.contains(&format!("/icons/{guild}/a_server1.png?")),
+        "{icon}"
+    );
+
+    // caller0 to caller2 sit in the Lounge beside Bob, Carol and Dave; the
+    // even ones' avatars move, as Bob's does.
+    let caller = |n: u64| (1_820_000_000_000_000_000_u64 + n).to_string();
+    let avatar_in_lounge = |snapshot: &Snapshot, user: &str| -> Option<String> {
+        let member = snapshot
+            .voice
+            .get(&lounge)?
+            .iter()
+            .find(|member| member.user_id == user)?;
+        Some(member.avatar.clone())
+    };
+    let moves = |snapshot: &Snapshot, user: &str, hash: &str| {
+        avatar_in_lounge(snapshot, user).is_some_and(|avatar| avatar.contains(hash))
+    };
+    let snapshot = snapshot_where(&discord, |snapshot| {
+        moves(snapshot, caller(2).as_str(), "/a_c2.png?")
+    })
+    .await;
+    let shown: &Snapshot = &snapshot;
+    assert!(moves(shown, caller(0).as_str(), "/a_c0.png?"));
+    assert!(
+        moves(shown, caller(1).as_str(), "/c1.png?"),
+        "an odd caller's avatar is still"
+    );
+    assert!(moves(shown, bob.as_str(), "/a_bob1.png?"));
+
+    // The CDN gives an `a_` picture's moving version as a GIF of several
+    // frames, Dave's `.gif` banner as before, and its `.png` as a still, and
+    // counts the moving ones asked for.
+    post_control(server, "/_control/moving-pictures?reset", "");
+    let moving = [
+        format!("/avatars/{bob}/a_bob1.webp?size=128&animated=true"),
+        format!("/icons/{guild}/a_server1.webp?size=128&animated=true"),
+        format!("/banners/{CAROL}/a_carolwave.webp?size=600&animated=true"),
+        format!("/banners/{DAVE}/a_davebanner.gif?size=600"),
+    ];
+    for path in &moving {
+        let (kind, picture) = fetch(server, path);
+        assert_eq!(kind, "image/gif", "{path}");
+        assert!(gif_frames(&picture) > 1, "{path} moves");
+    }
+    let (kind, still) = fetch(server, &format!("/avatars/{bob}/a_bob1.png?size=128"));
+    assert_eq!(kind, "image/png");
+    assert!(still.starts_with(b"\x89PNG"));
+    let counted = || -> serde_json::Value {
+        serde_json::from_str(&control(server, "GET", "/_control/moving-pictures", "")).unwrap()
+    };
+    let asked = counted();
+    assert_eq!(asked["count"], moving.len(), "{asked}");
+    assert_eq!(
+        asked["paths"],
+        serde_json::json!(moving),
+        "the still isn't counted"
+    );
+    post_control(server, "/_control/moving-pictures?reset", "");
+    assert_eq!(counted()["count"], 0);
+
+    // Carol's banner moves, and her effect, the Petals' layers again, is
+    // INTERMITTENT (animationType 2), showing nothing at rest; Bob's isn't.
+    let carol = discord.profile(&guild, CAROL, |_| {}).await.unwrap();
+    assert!(
+        carol
+            .banner
+            .as_deref()
+            .is_some_and(|banner| banner.contains("/a_carolwave.png?")),
+        "{:?}",
+        carol.banner
+    );
+    let sku = carol.effect.expect("Carol equips an effect");
+    let effect = discord.profile_effect(&sku).await.unwrap().unwrap();
+    assert!(effect.intermittent, "animationType 2");
+    assert_eq!(effect.layers.len(), 2);
+    let sku = discord.profile(&guild, &bob, |_| {}).await.unwrap().effect;
+    let persistent = discord
+        .profile_effect(&sku.expect("Bob equips an effect"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!persistent.intermittent);
+
+    // Alice's name is a purple prism and Bob's neon; Carol keeps her
+    // gradient. The callers are members of the server.
+    let mut live = discord.live();
+    discord.view(&guild, Some(&general));
+    let members = live_where(&mut live, |event| match event {
+        Live::Members { channel, members } if channel == general => Some(members),
+        _ => None,
+    })
+    .await;
+    let alice = members
+        .iter()
+        .find(|member| member.name == "Alice")
+        .and_then(|member| member.style)
+        .expect("Alice wears a name style");
+    assert_eq!((alice.font, alice.effect), (11, 7), "prism");
+    assert_eq!(alice.colors(), [0x7a5cff, 0xc77dff, 0x5a189a]);
+    assert!(members.iter().any(|member| member.name == "Caller 1"));
+    let neon = discord.style(None, &bob).expect("Bob wears a name style");
+    assert_eq!((neon.font, neon.effect), (11, 3), "neon");
+    assert_eq!(neon.colors(), [0xb388ff]);
+    let gradient = discord
+        .style(None, CAROL)
+        .expect("Carol wears a name style");
+    assert_eq!((gradient.font, gradient.effect), (3, 2), "gradient");
+}
+
+/// How many frames a GIF holds: its images, past its colour tables and
+/// extensions; none if it isn't one.
+fn gif_frames(gif: &[u8]) -> usize {
+    if !gif.starts_with(b"GIF8") {
+        return 0;
+    }
+    // A colour table's size, from the flags before it.
+    let table = |flags: u8| {
+        if flags & 0x80 == 0 {
+            0
+        } else {
+            3_usize << (usize::from(flags & 7) + 1)
+        }
+    };
+    // The byte after the sub-blocks from `at` and their terminator.
+    let blocks = |mut at: usize| {
+        while let Some(&size) = gif.get(at) {
+            at += 1 + usize::from(size);
+            if size == 0 {
+                break;
+            }
+        }
+        at
+    };
+    let mut at = 13 + gif.get(10).map_or(0, |&flags| table(flags));
+    let mut frames = 0;
+    while let Some(&kind) = gif.get(at) {
+        match kind {
+            // An extension: its label, then its sub-blocks.
+            0x21 => at = blocks(at + 2),
+            // An image: its descriptor, colour table, LZW code size and data.
+            0x2c => {
+                frames += 1;
+                let flags = gif.get(at + 9).copied().unwrap_or(0);
+                at = blocks(at + 10 + table(flags) + 1);
+            }
+            _ => break,
+        }
+    }
+    frames
+}

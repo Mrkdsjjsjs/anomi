@@ -181,6 +181,35 @@ fn requests_sort_into_waiting_sent_and_spam() {
 }
 
 #[test]
+fn the_member_whose_card_is_open_asks_for_their_moving_picture() {
+    let (mut app, folder) = app("selected");
+    let still = "https://cdn.discordapp.com/avatars/1/a_ann.png?size=128";
+    let moving = "https://cdn.discordapp.com/avatars/1/a_ann.webp?size=128&animated=true";
+    let mut ann = member("1", "Ann", Presence::Online, "Online — 2");
+    ann.avatar = Some(still.into());
+    let list = vec![ann, member("2", "Bob", Presence::Online, "Online — 2")];
+    app.core.state.members = Some(Ok(Arc::new(list)));
+    show_members(&mut app, true);
+    let (ann, bob) = (member_row(&app, "1"), member_row(&app, "2"));
+    let watched = |app: &App| app.shown.people.members.watches(moving);
+    assert!(!watched(&app), "at rest no moving version is asked for");
+    let profile = yapfast_core::chat::Profile {
+        id: "1".into(),
+        ..Default::default()
+    };
+    app.core.state.profile = Some(Arc::new(yapfast_core::application::ProfileView {
+        profile,
+        ..Default::default()
+    }));
+    show_members(&mut app, true);
+    assert_eq!(app.vm.people.members.selected, "1");
+    assert!(!Arc::ptr_eq(&ann, &member_row(&app, "1")), "Ann's plays");
+    assert!(Arc::ptr_eq(&bob, &member_row(&app, "2")));
+    assert!(watched(&app), "her moving picture is asked for and watched");
+    done(app, folder);
+}
+
+#[test]
 fn a_dialog_about_a_person_says_what_it_asks() {
     let (mut app, folder) = app("person");
     app.core.state.person_dialog = Some(PersonDialog {

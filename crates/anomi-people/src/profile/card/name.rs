@@ -50,7 +50,8 @@ pub fn view<'a>(
             let styled = styled_name(&card.name, Some(style))
                 .size(size.name)
                 .weight(iced::font::Weight::Bold)
-                .ink(ink_of(ink));
+                .ink(ink_of(ink))
+                .motion(style_motion(place, motion));
             if opens {
                 mouse_area(styled)
                     .on_press(Intent::Enlarge(place).into())
@@ -117,6 +118,16 @@ pub fn view<'a>(
         );
     }
     block.boxed()
+}
+
+/// How a style that moves plays in the card's heading: always where the
+/// card shows (popout, full profile, docked), as Discord's profile has it;
+/// still in the editor's preview.
+fn style_motion(place: Place, motion: Motion) -> Motion {
+    match place {
+        Place::Popout | Place::Side | Place::Panel => motion,
+        Place::Preview => Motion::default(),
+    }
 }
 
 /// A name's ink as `styled_name` takes it.
@@ -211,7 +222,21 @@ fn inline_badges<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::shown;
+    use anomi_theme::Motion;
+
+    use super::{Place, shown, style_motion};
+
+    #[test]
+    fn a_styled_name_moves_where_the_card_shows_but_in_the_preview() {
+        let front = Motion {
+            front: true,
+            ..Motion::default()
+        };
+        for place in [Place::Popout, Place::Side, Place::Panel] {
+            assert!(style_motion(place, front).watched(), "{place:?}");
+        }
+        assert!(!style_motion(Place::Preview, front).watched());
+    }
 
     #[test]
     fn badges_show_while_they_fit_and_six_at_most() {

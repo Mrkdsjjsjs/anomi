@@ -25,6 +25,7 @@ use anomi_vm::text::Text;
 use super::{attachments, components, embeds, poll, reactions};
 use crate::pictures::{self, Requests};
 
+pub(crate) use author::faces;
 pub(crate) use body::{BLOCKED_LINK, sections as body_sections};
 
 /// The message flag of a Discord app's answer only this account sees.

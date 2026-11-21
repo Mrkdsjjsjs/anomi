@@ -157,7 +157,8 @@ fn light(app: &mut App, key: Option<u64>) {
     }
     app.shown.aside.lit = key;
     let timeline = &mut app.vm.chat.thread_panel.timeline;
-    crate::project::chat::timeline::light(&app.core, timeline, &app.shown.aside);
+    let (shown, requests) = (&mut app.shown.aside, &mut app.pictures);
+    crate::project::chat::timeline::light(&app.core, timeline, shown, requests);
 }
 
 /// After every update: the thread's earlier messages load as its view

@@ -1,14 +1,16 @@
 //! What the effect draws, read back from its pixels: at rest its still,
-//! cut to the card's top corners; hovered, its layers in the still's place.
+//! cut to the card's top corners, or nothing for an intermittent one;
+//! hovered, its layers in the still's place; opened, nothing until it
+//! plays.
 
 use std::time::Instant;
 
 use iced::widget::image::Handle;
 use iced::{Point, Size};
 
-use anomi_theme::Theme;
+use anomi_theme::{Motion, Theme};
 
-use super::super::{Effect, effect, sample};
+use super::super::{Effect, Play, effect, sample};
 use super::front;
 use super::support::{Shot, ground, near};
 
@@ -119,4 +121,32 @@ fn hovered_its_layers_draw_in_the_stills_place() {
     );
     let petals = count(&playing, |pixel| petal(pixel, ground));
     assert!(petals > 100, "the intro's petals");
+}
+
+#[test]
+fn opened_it_draws_nothing_while_it_waits_and_its_still_unwatched() {
+    let theme = Theme::default();
+    let ground = ground(&theme);
+    let still = on_blue();
+    let opened = |motion| effect(&still, motion).radius(RADIUS).play(Play::Open);
+    let mut waiting = Shot::new(opened(front()), CARD);
+    waiting.frame(Instant::now());
+    let waiting = waiting.pixels(&theme, 1.0);
+    assert!(waiting.pixels().all(|pixel| near(pixel.0, ground)), "nothing");
+    let mut behind = Shot::new(opened(Motion::default()), CARD);
+    behind.frame(Instant::now());
+    let behind = behind.pixels(&theme, 1.0);
+    assert!(count(&behind, |pixel| near(pixel, BLUE)) > behind.len() / 4 / 2);
+}
+
+#[test]
+fn an_intermittent_effect_draws_nothing_at_rest() {
+    let theme = Theme::default();
+    let ground = ground(&theme);
+    let mut still = on_blue();
+    still.intermittent = true;
+    let mut shot = Shot::new(effect(&still, Motion::default()), CARD);
+    shot.frame(Instant::now());
+    let rest = shot.pixels(&theme, 1.0);
+    assert!(rest.pixels().all(|pixel| near(pixel.0, ground)));
 }

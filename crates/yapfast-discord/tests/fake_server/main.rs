@@ -66,6 +66,27 @@ fn post_control(server: &str, path: &str, body: &str) {
 
 /// Asks one of the fake's controls, and returns its answer's body.
 fn control(server: &str, method: &str, path: &str, body: &str) -> String {
+    String::from_utf8(request(server, method, path, body).1).unwrap()
+}
+
+/// Fetches `path` from the fake's CDN as it comes, past Yapfast's cache of
+/// pictures: its content type, and its bytes.
+fn fetch(server: &str, path: &str) -> (String, Vec<u8>) {
+    let (head, body) = request(server, "GET", path, "");
+    let kind = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-type")
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap_or_default();
+    (kind, body)
+}
+
+/// Sends the fake a request, which must be answered with 200, and returns
+/// the answer's head and body.
+fn request(server: &str, method: &str, path: &str, body: &str) -> (String, Vec<u8>) {
     use std::io::{Read, Write};
     let address = server.trim_start_matches("http://");
     let mut connection = std::net::TcpStream::connect(address).unwrap();
@@ -100,7 +121,7 @@ fn control(server: &str, method: &str, path: &str, body: &str) -> String {
             connection.read_to_end(&mut body).unwrap();
         }
     }
-    String::from_utf8(body).unwrap()
+    (head, body)
 }
 
 /// The presence Alice's session last sent the fake. Against it, Yapfast
@@ -249,15 +270,20 @@ impl Fixture {
     /// Starts the fake for the test `name`, logging to
     /// target/fake-discord-`name`.log, and Alice's session on it.
     async fn start(name: &str) -> Fixture {
-        Self::open(name, false).await
+        Self::open(name, false, &[]).await
     }
 
     /// The same, with Rich Presence and game detection on.
     async fn start_with_games(name: &str) -> Fixture {
-        Self::open(name, true).await
+        Self::open(name, true, &[]).await
     }
 
-    async fn open(name: &str, games: bool) -> Fixture {
+    /// The same, with more of the fake's options, as `["--animated"]`.
+    async fn start_with_args(name: &str, args: &[&str]) -> Fixture {
+        Self::open(name, false, args).await
+    }
+
+    async fn open(name: &str, games: bool, args: &[&str]) -> Fixture {
         static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
         let turn = TURN.lock().await;
@@ -267,6 +293,7 @@ impl Fixture {
         let port = PORT.get().copied().unwrap_or(0).to_string();
         let mut process = std::process::Command::new("bun")
             .args(["testing/fake_discord.ts", "--port", &port])
+            .args(args)
             .current_dir(&root)
             .stdout(log.try_clone().unwrap())
             .stderr(std::process::Stdio::piped())

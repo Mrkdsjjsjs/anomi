@@ -167,7 +167,7 @@ pub fn show(
     vm.chrome.full_screen = full;
     join::show(state, layout, focused.is_some(), &mut vm.conversation);
     join::way_in(state, &vm.conversation, &mut vm.voice.join);
-    let (ringing, asks) = join::incoming(state, layout, &mut vm.voice.incoming);
+    let (ringing, asks) = join::incoming(state, layout, &mut vm.voice.incoming, requests);
     open(vm, Layer::IncomingCall, ringing);
     open(vm, Layer::SwitchCall, asks);
     // The corner, while the call is off screen.

@@ -3,9 +3,10 @@
 //! button, a call mark, a pin and the mentions. The Slint side: `ChannelRow`
 //! with `person` (`ui/rail.slint:397`).
 //!
-//! A row draws twice, as iced's `hover` lays one over the other: at rest,
-//! and as it looks under the pointer (the hover fill, the avatar's ring cut
-//! from it, the Wave button, its nameplate and avatar playing). The one
+//! A row draws twice, as iced's `hover` lays one over the other: at rest
+//! (the open DM's avatar and decoration playing, as Discord's do), and as
+//! it looks under the pointer (the hover fill, the avatar's ring cut from
+//! it, the Wave button, its nameplate, avatar and name playing). The one
 //! under the pointer is the one that answers.
 
 use iced::widget::{button, container, hover, pin, row, space, stack};
@@ -43,10 +44,13 @@ const DISCORD_AT: f32 = -2.0;
 
 /// The row of `dm`, with its strip at the sidebar's edge.
 pub fn view<'a>(dm: &'a DmRow, motion: Motion) -> Element<'a, Intent> {
-    let rest = body(dm, false, Motion::default());
+    // At rest the lines, the nameplate and the Wave button hold still, the
+    // open DM's too; under the pointer everything plays.
+    let resting = resting_face(dm.selected, motion);
+    let rest = body(dm, false, resting, Motion::default());
     // Under the pointer it lies over the row at rest, so it is painted on
     // the sidebar first, whatever its fill lets through.
-    let over = container(body(dm, true, motion)).style(|theme: &Theme| container::Style {
+    let over = container(body(dm, true, motion, motion)).style(|theme: &Theme| container::Style {
         background: Some(iced::Background::Color(theme.palette().sidebar)),
         border: iced::Border::default().rounded(metrics::RADIUS_ROW),
         ..container::Style::default()
@@ -66,8 +70,20 @@ pub fn view<'a>(dm: &'a DmRow, motion: Motion) -> Element<'a, Intent> {
     .boxed()
 }
 
-/// The row in its look at rest or under the pointer.
-fn body<'a>(dm: &'a DmRow, hovered: bool, motion: Motion) -> Element<'a, Intent> {
+/// How the face of the row at rest plays: while it's the open DM, still
+/// otherwise.
+fn resting_face(selected: bool, motion: Motion) -> Motion {
+    if selected { motion } else { Motion::default() }
+}
+
+/// The row in its look at rest or under the pointer: its face (avatar and
+/// decoration) playing with `face_motion`, the rest with `motion`.
+fn body<'a>(
+    dm: &'a DmRow,
+    hovered: bool,
+    face_motion: Motion,
+    motion: Motion,
+) -> Element<'a, Intent> {
     let look = Look {
         selected: dm.selected,
         hovered,
@@ -91,7 +107,7 @@ fn body<'a>(dm: &'a DmRow, hovered: bool, motion: Motion) -> Element<'a, Intent>
         .ground(ring)
         .decoration(dm.decoration.as_ref())
         .opacity(strength)
-        .motion(motion)
+        .motion(face_motion)
         .view();
     let face: Element<'a, Intent> = if dm.discord {
         stack![
@@ -160,4 +176,21 @@ fn body<'a>(dm: &'a DmRow, hovered: bool, motion: Motion) -> Element<'a, Intent>
         .on_press(Intent::Open(dm.id.clone()))
         .style(move |theme: &Theme, _status| style(theme, look))
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use anomi_theme::Motion;
+
+    #[test]
+    fn a_row_at_rest_plays_its_face_only_while_open() {
+        let front = Motion {
+            front: true,
+            ..Motion::default()
+        };
+        assert!(resting_face(true, front).watched());
+        assert!(!resting_face(false, front).watched());
+    }
 }

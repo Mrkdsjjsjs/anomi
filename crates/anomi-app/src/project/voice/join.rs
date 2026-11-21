@@ -13,6 +13,7 @@ use anomi_vm::voice::incoming::{Incoming, Switch};
 use anomi_vm::voice::join::{self, Join};
 
 use crate::layout::Layout;
+use crate::pictures::Requests;
 use crate::project::rows;
 
 /// This account is in the call of the open room.
@@ -160,8 +161,14 @@ pub fn ringing(state: &AppState) -> impl Iterator<Item = &ChatRoom> {
 }
 
 /// A call ringing in another conversation, and the question before
-/// switching calls; says whether each shows.
-pub fn incoming(state: &AppState, layout: &Layout, made: &mut Incoming) -> (bool, bool) {
+/// switching calls; says whether each shows. The caller's moving picture
+/// is asked for while it rings, and shows once it came.
+pub fn incoming(
+    state: &AppState,
+    layout: &Layout,
+    made: &mut Incoming,
+    requests: &mut Requests,
+) -> (bool, bool) {
     let shown = ringing(state).find(|room| state.selected.as_ref() != Some(&room.id));
     let mut incoming = Incoming::default();
     if let Some(room) = shown {
@@ -172,7 +179,9 @@ pub fn incoming(state: &AppState, layout: &Layout, made: &mut Incoming) -> (bool
         } else {
             tr!("{} calling", who_is_here(&room.people))
         };
-        incoming.avatar = rows::avatar(state, &room.name, &room.id, room.avatar.as_deref());
+        let avatar = room.avatar.as_deref();
+        requests.want(state, crate::pictures::moving_url(avatar).as_deref());
+        incoming.avatar = rows::moving_avatar(state, &room.name, &room.id, avatar);
     }
     let switch = switch(state, layout);
     let asks = switch.is_some();

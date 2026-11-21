@@ -94,6 +94,20 @@ fn switches_are_kept_as_the_slint_app_keeps_them() {
 }
 
 #[test]
+fn never_holds_everything_and_asks_for_nothing_moving() {
+    let mut window = opened("settings-never", Page::Messages);
+    let app = &mut window.app;
+    let animate = |shown| Intent::Messages(messages::Intent::Animate(shown));
+    send(app, animate(messages::Animate::Never));
+    assert!(app.motion.never && !crate::pictures::moving_pictures());
+    let still = "https://cdn.discordapp.com/avatars/1/a_x.png?size=128";
+    assert_eq!(crate::pictures::moving_url(Some(still)), None);
+    send(app, animate(messages::Animate::Focused));
+    assert!(!app.motion.never && crate::pictures::moving_pictures());
+    assert!(crate::pictures::moving_url(Some(still)).is_some());
+}
+
+#[test]
 fn the_theme_editor_previews_and_leaves_nothing_unsaved() {
     let mut window = opened("settings-editor", Page::Appearance);
     let app = &mut window.app;

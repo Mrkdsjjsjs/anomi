@@ -9,6 +9,11 @@
 //! fill and a stroke, and the Slint renderer draws nothing of a text whose
 //! fill is clear (`sharedparley.rs:234`), so it never showed; the
 //! reference shots have none.
+//!
+//! A moving effect is drawn at a moment of its loop (`keyframes`): prism's
+//! colours scrolled, neon's letters flickering, toon's bands further down
+//! their gradient, pop's letters lifted. Each loop starts and ends in the
+//! look at rest; toon's is Discord's, the top quarter of its gradient.
 
 use iced::advanced::text::Shaping;
 use iced::widget::canvas::{Fill, Frame, LineCap, LineJoin, Stroke, Style, Text, gradient::Linear};
@@ -17,6 +22,7 @@ use iced::{Color, Pixels, Point, Size, Vector};
 use anomi_theme::{Renderer, fonts};
 
 use super::colours::Colours;
+use super::keyframes;
 use super::outline::Glyphs;
 use super::style::Effect;
 
@@ -39,6 +45,9 @@ pub(super) struct Paint<'a> {
     /// What each fill is faded to: the name's opacity, or 1 for a name
     /// faded as a whole (`stacked`).
     pub opacity: f32,
+    /// How far into its loop a moving effect is drawn, in milliseconds
+    /// (`keyframes::moment`); none for its look at rest.
+    pub at: Option<u32>,
 }
 
 impl Paint<'_> {
@@ -97,6 +106,12 @@ pub(super) fn effect(frame: &mut Frame<Renderer>, effect: Effect, paint: &Paint<
     let colours = paint.colours;
     let em = paint.em;
     let given = &colours.colors[..colours.count.clamp(1, 5)];
+    // Pop's white letters, and the emoji among them, hop.
+    let lift = if effect == Effect::Pop {
+        em * keyframes::pop(paint.at)
+    } else {
+        0.0
+    };
     match effect {
         // The colours across the name, from 10% to 90%.
         Effect::Gradient | Effect::Glow if given.len() > 1 => {
@@ -107,34 +122,28 @@ pub(super) fn effect(frame: &mut Frame<Renderer>, effect: Effect, paint: &Paint<
                 .map(|(index, color)| (0.1 + 0.8 * index as f32 / last, *color));
             paint.fill(frame, paint.across(stops));
         }
-        // Round once, back to the first.
+        // Round once, back to the first, across the name or a cycle of
+        // 38 px if it's narrower; moving, they scroll left.
         Effect::Prism if given.len() > 1 => {
-            let count = given.len() as f32;
-            let stops = given
-                .iter()
-                .enumerate()
-                .map(|(index, color)| (index as f32 / count, *color))
-                .chain([(1.0, given[0])]);
-            paint.fill(frame, paint.across(stops));
+            let stops = keyframes::prism(given, paint.size.width, paint.at);
+            paint.fill(frame, paint.across(stops.iter()));
         }
-        // White letters edged in a lighter shade of the colour.
+        // White letters edged in a lighter shade of the colour; moving,
+        // they flicker to a light shade of it.
         Effect::Neon => {
             paint.outside(frame, colours.neon, em * 0.04 + 1.0);
-            paint.fill(frame, paint.faded(WHITE));
+            paint.fill(frame, paint.faded(keyframes::neon(colours, paint.at)));
         }
-        // The light shades in bands, edged in the dark one.
+        // White to the colour through its light shades, edged in a dark
+        // one; moving, the bands run down.
         Effect::Toon => {
             paint.outside(frame, colours.toon, em * 0.04 + 1.6);
-            let bands = [
-                (0.0, colours.light2),
-                (0.45, colours.light1),
-                (0.55, colours.main),
-                (1.0, colours.dark1),
-            ];
-            paint.fill(frame, paint.down(bands));
+            let bands = keyframes::toon(colours, paint.at);
+            paint.fill(frame, paint.down(bands.iter()));
         }
         // White letters edged in the darkest shade, over a copy in the
-        // colour a little lower, which looks like a shadow.
+        // colour a little lower, which looks like a shadow; moving, the
+        // letters hop and the copy stays.
         Effect::Pop => {
             let edge = em * 0.04 + 1.2;
             frame.with_save(|frame| {
@@ -142,8 +151,18 @@ pub(super) fn effect(frame: &mut Frame<Renderer>, effect: Effect, paint: &Paint<
                 paint.outside(frame, colours.dark2, edge);
                 paint.fill(frame, paint.faded(colours.main));
             });
-            paint.outside(frame, colours.dark2, edge);
-            paint.fill(frame, paint.faded(WHITE));
+            let letters = |frame: &mut Frame<Renderer>| {
+                paint.outside(frame, colours.dark2, edge);
+                paint.fill(frame, paint.faded(WHITE));
+            };
+            if lift == 0.0 {
+                letters(frame);
+            } else {
+                frame.with_save(|frame| {
+                    frame.translate(Vector::new(0.0, lift));
+                    letters(frame);
+                });
+            }
         }
         // One colour: drawn as plain text, so only reached when a
         // two-colour effect has one.
@@ -154,7 +173,7 @@ pub(super) fn effect(frame: &mut Frame<Renderer>, effect: Effect, paint: &Paint<
     for emoji in &paint.glyphs.emoji {
         frame.fill_text(Text {
             content: emoji.text.clone(),
-            position: emoji.at,
+            position: emoji.at + Vector::new(0.0, lift),
             color: paint.faded(WHITE),
             size: Pixels(em),
             line_height: Pixels(paint.line_height).into(),

@@ -2,12 +2,19 @@
 //! the width it's given (`sizer` and the texts of `StyledName`), and what
 //! it draws, kept in its tree state (`drawn`). It reports its text to
 //! operations as iced's text does, so a test finds a row by the name in it.
+//!
+//! A moving name keeps its own clock: from the first frame the window draws
+//! while it moves (`StyledName::moving`), each `RedrawRequested` sets the
+//! frame it draws and asks for the next one (`keyframes`). One that holds
+//! still forgets its clock and asks for nothing, and one drawn again long
+//! after the frame it asked for, such as the top of a `hover` while the
+//! pointer was away, starts its loop over, as Discord's does.
 
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::layout::{self, Layout};
-use iced::advanced::mouse;
 use iced::advanced::renderer;
 use iced::advanced::text::paragraph::Plain;
 use iced::advanced::text::{
@@ -15,8 +22,9 @@ use iced::advanced::text::{
     Text, Wrapping,
 };
 use iced::advanced::widget::{self, Operation, Tree, operation, tree};
+use iced::advanced::{Shell, mouse};
 use iced::alignment::{Horizontal, Vertical};
-use iced::{Color, Font, Length, Pixels, Point, Rectangle, Size};
+use iced::{Color, Event, Font, Length, Pixels, Point, Rectangle, Size, window};
 
 use anomi_theme::fonts::{self, Version};
 use anomi_theme::{Renderer, Theme};
@@ -24,8 +32,13 @@ use anomi_theme::{Renderer, Theme};
 use super::StyledName;
 use super::colours::Colours;
 use super::drawn::Kept;
+use super::keyframes;
 use super::paint;
 use super::style::{Effect, Style};
+
+/// How long after the frame it asked for a moving name may be drawn and
+/// go on where it was; later, it wasn't drawn meanwhile, and starts over.
+const LATE: Duration = Duration::from_millis(250);
 
 /// One letter of a gummy name, measured alone, as each was a `Text` of
 /// its own in a row: no kerning between them.
@@ -56,9 +69,37 @@ pub(super) struct State {
     colours: RefCell<Option<(Style, bool, Option<Colours>)>>,
     /// What an effect drawn from outlines drew.
     pub kept: Kept,
+    /// When a moving name's loop began; none while it holds still.
+    since: Option<Instant>,
+    /// When it asked for its next frame.
+    due: Option<Instant>,
+    /// The frame a moving name draws (`keyframes::frame`): 0 at rest.
+    pub frame: u32,
 }
 
 impl State {
+    /// Runs a name's clock to `now`, when it moves with `moving`'s effect
+    /// and count of colours: the frame it draws, and when its next frame is
+    /// due. One that holds still forgets its clock and the glyphs it kept,
+    /// and asks for nothing.
+    fn advance(&mut self, moving: Option<(Effect, usize)>, now: Instant) -> Option<Instant> {
+        let Some((effect, count)) = moving else {
+            self.since = None;
+            self.due = None;
+            self.frame = 0;
+            self.kept.rest();
+            return None;
+        };
+        if self.due.is_some_and(|due| now > due + LATE) {
+            self.since = None;
+        }
+        let since = *self.since.get_or_insert(now);
+        let at = now.saturating_duration_since(since);
+        self.frame = keyframes::frame(effect, count, at);
+        self.due = keyframes::next(effect, count, at).map(|next| since + next);
+        self.due
+    }
+
     /// Measures the name and a gummy name's letters, when the text, the
     /// font or the size changed.
     fn measure(&mut self, name: &StyledName<'_>, font: Font, line_height: LineHeight) {
@@ -169,6 +210,25 @@ impl StyledName<'_> {
     pub(super) fn line(&self, state: &State) -> f32 {
         state.line_height.to_absolute(Pixels(self.size)).0
     }
+
+    /// The effect, and how many colours it has, of a name that moves now:
+    /// its motion is watched, its effect moves (prism, neon, toon and pop,
+    /// `keyframes::moves`), it isn't faded (a faded one is drawn whole,
+    /// once), and it's in sight of `viewport`, edges and all.
+    pub(super) fn moving(
+        &self,
+        bounds: Rectangle,
+        viewport: &Rectangle,
+    ) -> Option<(Effect, usize)> {
+        let style = self.style?;
+        let (effect, count) = (style.effect(), style.colors().len());
+        let moves = self.motion.watched()
+            && self.opacity >= 1.0
+            && !self.text.is_empty()
+            && keyframes::moves(effect, count)
+            && bounds.expand(paint::reach(self.size)).intersects(viewport);
+        moves.then_some((effect, count))
+    }
 }
 
 /// The name as operations read text; it can't be selected.
@@ -228,6 +288,26 @@ impl<Message> widget::Widget<Message, Theme, Renderer> for StyledName<'_> {
         operation.text(None, layout.bounds(), &mut Named(self.text));
     }
 
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        _cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let Event::Window(window::Event::RedrawRequested(now)) = event else {
+            return;
+        };
+        let moving = self.moving(layout.bounds(), viewport);
+        let state = tree.state.downcast_mut::<State>();
+        if let Some(due) = state.advance(moving, *now) {
+            shell.request_redraw_at(due);
+        }
+    }
+
     fn draw(
         &self,
         tree: &Tree,
@@ -277,12 +357,13 @@ impl<Message> widget::Widget<Message, Theme, Renderer> for StyledName<'_> {
                 }
             }
             Look::Outlined(effect, colours) => {
+                let moving = self.moving(bounds, viewport).map(|_| state.frame);
                 self.outlined(
                     state,
                     renderer,
                     (palette.dark, viewport),
                     (bounds, anchor),
-                    (effect, &colours),
+                    (effect, &colours, moving),
                 );
             }
         }

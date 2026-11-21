@@ -21,9 +21,18 @@ const DECORATION: f32 = 1.2;
 const RING_OUT: f32 = 3.0;
 const RING_WIDTH: f32 = 2.0;
 
-#[derive(Default)]
 struct State {
+    /// The decoration's place: it plays from its first frame and is
+    /// capped, as the face under it.
     player: Player,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            player: Player::from_start().capped(),
+        }
+    }
 }
 
 pub struct Halo<'a, Message> {

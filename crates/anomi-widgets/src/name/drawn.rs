@@ -2,6 +2,12 @@
 //! drawn for changes: the effect's geometry, or for a faded name whose
 //! effect stacks one thing on another, a picture of it.
 //!
+//! A moving name's frame (`keyframes::frame`) is part of what it's drawn
+//! for, so its geometry is made again when the frame changes and kept
+//! while it holds. While it moves it also keeps its glyphs' outlines, made
+//! once for each shaping, so a new frame only paints them; it lets them go
+//! once it holds still, and a still name keeps none.
+//!
 //! Slint fades a `StyledName` as one layer (`ui/people.slint:308`, an
 //! offline member), so neon's, toon's and pop's edges, drawn under the
 //! letters, never show through them. iced fades each fill on its own, which
@@ -20,6 +26,7 @@
 use std::cell::RefCell;
 
 use iced::advanced::graphics::geometry::Renderer as _;
+use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::image::{self, Renderer as _};
 use iced::advanced::renderer::{Headless as _, Renderer as _, Settings};
 use iced::widget::canvas;
@@ -32,7 +39,8 @@ use crate::picture;
 
 use super::StyledName;
 use super::colours::Colours;
-use super::outline;
+use super::keyframes;
+use super::outline::{self, Glyphs};
 use super::paint::{self, Paint};
 use super::style::{Effect, Style};
 use super::widget::State;
@@ -50,6 +58,8 @@ struct Drawn {
     /// Whether the window's renderer draws on a graphics adapter: its
     /// geometry is of another kind than the processor's.
     gpu: bool,
+    /// The moving effect's frame, 33 ms of its loop each; 0 at rest.
+    frame: u32,
 }
 
 /// A faded name's effect drawn whole: its pixels, and its size in logical
@@ -65,6 +75,9 @@ pub(super) struct Kept {
     /// For the window's renderer, of the kind `drawn.gpu` says.
     outlines: RefCell<canvas::Cache<Renderer>>,
     faded: RefCell<Option<Faded>>,
+    /// A moving name's glyphs, and the shaping and the height in the box
+    /// they were traced for.
+    glyphs: RefCell<Option<((u64, u32), Glyphs)>>,
 }
 
 impl Default for Kept {
@@ -73,11 +86,36 @@ impl Default for Kept {
             drawn: RefCell::default(),
             outlines: RefCell::new(canvas::Cache::new()),
             faded: RefCell::default(),
+            glyphs: RefCell::default(),
         }
     }
 }
 
 impl Kept {
+    /// Lets the glyphs a moving name kept go, once it holds still.
+    pub(super) fn rest(&mut self) {
+        *self.glyphs.get_mut() = None;
+    }
+
+    /// Paints with the glyphs a moving name keeps: those of `paragraph`
+    /// with its top left at `origin`, traced again only when it's shaped
+    /// again (`shaped`) or lies elsewhere in its box.
+    fn with_glyphs(
+        &self,
+        (paragraph, shaped): (&Paragraph, u64),
+        origin: Point,
+        paint: impl FnOnce(&Glyphs),
+    ) {
+        let traced = (shaped, origin.y.to_bits());
+        let mut kept = self.glyphs.borrow_mut();
+        if !matches!(&*kept, Some((made, _)) if *made == traced) {
+            *kept = Some((traced, outline::glyphs(paragraph, origin)));
+        }
+        if let Some((_, glyphs)) = kept.as_ref() {
+            paint(glyphs);
+        }
+    }
+
     /// Forgets what was drawn when it was drawn for something else. For
     /// another kind of renderer the outlines' cache is replaced, not
     /// cleared: a cleared one keeps its last geometry to reuse, which the
@@ -99,20 +137,22 @@ impl Kept {
 
 impl StyledName<'_> {
     /// Draws an effect from the name's outlines, made again only when what
-    /// they're drawn for changed.
+    /// they're drawn for changed. `moving` is the frame of a name that
+    /// moves now (`State::frame`), and none for one that holds still.
     pub(super) fn outlined(
         &self,
         state: &State,
         renderer: &mut Renderer,
         (dark, viewport): (bool, &Rectangle),
         (bounds, anchor): (Rectangle, Point),
-        (effect, colours): (Effect, &Colours),
+        (effect, colours, moving): (Effect, &Colours, Option<u32>),
     ) {
         let Some(style) = self.style else {
             return;
         };
         let scale = picture::scale();
         let kept = &state.kept;
+        let step = moving.unwrap_or(0);
         kept.keep(Drawn {
             shaped: state.shaped,
             style,
@@ -121,6 +161,7 @@ impl StyledName<'_> {
             size: (bounds.width.to_bits(), bounds.height.to_bits()),
             scale: scale.to_bits(),
             gpu: is_gpu(renderer),
+            frame: step,
         });
         let reach = paint::reach(self.size);
         let clip = Rectangle::new(
@@ -128,19 +169,28 @@ impl StyledName<'_> {
             Size::new(bounds.width + 2.0 * reach, bounds.height + 2.0 * reach),
         );
         let faded = self.opacity < 1.0 && paint::stacked(effect);
+        let moment = keyframes::moment(effect, colours.count, step);
         let draw = |frame: &mut canvas::Frame<Renderer>| {
             let origin = Point::new(0.0, anchor.y - bounds.y);
-            let glyphs = outline::glyphs(state.paragraph.raw(), origin);
-            let paint = Paint {
-                glyphs: &glyphs,
-                colours,
-                size: bounds.size(),
-                em: self.size,
-                line_height: self.line(state),
-                // A faded picture is drawn whole, and faded as one.
-                opacity: if faded { 1.0 } else { self.opacity },
+            let mut fill = |glyphs: &Glyphs| {
+                let paint = Paint {
+                    glyphs,
+                    colours,
+                    size: bounds.size(),
+                    em: self.size,
+                    line_height: self.line(state),
+                    // A faded picture is drawn whole, and faded as one.
+                    opacity: if faded { 1.0 } else { self.opacity },
+                    at: moment,
+                };
+                paint::effect(frame, effect, &paint);
             };
-            paint::effect(frame, effect, &paint);
+            if moving.is_some() {
+                let paragraph = (state.paragraph.raw(), state.shaped);
+                kept.with_glyphs(paragraph, origin, fill);
+            } else {
+                fill(&outline::glyphs(state.paragraph.raw(), origin));
+            }
         };
         if !faded {
             let geometry = kept
@@ -238,6 +288,7 @@ mod tests {
             size: (40.0_f32.to_bits(), 16.0_f32.to_bits()),
             scale: 1.0_f32.to_bits(),
             gpu,
+            frame: 0,
         }
     }
 
@@ -267,6 +318,22 @@ mod tests {
             drawn_anew(&kept, &renderer, drawn(false)),
             "back on the CPU"
         );
+    }
+
+    #[test]
+    fn a_moving_name_is_drawn_again_for_each_frame_and_kept_while_it_holds() {
+        let renderer = software(Settings::default());
+        let kept = Kept::default();
+        let at = |frame| Drawn {
+            frame,
+            ..drawn(false)
+        };
+        assert!(drawn_anew(&kept, &renderer, at(0)), "the first time");
+        assert!(drawn_anew(&kept, &renderer, at(1)), "a frame on");
+        assert!(!drawn_anew(&kept, &renderer, at(1)), "the same frame");
+        assert!(drawn_anew(&kept, &renderer, at(2)), "the next");
+        assert!(drawn_anew(&kept, &renderer, at(0)), "at rest again");
+        assert!(!drawn_anew(&kept, &renderer, at(0)), "and kept");
     }
 
     #[test]

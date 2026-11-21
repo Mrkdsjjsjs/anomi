@@ -15,8 +15,9 @@
 //! - Each colour is first made to read against the member list's ground,
 //!   one set for dark themes and one for light (`colours`), and the
 //!   outlines are made once and kept in the widget's tree state until the
-//!   name, its width, the style, the theme's darkness or the window's kind
-//!   of renderer (graphics adapter or processor) changes (`drawn`).
+//!   name, its width, the style, the theme's darkness, the window's kind
+//!   of renderer (graphics adapter or processor) or a moving name's frame
+//!   changes (`drawn`).
 //! - A name is faded as a whole, as Slint fades the element: neon, toon
 //!   and pop at an opacity below 1 are drawn once into a picture at full
 //!   opacity, on the processor whatever draws the window, and the picture
@@ -24,11 +25,24 @@
 //! - It reports its text to operations, so `ui.click("Bob")` finds a row
 //!   by the name drawn in it.
 //!
-//! Nothing here moves: Discord's animated name effects aren't drawn, as
-//! in the Slint app, so a name never asks for a frame.
+//! A name given a live [`Motion`] ([`StyledName::motion`]) moves as
+//! Discord's animated names do, looping while `motion.watched()`
+//! (`keyframes`): prism's colours scroll, neon's letters flicker, toon's
+//! bands run down, pop's letters hop. Gradient, glow and solid never move,
+//! as in Discord, and gummy is drawn at rest. A faded name, a name out of
+//! sight and one in `Motion::default()`, the default, hold their look at
+//! rest and ask for no frame; a moving one asks for one every 33 ms within
+//! the span of its loop that moves, and once at the next span otherwise.
+//!
+//! The looks at rest are Discord's too. Toon's is the top quarter of its
+//! gradient, white through the light shades to the colour, where the Slint
+//! app guessed bands, and a prism narrower than 38 px shows only as much of
+//! its round of colours, so the reference shots of such names differ from
+//! the Slint app's.
 
 mod colours;
 mod drawn;
+mod keyframes;
 mod outline;
 mod paint;
 mod style;
@@ -41,7 +55,7 @@ pub use style::{Effect, Style, face};
 use iced::font::Weight;
 use iced::{Color, Font, Length};
 
-use anomi_theme::{Palette, fonts, typography};
+use anomi_theme::{Motion, Palette, fonts, typography};
 
 /// The colour of a name with no colours of its own: a theme's token, or a
 /// colour such as a role's. `StyledName.ink`, which is `Theme.text` unless
@@ -93,10 +107,11 @@ pub struct StyledName<'a> {
     width: Length,
     height: Length,
     opacity: f32,
+    motion: Motion,
 }
 
 /// `text` drawn in `style`, or as plain text in its ink without one: 16 px,
-/// medium, as wide as the text and a line high.
+/// medium, as wide as the text and a line high, its effect at rest.
 pub fn styled_name(text: &str, style: Option<Style>) -> StyledName<'_> {
     StyledName {
         text,
@@ -107,6 +122,7 @@ pub fn styled_name(text: &str, style: Option<Style>) -> StyledName<'_> {
         width: Length::Shrink,
         height: Length::Shrink,
         opacity: 1.0,
+        motion: Motion::default(),
     }
 }
 
@@ -146,6 +162,16 @@ impl StyledName<'_> {
     /// The whole name's opacity, as an offline member's is halved.
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity;
+        self
+    }
+
+    /// Animates the style's effect, as Discord's ANIMATED display type
+    /// looping, while `motion.watched()`; `Motion::default()` (the default)
+    /// draws it at rest. Prism, neon, toon and pop move, and only while the
+    /// name is whole, not faded, and in sight; each loop starts from the
+    /// look at rest when the name starts moving.
+    pub fn motion(mut self, motion: Motion) -> Self {
+        self.motion = motion;
         self
     }
 

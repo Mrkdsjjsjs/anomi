@@ -13,8 +13,8 @@
 // and testing/envs/example.json uses all of it. Media paths are relative to
 // the env file; videos need ffprobe and ffmpeg, which convert a streamed one
 // once, kept in the system's temporary directory. The seeding options below
-// (--extra, --servers, --dms, --images, --channels, --authors, --folders, --name-styles and
-// --unread) don't apply, and the controls that act on the fixture's people
+// (--extra, --servers, --dms, --images, --channels, --authors, --folders, --name-styles,
+// --animated, --callers and --unread) don't apply, and the controls that act on the fixture's people
 // or channels answer 400; those that only report, such as
 // /_control/video, still work. Without --env the fixture is as it is here.
 // `--extra N` sets how many history messages follow the four fixture ones
@@ -38,6 +38,32 @@
 // every eighth in Mods (with a role icon), and banners on their profiles.
 // POST /_control/crowd-start makes someone new post in the last of them, or
 // in #general, 50 times a second, and /_control/crowd-stop stops them.
+// `--animated` gives people pictures and names that move, as Nitro does:
+// Bob's and Carol's avatars (a_bob1, a_carol1), every `--authors` writer's
+// and `--members` member's, Carol's banner (a_carolwave) and "Server"'s icon
+// (a_server1, with ANIMATED_ICON among its features); a purple prism name
+// for Alice and a neon one for Bob, Carol keeping her gradient, which
+// doesn't move; and Carol a profile effect that shows nothing at rest (the
+// Petals' layers, animationType 2, INTERMITTENT). A picture whose hash starts
+// with `a_` comes from the CDN two ways: `{hash}.png`, its still, and
+// `{hash}.webp?size=N&animated=true`, its moving version. Discord's CDN
+// sends an animated WebP; the fake sends a GIF, which the core reads by its
+// bytes: a dot bouncing in a colour of the hash's own for an avatar, a
+// member's avatar or an icon, testing/fixtures/gifs/hello.gif for a banner,
+// or what was uploaded as it came. An uploaded GIF's `.png` is a still too,
+// as the CDN's first frame would be (ASSUMED). GET /_control/moving-pictures
+// counts the moving versions asked for, with or without the flag, Dave's
+// `.gif` banner among them, as {"count", "paths"} with each one's path and
+// query, and POST /_control/moving-pictures?reset starts it again from none.
+// `--callers N` puts N more people of "Server" in the Lounge from the start,
+// beside Bob, Carol and Dave: caller0 to caller{N-1}, "Caller 0" and on, ids
+// from 1820000000000000000, unmuted; under --animated the even ones'
+// avatars move (a_c0, a_c2...). POST /_control/speak?user=ID&ms=2000 has that
+// caller, named by id or username, say the tone for `ms` (2000 by default)
+// in each call of Alice's in their channel, then five silent frames, as
+// /_control/bob-speak has Bob; ?user=all has every caller speak at once.
+// Each speaks from an SSRC of their own, BOB_AUDIO_SSRC + 100 + n, which op 5
+// names as they start.
 // POST /_control/burst?count=N posts N messages, 150 every 10 ms, for
 // measuring: every third in #general, from 40 people in turn, every fourth of
 // those with a 960x640 picture and every fifth with an embed's picture, each at
@@ -455,6 +481,8 @@ const { values: args } = parseArgs({
     members: { type: "string", default: "0" },
     "name-styles": { type: "boolean", default: false },
     "member-looks": { type: "boolean", default: false },
+    animated: { type: "boolean", default: false },
+    callers: { type: "string", default: "0" },
     nitro: { type: "boolean", default: false },
     folders: { type: "boolean", default: false },
     "cdn-delay": { type: "string", default: "0" },
@@ -466,6 +494,8 @@ const { values: args } = parseArgs({
  *  fixture is made, as `world`. */
 const env = args.env ? await readEnv(args.env) : undefined;
 let world: World | undefined;
+/** `--animated`, which an env's content replaces as it does the rest. */
+const animated = args.animated && !env;
 
 const TOKEN = "yapfast-test-token";
 // The login the API and gateway take, which POST /_control/refresh-token
@@ -518,6 +548,9 @@ const ALICE = "1400000000000000001";
 
 /** The profile effect Bob equips: an intro layer and a looping one over the card. */
 const PROFILE_EFFECT = "1500000000000000010";
+/** The one Carol equips under `--animated`: the same layers, INTERMITTENT
+ *  (animationType 2), which Discord's client shows nothing of at rest. */
+const PROFILE_EFFECT_INTERMITTENT = "1500000000000000012";
 /** The profile frame Dave equips, a staple over the top and a border down
  *  the sides, which GET /collectibles-products/{sku} describes; its layers
  *  are served at /media/v1/collectibles-shop/{sku}/{layer}/static. Dave's
@@ -544,17 +577,23 @@ const users: Record<string, User> = {
   alice: {
     id: ALICE, username: "alice", global_name: "Alice", avatar: "alice1", decoration: "1500000000000000003",
     nameplate: { sku: "1500000000000000004", palette: "bubble_gum" },
+    // Under --animated, a purple prism name, as the owner's.
+    ...(animated ? { style: { font: 11, effect: 7, colors: [0x7a5cff, 0xc77dff, 0x5a189a] } } : {}),
   },
   // Bob, who has a DM, wears both, as Alice's card does; Carol a nameplate.
+  // Under --animated their avatars move, Bob's name is neon, and Carol's
+  // gradient, which doesn't move, stays for comparison.
   bob: {
-    id: "1400000000000000002", username: "bob", global_name: "Bob", avatar: "bob1", decoration: "1500000000000000001",
+    id: "1400000000000000002", username: "bob", global_name: "Bob", avatar: animated ? "a_bob1" : "bob1", decoration: "1500000000000000001",
     effect: PROFILE_EFFECT,
     nameplate: { sku: "1500000000000000006", palette: "sky" },
+    ...(animated ? { style: { font: 11, effect: 3, colors: [0xb388ff] } } : {}),
   },
   carol: {
-    id: "1400000000000000003", username: "carol", global_name: "Carol", avatar: "carol1",
+    id: "1400000000000000003", username: "carol", global_name: "Carol", avatar: animated ? "a_carol1" : "carol1",
     nameplate: { sku: "1500000000000000002", palette: "violet" },
     style: { font: 3, effect: 2, colors: [0xff7eb3, 0x7a5cff] },
+    ...(animated ? { effect: PROFILE_EFFECT_INTERMITTENT } : {}),
   },
   dave: { id: "1400000000000000004", username: "dave", global_name: "Dave", avatar: null },
 };
@@ -868,7 +907,7 @@ const serverLooks: Record<string, Pick<User, "decoration" | "nameplate" | "style
 };
 for (const look of Object.values(serverLooks)) if (look.nameplate) nameplateSkus.add(look.nameplate.sku);
 
-const profileEffects = new Set<string>([PROFILE_EFFECT]);
+const profileEffects = new Set<string>([PROFILE_EFFECT, ...(animated ? [PROFILE_EFFECT_INTERMITTENT] : [])]);
 
 /** A profile effect's picture, 450 by 880 and clear but for a few petals, which
  *  differ by name. The intro and the loop are animated, the others still. */
@@ -1138,14 +1177,16 @@ function wireProfile(user: User, guild: string | null, origin: string) {
   if (world) return envProfile(world, user, guild);
   const bob = user.id === users.bob.id;
   const carol = user.id === users.carol.id;
+  // The people of `--callers` are members of "Server" too.
+  const isMember = Object.values(users).includes(user) || callers.includes(user);
   // Status Bot posts in the server, so Discord lists it as shared.
-  const inServer = (Object.values(users).includes(user) && user.id !== ALICE) || user.id === statusBot.id;
-  const isMember = Object.values(users).includes(user);
+  const inServer = (isMember && user.id !== ALICE) || user.id === statusBot.id;
   const dave = user.id === users.dave.id;
   const profile = user.id === ALICE ? aliceProfile : lookProfiles.get(user.id) ?? {
     bio: bob ? "Plays bass in a **ska** band. Ask me about https://example.com/gigs" : "",
     pronouns: bob ? "he/him" : "",
-    banner: bob ? "bob-banner" : dave ? "a_davebanner" : null,
+    // Dave's banner moves, and under --animated Carol's.
+    banner: bob ? "bob-banner" : dave ? "a_davebanner" : carol && animated ? "a_carolwave" : null,
     accent_color: carol ? 0x5865f2 : null,
   };
   return {
@@ -1372,6 +1413,21 @@ function bouncing(side: number, count: number, color: number[]): Uint8Array {
     return pixels;
   });
   return gif(side, side, [[30, 31, 36], color], frames, 10);
+}
+
+/** The moving versions of `a_` avatars and icons made so far, by hash. */
+const bouncingFaces = new Map<string, Uint8Array>();
+/** The moving version of an avatar or icon whose hash starts with `a_`: a
+ *  dot that bounces in 12 frames, 128 by 128 as the still, in a colour of the
+ *  hash's own. Made once for each hash. */
+function bouncingFace(hash: string): Uint8Array {
+  let made = bouncingFaces.get(hash);
+  if (!made) {
+    const hue = crc32(new TextEncoder().encode(hash));
+    made = bouncing(128, 12, [(hue >>> 16) & 255, (hue >>> 8) & 255, hue & 255].map((c) => 96 + (c % 160)));
+    bouncingFaces.set(hash, made);
+  }
+  return made;
 }
 
 type File = {
@@ -1841,10 +1897,21 @@ const authors: User[] = Array.from({ length: Number(args.authors) }, (_, n) => (
   id: (1_700_000_000_000_000_000n + BigInt(n)).toString(),
   username: `writer${n}`,
   global_name: `Writer ${n}`,
-  avatar: `w${n}`,
+  avatar: animated ? `a_w${n}` : `w${n}`,
   ...(args["name-styles"] ? nameStyleSample(n) : {}),
 }));
 for (const author of authors) userById.set(author.id, author);
+// The people of `--callers`, members of "Server" in the Lounge from the
+// start (see startingVoice), every even one's avatar moving under
+// --animated. The crowd of /_control/crowd-start takes the ids from
+// 1800000000000000000, so theirs start at 1820000000000000000.
+const callers: User[] = Array.from({ length: env ? 0 : Number(args.callers) }, (_, n) => ({
+  id: (1_820_000_000_000_000_000n + BigInt(n)).toString(),
+  username: `caller${n}`,
+  global_name: `Caller ${n}`,
+  avatar: animated && n % 2 === 0 ? `a_c${n}` : `c${n}`,
+}));
+for (const caller of callers) userById.set(caller.id, caller);
 const ROOM_HISTORY = 60;
 const rooms = Array.from({ length: Number(args.channels) }, (_, n) => {
   const id = (1_400_000_000_000_010_000n + BigInt(n)).toString();
@@ -2221,6 +2288,9 @@ const startingVoice = (): [string, VoiceState][] => [
   [users.bob.id, { guild: GUILD, channel: LOUNGE, self_mute: false, self_deaf: false, session: "voice-bob", self_stream: true }],
   [users.carol.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: false, session: "voice-carol" }],
   [users.dave.id, { guild: GUILD, channel: LOUNGE, self_mute: true, self_deaf: true, session: "voice-dave" }],
+  // The people of `--callers`, unmuted, who speak with POST /_control/speak.
+  ...callers.map((caller): [string, VoiceState] =>
+    [caller.id, { guild: GUILD, channel: LOUNGE, self_mute: false, self_deaf: false, session: `voice-${caller.username}` }]),
 ];
 const voice = new Map<string, VoiceState>(startingVoice());
 
@@ -2602,7 +2672,8 @@ function guildChannels(): GuildChannel[] {
 // Discord asks her to confirm it.
 const SERVER_SETTINGS = {
   name: "Server",
-  icon: "server1" as string | null,
+  // Under --animated its icon moves, as ANIMATED_ICON lets it.
+  icon: (animated ? "a_server1" : "server1") as string | null,
   description: null as string | null,
   system_channel_id: GENERAL as string | null,
   system_channel_flags: 0,
@@ -2613,7 +2684,7 @@ const SERVER_SETTINGS = {
   splash: null as string | null,
   premium_progress_bar_enabled: false,
   premium_tier: 0,
-  features: [] as string[],
+  features: (animated ? ["ANIMATED_ICON"] : []) as string[],
   verification_level: 0,
   explicit_content_filter: 0,
   owner: users.bob.id,
@@ -3022,7 +3093,7 @@ function ready(ws: Socket) {
       locale: "en-US",
       nsfw_allowed: true,
     },
-    users: (world ? [...userById.values()] : [...Object.values(users), ...Object.values(strangers), ...fillerPeople])
+    users: (world ? [...userById.values()] : [...Object.values(users), ...Object.values(strangers), ...fillerPeople, ...callers])
       .filter((user) => user.id !== ALICE)
       .map(wireUser),
     guilds: world ? world.guilds.map(envGuild) : [...(leftServer ? [] : [guild()]), ...fillers],
@@ -3207,7 +3278,7 @@ const listed: User[] = Array.from({ length: Number(args.members) }, (_, n) => ({
   id: (1_750_000_000_000_000_000n + BigInt(n)).toString(),
   username: `member${n}`,
   global_name: `Member ${n}`,
-  avatar: `m${n}`,
+  avatar: animated ? `a_m${n}` : `m${n}`,
   ...memberLook(n),
 }));
 for (const [n, person] of listed.entries()) {
@@ -3223,6 +3294,8 @@ for (const [n, person] of listed.entries()) {
   });
 }
 if (args["member-looks"]) serverRoles.find((role) => role.id === MODS)!.icon = "modsicon";
+// The people of `--callers` are online, doing nothing.
+for (const caller of callers) presences[caller.id] = { status: "online", activities: [] };
 
 // The member list's Activity feed, as /content-inventory/users/@me answers:
 // Bob and Carol now, Dave's game earlier, this week's top ones, then what no
@@ -3294,7 +3367,7 @@ function listId(channelId: string): string {
 
 function memberList(id = "everyone") {
   const offline = (user: User) => presences[user.id]!.status === "offline";
-  const present = [...Object.values(users), ...listed].filter((user) => !removed.has(user.id));
+  const present = [...Object.values(users), ...listed, ...callers].filter((user) => !removed.has(user.id));
   const mods = present.filter((user) => memberRoles.get(user.id)?.includes(MODS));
   const others = present.filter((user) => !mods.includes(user));
   const groups = [
@@ -4262,6 +4335,56 @@ function speakersStart(ws: Socket) {
     index++;
   }, 20);
   speakerTimers.push(timer);
+  return true;
+}
+
+/** The audio SSRC of the nth person of `--callers`. */
+const callerSsrc = (n: number) => BOB_AUDIO_SSRC + 100 + n;
+/** Each caller's next RTP sequence number in each call, by the call's SSRC
+ *  and theirs, so that speaking again goes on from where it stopped, as a
+ *  client's does. */
+const callerSequences = new Map<string, number>();
+
+/** The callers numbered `speakers` say the tone in Alice's call on `ws` for
+ *  `ms`, 20 ms a packet, then five silent frames, each marking themselves
+ *  speaking with op 5 first, as Bob does; one timer for them all. Their RTP
+ *  clock runs at 48 kHz from the fake's start, as a sender's does through
+ *  its pauses. */
+function callersSpeak(ws: Socket, speakers: number[], ms: number) {
+  const key = ws.data.callKey;
+  const peer = ws.data.ssrc ? peers.get(ws.data.ssrc) : undefined;
+  if (!key || !peer || speakers.length === 0) return false;
+  for (const n of speakers) {
+    ws.send(JSON.stringify({ op: 5, d: { user_id: callers[n]!.id, ssrc: callerSsrc(n), speaking: 1 } }));
+  }
+  const toned = Math.max(1, Math.round(ms / 20));
+  const start = Math.floor(((Date.now() - fakeStarted) * 48) / 960) * 960;
+  let index = 0;
+  let counter = 1;
+  const timer = setInterval(() => {
+    if (index >= toned + 5 || ws.readyState !== 1) {
+      clearInterval(timer);
+      return;
+    }
+    const frame = index < toned ? voiceTone[index % voiceTone.length]! : OPUS_SILENCE;
+    const wants: any = callWants.get(ws.data.ssrc!) ?? {};
+    for (const n of speakers) {
+      const ssrc = callerSsrc(n);
+      const stream = `${ws.data.ssrc}:${ssrc}`;
+      const sequence = callerSequences.get(stream) ?? 40_000 + n * 1000;
+      callerSequences.set(stream, sequence + 1);
+      const header = Buffer.alloc(12);
+      header[0] = 0x80;
+      header[1] = 120 | (index === 0 ? 0x80 : 0);
+      header.writeUInt16BE(sequence & 0xffff, 2);
+      header.writeUInt32BE((start + index * 960) >>> 0, 4);
+      header.writeUInt32BE(ssrc, 8);
+      if (Number(wants[String(ssrc)] ?? wants.any ?? 100) > 0) {
+        udp.send(sealRtp(Buffer.concat([header, frame]), key, counter++, 12), peer.port, peer.address);
+      }
+    }
+    index++;
+  }, 20);
   return true;
 }
 
@@ -6778,8 +6901,11 @@ async function api(req: Request, path: string, origin: string): Promise<Response
     return json({
       sku_id: sku, store_listing_id: "1", type: 1, name: "Petals", summary: "Falling petals", premium_type: 2,
       items: [
+        // Bob's is PERSISTENT (1), its still showing at rest; Carol's
+        // INTERMITTENT (2), nothing.
         { type: 1, sku_id: sku, title: "Petals", description: "Falling petals", accessibilityLabel: "Falling petals",
-          animationType: 1, thumbnailPreviewSrc: layer("thumbnail"), reducedMotionSrc: layer("reduced"),
+          animationType: sku === PROFILE_EFFECT_INTERMITTENT ? 2 : 1,
+          thumbnailPreviewSrc: layer("thumbnail"), reducedMotionSrc: layer("reduced"),
           staticFrameSrc: layer("still"),
           effects: [
             { src: layer("intro"), loop: false, height: 880, width: 450, duration: 2000, start: 0, loopDelay: 0,
@@ -8841,6 +8967,7 @@ const GENERIC_CONTROLS = new Set([
   "qr-confirm", "qr-captcha", "qr-cancel", "qr-expire", "voice-audio", "video", "stream-codec", "reactor-pages",
   "reactor-removals", "thread-searches", "thread-creates", "thread-members", "typed", "acks", "invites",
   "invite-joins", "invite-captcha", "invite-form", "event-interest", "gift-redeems", "oauth-authorizations", "mfa", "soundboard-sends", "custom-call-sounds",
+  "moving-pictures",
 ]);
 
 /** A status's emoji as the env gives it, Unicode or `<:name:id>`, as Discord sends it. */
@@ -9281,6 +9408,14 @@ function withDeviceCookie(req: Request, response: Response) {
 
 // Private test diagnostics: how much media the UI actually asks for.
 const mediaRequests = { avatars: 0, previews: 0 };
+/** Each moving version of an avatar, a member's avatar, an icon or a banner
+ *  asked for, with its query, oldest first, for GET
+ *  /_control/moving-pictures: an `animated=true` address, or an `a_` hash's
+ *  `.webp` or `.gif`. */
+const movingPictures: string[] = [];
+/** Where on the CDN pictures that may move are: avatars, members' avatars,
+ *  icons and banners. */
+const MOVING_PLACES = /^\/(?:avatars\/\d+|icons\/\d+|banners\/\d+|guilds\/\d+\/users\/\d+\/(?:avatars|banners))\/([^/]+)$/;
 // The query of each request for a channel's messages, oldest first.
 const historyRequests: string[] = [];
 // Each forward's channel and its X-Context-Properties, oldest first.
@@ -9304,9 +9439,17 @@ const server = Bun.serve<SocketData>({
       return Response.json(historyRequests);
     }
     if (path === "/_control/forwards") return Response.json(forwards);
+    if (path === "/_control/moving-pictures") {
+      if (req.method === "POST") movingPictures.length = 0;
+      return Response.json({ count: movingPictures.length, paths: movingPictures });
+    }
     if (req.method === "GET") {
       if (/^\/(icons|avatars|banners|embed\/avatars|guilds)\//.test(path)) mediaRequests.avatars++;
       if (/^\/(attachments|media\/attachments|external)\//.test(path)) mediaRequests.previews++;
+      const place = path.match(MOVING_PLACES);
+      if (place && (url.searchParams.get("animated") === "true" || /^a_[^/.]+\.(?:webp|gif)$/.test(place[1]!))) {
+        movingPictures.push(path + url.search);
+      }
     }
     // Slowed, so loading states can be seen: history, attachments and links' pictures.
     if (slowMs > 0 && req.method === "GET" && (/\/channels\/\d+\/messages$/.test(path) || path.startsWith("/attachments/") || path.startsWith("/external/"))) {
@@ -9398,6 +9541,28 @@ const server = Bun.serve<SocketData>({
     if (movingBanner) {
       return new Response(Bun.file(new URL("gifs/hello.gif", fixtures)), { headers: { "content-type": "image/gif" } });
     }
+    // The moving version of an `a_` avatar, member's avatar or server icon,
+    // as Discord's client asks for it, `{hash}.webp?size=N&animated=true`:
+    // Discord's CDN sends an animated WebP (image/webp), the fake a GIF of a
+    // dot that bounces, which the core reads by its bytes as it would the
+    // WebP; one uploaded comes back as it came.
+    const movingFace = req.method === "GET"
+      ? path.match(/^\/(?:avatars\/\d+|guilds\/\d+\/users\/\d+\/avatars|icons\/\d+)\/(a_[^/.]+)\.webp$/)
+      : null;
+    if (movingFace) {
+      const uploaded = uploadedPictures.get(movingFace[1]!);
+      if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
+      return new Response(bouncingFace(movingFace[1]!), { headers: { "content-type": "image/gif" } });
+    }
+    // A banner's moving version, the same way: hello.gif, or what was uploaded.
+    const movingWide = req.method === "GET"
+      ? path.match(/^\/(?:banners\/\d+|guilds\/\d+\/users\/\d+\/banners)\/(a_[^/.]+)\.webp$/)
+      : null;
+    if (movingWide) {
+      const uploaded = uploadedPictures.get(movingWide[1]!);
+      if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
+      return new Response(Bun.file(new URL("gifs/hello.gif", fixtures)), { headers: { "content-type": "image/gif" } });
+    }
     const collectible = req.method === "GET" ? path.match(COLLECTIBLES_PATH) : null;
     if (collectible) {
       if (collectible[2] === "animated") collectibleAnimations++;
@@ -9407,8 +9572,12 @@ const server = Bun.serve<SocketData>({
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
     }
     if (req.method === "GET" && /^\/(icons\/\d+|avatars\/\d+|banners\/\d+|splashes\/\d+|role-icons\/\d+|clan-badges\/\d+|badge-icons|embed\/avatars|guilds\/\d+\/users\/\d+\/(avatars|banners))\/[^/]+\.png$/.test(path)) {
-      const uploaded = uploadedPictures.get(path.slice(path.lastIndexOf("/") + 1, -".png".length));
-      if (uploaded) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
+      const hash = path.slice(path.lastIndexOf("/") + 1, -".png".length);
+      const uploaded = uploadedPictures.get(hash);
+      // An `a_` hash's PNG is a still, an uploaded GIF's too, as the CDN
+      // gives a moving picture's first frame (ASSUMED); its moving version
+      // is the `.webp` above.
+      if (uploaded && !hash.startsWith("a_")) return new Response(uploaded.data, { headers: { "content-type": uploaded.type } });
       return new Response(picture(path), { headers: { "content-type": "image/png" } });
     }
     if (req.method === "POST" && path === "/_control/nitro") {
@@ -9574,6 +9743,19 @@ const server = Bun.serve<SocketData>({
       const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
       const spoke = calls.filter((ws) => bobSpeaks(ws)).length;
       return new Response(`Bob speaks in ${spoke} call(s)\n`, { status: spoke ? 200 : 409 });
+    }
+    if (req.method === "POST" && path === "/_control/speak") {
+      // A caller of `--callers`, by id or username, or ?user=all every one,
+      // says the tone for ?ms=, in each of Alice's calls in their channel.
+      const who = url.searchParams.get("user") ?? "all";
+      const chosen = callers.flatMap((caller, n) => (who === "all" || caller.id === who || caller.username === who ? [n] : []));
+      if (chosen.length === 0) return new Response(`no caller ${who}; start with --callers N\n`, { status: 400 });
+      const ms = Number(url.searchParams.get("ms") ?? 2000);
+      if (!Number.isFinite(ms) || ms <= 0) return new Response("ms is a time in milliseconds\n", { status: 400 });
+      const calls = [...voiceSockets].filter((ws) => !ws.data.stream && ws.data.callKey);
+      const spoke = calls.filter((ws) =>
+        callersSpeak(ws, chosen.filter((n) => voice.get(callers[n]!.id)?.channel === callChannel(ws)), ms)).length;
+      return new Response(`${chosen.length} caller(s) speak in ${spoke} call(s)\n`, { status: spoke ? 200 : 409 });
     }
     if (req.method === "POST" && path === "/_control/carol-echo") {
       // Carol, on a laptop's speakers, sends back all Alice says ?delay=MS

@@ -622,6 +622,36 @@ else the item's `collectibles_item` or `bundle_items`. The client's card shows
 only lines 1, 7 and 14; Yapfast also shows others it can name, by the store
 picture if they have one.
 
+## Animated avatars and server icons
+
+An avatar, a server avatar or a server icon whose hash starts with `a_`
+moves. Discord sends every one as a still, `….png?size=128`
+(`ready.rs`); its moving version is the animated WebP Discord's client asks
+for, `….webp?size=128&animated=true` (`chat::moving_picture`), decoded at
+the still's size a frame at a time from the kept file. Anomi asks for it
+only where it may play, and shows it there once it came, the still until
+then; the Slint client asks for the stills alone.
+
+| Where | Plays | Moving version asked for |
+| --- | --- | --- |
+| A message's author | while the pointer is on the message that starts the group | as that message lights |
+| A member row, a DM row | pointed at, or selected (the member's card open, the DM open) | then |
+| The profile popout, the full profile, the account popover | while it shows | as it's made |
+| The DM's panel, the account card | while the pointer is on it | as it's made |
+| A call's tile (stage, grid, picture in picture) | while the person speaks, after 15 s without input too | for everyone in the call |
+| An incoming call's ring | while it rings | while it rings |
+| The rail's server icon and DM picture | while the pointer is on it; a folder's previews never | for each in view, so a hover starts at once |
+| Replies, mentions, the switcher, voice rows, viewers, facepiles, mutual friends | never, as in Discord | never |
+
+Everything here plays only while `motion.watched()`: the window in front,
+or on screen under Background's Everything, animations not Never, and used
+in the last 15 s; a speaking tile alone keeps going while idle
+(`Motion::awake`). Hidden, nothing plays, decodes or asks for a frame. At
+most `MOVING`, 8, of these pictures (avatars, decorations, the rail's
+faces, banners) play at once, the rest holding their first frame until one
+stops, and each plays from its first frame as it starts or resumes. Under
+Never none is asked for (`pictures::moving_url` gives none).
+
 ## Avatar decorations and nameplates
 
 What a person equips from Discord's shop shows as it does in Discord's client.
@@ -670,23 +700,29 @@ a PNG: 288 by 288 for a decoration, 448 by 84 or 672 by 126 for a plate. The
 client asks for `/animated`, an APNG, or `/video`, a WebM, and Yapfast
 asks for `/animated` (Discord's own client does on Linux and Safari), when
 the [profile switches](#profile-switches) let them animate, as they do
-unless turned off. A decoration plays on a message while the pointer is on the message that starts
-its group, and on the profile card, in the member list, a DM's row and the
-account card while the pointer is on them. Discord's client plays a chat
-decoration while the pointer is on any message of the group, and a card's
-whenever it's open. A nameplate plays while its row is pointed at, and the
-account card's while the card is; a selected row's holds still, as playing
-costs some 7% of a core for as long as it's selected. Everything holds still when Yapfast's window isn't focused
-(`Motion.playing`), whatever the settings, and a surface that stops being
-pointed at goes back to the still picture. One held still draws nothing more:
-what shows a frame reads the animation clock without following it, so it's
-drawn again only when its frame changes. The animated picture is fetched the first time it's to play,
-and decodes the frame showing: `Picture`'s frames come from the kept file one
-at a time, as a GIF's do, and a decoder is let go a second after its last frame
-shows, so nothing animating off screen keeps anything. The pictures are kept in
-the picture cache with avatars. A decoration decodes at up to 160 pixels and a
-plate at up to 448 by 84, where other pictures take 128, and the still ones stay
-while the screen shows their person (`pictures_on_screen`).
+unless turned off, and Messages' "Play GIFs, emoji and stickers" isn't
+Never. A decoration plays where its avatar does
+([above](#animated-avatars-and-server-icons)): on a message while the
+pointer is on the message that starts its group, in the member list and a
+DM's row while pointed at or selected, on the profile popout and the full
+profile while they show, and on the DM's panel and the account card while
+the pointer is on them. Discord's client plays a chat decoration while the
+pointer is on any message of the group. A nameplate plays only while its
+row is pointed at, and the account card's while the card is; a selected
+row's holds still, as playing costs some 7% of a core for as long as it's
+selected. Everything plays only while `motion.watched()`, as avatars do,
+and a surface that stops playing goes back to the still picture; the Slint
+client plays them under the pointer alone, while its window is focused.
+One held still draws nothing more: what shows a frame reads the animation
+clock without following it, so it's drawn again only when its frame
+changes. The animated picture is fetched the first time its place may
+play it, and decodes the frame showing: `Picture`'s frames come from the
+kept file one at a time, as a GIF's do, and a decoder is let go a second
+after its last frame shows, so nothing animating off screen keeps
+anything. The pictures are kept in the picture cache with avatars. A
+decoration decodes at up to 160 pixels and a plate at up to 448 by 84,
+where other pictures take 128, and the still ones stay while the screen
+shows their person (`pictures_on_screen`).
 
 What a member sets for one server alone, `avatar_decoration_data`,
 `collectibles` and `display_name_styles` on a member object (member lists,
@@ -708,18 +744,37 @@ each layer in place of `src`, the same one in all), `loop`, `start`,
 `duration` and `loopDelay` in milliseconds, `position` and `zIndex` (the
 fields are camelCase, as the client reads them).
 
-Discord's client plays an effect over the card for as long as its window has
-the focus. Yapfast shows the still picture, and plays the layers only while
-the pointer is on the card, starting them over each time, as a card's
-decoration does: playing costs a fifth of a core on the software renderer. An
-effect with no layer that loops stops at the end of its last layer and shows
-the still picture again.
+An item's `animationType` says how it looks while it doesn't play: 1
+(PERSISTENT), or none, shows the still; 2 (INTERMITTENT) shows nothing
+(`ProfileEffect::intermittent`).
+
+Anomi plays an effect as Discord's client does, on the profile popout, the
+full profile and the DM's panel (`Play::Open`):
+
+- Every layer's picture is asked for as the card is made, with the still,
+  while animations may play (not Never) and the switch lets effects show.
+- Nothing is drawn until every layer has come. Then, 500 ms later, the
+  layers play from the card's time 0: the intro ones once, the looping ones
+  again after their `loopDelay`, until the card closes.
+- It plays while `motion.watched()`, its clock as its layers' pictures
+  are: the window in front, or on screen under Background's Everything, and
+  used in the last 15 s. Otherwise, as unfocused under the default, idle or
+  under Never, it shows its still, or nothing for an intermittent one, and
+  back in use it goes on from where it stood.
+- If the layers haven't all come 5 s after the card opened, it shows that
+  at-rest look until they have.
+- An effect with no layer that loops ends with its last layer, and then
+  shows its at-rest look.
+
+Under Never no layer is fetched. The Slint client shows the still and
+plays the layers only while the pointer is on the card, starting them over
+each time, as playing costs a fifth of a core on its software renderer.
 
 The layers are APNGs on the CDN, 450 by 880 pixels, scaled to the card; each
-picture decodes at no more than `EFFECT_SIZE`, and a layer's is asked for when
-it first plays. An effect's pictures are the size of the card, so they go as
-soon as its card closes (`let_go_of_effect_pictures`) rather than waiting for
-the trim. The backend keeps the last eight effects (`Event::ProfileEffect`);
+picture decodes at no more than `EFFECT_SIZE`, a frame at a time and one
+ahead, as nothing this large is decoded whole. An effect's pictures are the
+size of the card, so they go as soon as its card closes
+(`let_go_of_effect_pictures`) rather than waiting for the trim. The backend keeps the last eight effects (`Event::ProfileEffect`);
 each card's profile points to one by SKU. A layer plays as many times as its
 APNG's `acTL` says, then holds its last frame, as a browser does, and stops
 asking for frames; a file that says 0 plays for as long as its layer shows.
@@ -750,12 +805,18 @@ a modal 560 pixels high, under 680 pixels, shows none. The DM's panel and
 the editor's preview show none, and the panel asks for none. Each layer decodes at up to 460 by 1600 (`FRAME_SIZE`), as wide
 as a card draws it.
 
-A banner whose hash starts with `a_` moves: the card shows its still PNG and
-plays the GIF at the same address once it has come, while animations play
-(`Motion.playing`), as a moving decoration does. With animations off in
-Settings the GIF isn't asked for. A frame's layers and a moving banner go
-when their card closes, as an effect's pictures do, rather than with the
-next trim.
+A banner whose hash starts with `a_` moves. Anomi shows its still PNG and,
+once it came, the animated WebP Discord's client asks for,
+`….webp?size=600&animated=true` (`chat::moving_picture`), decoded a frame
+at a time. It plays from its first frame on the profile popout, the full
+profile and the account popover while they show, and on the DM's panel and
+a server's header only while the pointer is on them, all while
+`motion.watched()`. It's asked for as the card or the popover is made, and
+a server's as the server is selected; under Never it isn't. The Slint
+client plays the GIF at the same address (`chat::moving_banner`). A
+frame's layers and a profile card's moving banner go when their card
+closes, as an effect's pictures do, rather than with the next trim; a
+server's and the account popover's go with the trim, as other pictures do.
 
 ## Display name styles
 
@@ -795,12 +856,24 @@ alone, in the row's own colour, with none of its colours or effect, even
 while pointed at (`name_style::font_only_in`), so a busy channel stays calm;
 DMs, profile cards and the style's editor show all of it.
 
-What still differs: names are drawn at rest, Discord's `STATIC` display type
-and its default; the `ANIMATED` one (neon flicker, toon and pop bounce, prism
-scroll and gummy squish, in the client's `_dfb989` keyframes) isn't drawn. Neon's halo is a stroke of the colour at 28% opacity,
-where Discord blurs a `text-shadow`; Slint has no text shadow or blur.
-Toon's light bands are a guess at the gradient the client draws, whose
-stops its stylesheet doesn't show.
+Anomi animates the effects that move in Discord's client, as its
+`ANIMATED` display type does, looping, from the keyframes of the client's
+stylesheet (`StyledName::motion`): prism scrolls its colours across the
+name every 2 s, and in 4 s neon flickers, toon's bands run down the letters
+and pop bounces. They play in a profile's heading (the popout, the full
+profile and the DM's panel) for as long as it shows, and under the pointer
+on a DM message's author, a DM's or a group's member row, a DM row and the
+account card; elsewhere, and on a faded name, they hold their look at
+rest, which is frame 0. Gradient, glow and solid never move, as in
+Discord, whose stylesheet gives the gradient no animation. Gummy's squish
+isn't drawn yet: it holds its colours. Like every loop, a name plays only
+while `motion.watched()`, and asks for a frame at most every 33 ms while it
+moves and none while it holds. In a server the name is the font alone, as
+above, and doesn't move. Toon's bands are Discord's gradient (white, two
+light shades and the colour, four times the name's height), so their shots
+changed with it. Neon's halo is a stroke of the colour at 28% opacity,
+where Discord blurs a `text-shadow`; Slint has no text shadow or blur, and
+the Slint client draws every name at rest.
 
 ## Profile switches
 
@@ -817,7 +890,7 @@ window draws carry no address for it, so Slint asks for nothing either.
 | Play profile effects (`profile_effects`) | No `/user-profile-effects` or `/collectibles-products/` request for a profile's effect (`DiscordCommand::Profile`'s `effect`), and none of its layers | On |
 | Show avatar decorations (`decorations`) | No decoration on messages, member lists, DM rows, profile cards or the account | On |
 | Show nameplates (`nameplates`) | No nameplate in member lists or on the account's card (`AppState::hide_nameplates`) | On |
-| Animate decorations and nameplates (`moving_cosmetics`) | Their `/animated` APNG is never asked for (`animated_url` gives none), so only the still is fetched and decoded | On |
+| Animate decorations and nameplates (`moving_cosmetics`) | Their `/animated` APNG is never asked for (`animated_url` gives none), so only the still is fetched and decoded; avatars, banners, names and effects still move | On |
 | Show name styles (`name_styles`) | Names in the UI's typeface and the theme's colour | On |
 | Show server tags (`server_tags`) | No tag chip, and no badge picture | On |
 | Show profile frames (`profile_frames`) | No `/collectibles-products/` request for a profile's frame (`DiscordCommand::Profile`'s `frame`), and none of its layers | On |
@@ -831,6 +904,18 @@ Decorations, nameplates and tags are a still each, decoded once, and name
 styles use bundled fonts. Turning a switch off takes what it covers off
 what's shown at once; turning effects on shows a profile's effect the
 next time the profile is fetched.
+
+Messages' "Play GIFs, emoji and stickers" governs all of it too. Set to
+Never (`animate` in `layout.json`, `Motion.never`), everything holds
+still, under the pointer too, which is Anomi's meaning of Never where
+Discord's client still plays on hover, and nothing moving is asked for:
+no moving avatar, icon or banner (`pictures::moving_url` gives none), no
+`/animated` collectible (`animated_url` gives none) and no effect's layer,
+so an effect shows its still, or nothing if it's intermittent. Changed, it
+applies at once: the places that hold a moving picture take their stills
+again, and back on they ask for them (`set_moving_pictures`). Whatever the
+settings, a window on screen but not focused plays only under Background's
+Everything, and a hidden one nothing.
 
 ## Editing one's main profile
 

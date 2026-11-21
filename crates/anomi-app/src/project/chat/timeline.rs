@@ -15,10 +15,13 @@
 
 pub(crate) mod aside;
 pub(in crate::project) mod frame;
+mod lit;
 mod moved;
 mod rows;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use lit::light;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -26,7 +29,6 @@ use std::sync::Arc;
 use yapfast_core::application::Application;
 use yapfast_core::chat::ChatMessage;
 
-use anomi_vm::chat::message::Bar;
 use anomi_vm::chat::timeline::{Edge, Jump, Timeline, Unread, group};
 use anomi_widgets::list::Place;
 
@@ -223,7 +225,7 @@ pub(crate) fn show(
             shown.marks = (state.first_unread.clone(), state.seen.clone());
         }
         shown.look = Some(look);
-        light(core, timeline, shown);
+        light(core, timeline, shown, requests);
         // The pictures of the rows in view, as rows come in or change.
         want(core, timeline, shown, requests);
         if listed && !state.detached && std::mem::take(&mut shown.latest_due) {
@@ -310,41 +312,6 @@ fn jumps(state: &yapfast_core::application::AppState, timeline: &mut Timeline, s
             timeline.jump = Some(Jump { key, lit: false });
             shown.jumps += 1;
             shown.asks.push(Ask::Jump(key, Place::Top));
-        }
-    }
-}
-
-/// The message the pointer is on lies lit with its bar, and the one asked
-/// to be confirmed deleted keeps its bar with the question; any other lies
-/// as it is.
-pub(crate) fn light(core: &Application, timeline: &mut Timeline, shown: &Shown) {
-    let state = &core.state;
-    let Some(look) = &shown.look else {
-        return;
-    };
-    let confirming = state
-        .confirm_delete
-        .as_deref()
-        .and_then(|item| moved::key_of_item(&shown.built.messages, item));
-    for (row, message) in timeline.rows.iter_mut().zip(shown.built.messages.iter()) {
-        let lit = shown.lit == Some(row.key);
-        let barred = (lit || confirming == Some(row.key)) && row.message.acts();
-        // The thread beside, narrower, offers two reactions.
-        let bar = barred.then(|| {
-            let mut bar = message::bar(core, look, message);
-            bar.frequent.truncate(if timeline.aside { 2 } else { 3 });
-            Bar {
-                shift: shown.shift,
-                ..bar
-            }
-        });
-        let shown = &mut row.message;
-        if shown.lit != lit {
-            shown.lit = lit;
-            shown.attachments.lit = lit;
-        }
-        if shown.bar != bar {
-            shown.bar = bar;
         }
     }
 }

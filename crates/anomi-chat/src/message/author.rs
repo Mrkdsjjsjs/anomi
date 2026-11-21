@@ -128,18 +128,24 @@ pub fn gutter<'a>(message: &'a Message, motion: Motion) -> Element<'a, chat::Int
     container(time).width(room).boxed()
 }
 
+/// How the author's moving parts play: while the message is lit (the
+/// pointer on its row), as Discord's do; still otherwise, so a channel of
+/// animated authors costs what one of stills does.
+fn playing(message: &Message, motion: Motion) -> Motion {
+    if message.lit {
+        motion
+    } else {
+        Motion::default()
+    }
+}
+
 /// The author's picture, with their decoration, playing while the message
 /// is lit; opening their card or menu when the app can show them.
 fn picture<'a>(message: &'a Message, motion: Motion) -> Element<'a, chat::Intent> {
     let author = &message.author;
-    let playing = if message.lit {
-        motion
-    } else {
-        Motion::default()
-    };
     let face = portrait(&author.avatar, metrics::AVATAR_MESSAGE)
         .decoration(author.decoration.as_ref())
-        .motion(playing)
+        .motion(playing(message, motion))
         .view();
     if !author.known {
         return face.boxed();
@@ -175,6 +181,8 @@ fn spine<'a>() -> Element<'a, chat::Intent> {
 
 /// The first line of a group: the name in its role's colour and style, the
 /// tag, "APP" and when (not in the compact display, whose gutter has it).
+/// A style that moves (a DM's; in a server a name wears its face alone)
+/// plays while the message is lit, as the picture does.
 pub fn line<'a>(message: &'a Message, motion: Motion) -> Element<'a, chat::Intent> {
     let author = &message.author;
     let key = message.key;
@@ -186,7 +194,8 @@ pub fn line<'a>(message: &'a Message, motion: Motion) -> Element<'a, chat::Inten
         styled_name(&author.name, author.style)
             .size(size)
             .weight(Weight::Medium)
-            .ink(ink),
+            .ink(ink)
+            .motion(playing(message, motion)),
     );
     let name: Element<'a, chat::Intent> = if author.known {
         let color = author.color;
@@ -235,4 +244,35 @@ pub fn bot_tag<'a>() -> Element<'a, chat::Intent> {
             ..container::Style::default()
         })
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use anomi_theme::Motion;
+
+    fn front() -> Motion {
+        Motion {
+            front: true,
+            ..Motion::default()
+        }
+    }
+
+    #[test]
+    fn an_author_plays_only_while_the_message_is_lit() {
+        let at_rest = Message::default();
+        assert!(!playing(&at_rest, front()).watched());
+        let lit = Message {
+            lit: true,
+            ..Message::default()
+        };
+        assert!(playing(&lit, front()).watched());
+        // Lit in a hidden window, nothing moves.
+        let hidden = Motion {
+            unseen: true,
+            ..front()
+        };
+        assert!(!playing(&lit, hidden).watched());
+    }
 }

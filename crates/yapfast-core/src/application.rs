@@ -2990,6 +2990,31 @@ fn shelved(messages: &[Arc<ChatMessage>]) -> Vec<Arc<ChatMessage>> {
     kept
 }
 
+/// The profile cards on screen: the one open, and the open DM's beside it.
+fn shown_profiles(state: &AppState) -> impl Iterator<Item = &ProfileView> {
+    state
+        .profile
+        .iter()
+        .chain(&state.panel_profile)
+        .map(Arc::as_ref)
+}
+
+/// Whether `url` is the moving version of the banner of a profile card on
+/// screen, a WebP as [`chat::moving_picture`] gives it. The server header and
+/// the account popover ask for such banners too; theirs stay as other
+/// pictures do.
+fn is_cards_moving_banner(state: &AppState, url: &str) -> bool {
+    url.contains("/banners/")
+        && url.contains("animated=true")
+        && shown_profiles(state).any(|view| {
+            view.profile
+                .banner
+                .as_deref()
+                .and_then(chat::moving_picture)
+                .is_some_and(|moving| moving == url)
+        })
+}
+
 impl Application {
     /// Whether the picture at `url` was asked for and hasn't been let go
     /// of: a UI asks only for what this says no to, and what came and went
@@ -3046,7 +3071,7 @@ impl Application {
             return;
         }
         let state = &self.state;
-        let views = || state.profile.iter().chain(&state.panel_profile);
+        let views = || shown_profiles(state);
         let mut shown: Vec<&str> = views()
             .filter_map(|view| view.profile.effect.as_deref())
             .filter_map(|sku| {
@@ -3060,9 +3085,15 @@ impl Application {
         shown.extend(
             views().flat_map(|view| view.profile.frame.iter().map(|layer| layer.src.as_str())),
         );
+        // A moving banner is a GIF where the Slint client shows it, and a WebP
+        // where Anomi does.
         let banners: Vec<String> = views()
             .filter_map(|view| view.profile.banner.as_deref())
-            .filter_map(chat::moving_banner)
+            .flat_map(|banner| {
+                chat::moving_banner(banner)
+                    .into_iter()
+                    .chain(chat::moving_picture(banner))
+            })
             .collect();
         let (kept, gone): (Vec<String>, Vec<String>) = std::mem::take(&mut self.effect_pictures)
             .into_iter()
@@ -3274,10 +3305,12 @@ impl Application {
             return;
         }
         let emoji = is_custom_emoji(&url);
-        // A card's own large pictures go with it.
+        // A card's own large pictures go with it: its effect's, its frame's
+        // and its moving banner's.
         if url.ends_with(chat::EFFECT_PICTURE)
             || chat::is_frame_layer(&url)
             || (url.contains("/banners/") && url.contains(".gif?"))
+            || is_cards_moving_banner(&self.state, &url)
         {
             self.effect_pictures.push(url.clone());
         }
@@ -3303,13 +3336,18 @@ impl Application {
                 let start = range.start().saturating_sub(PICTURED_AROUND);
                 &messages[start..(range.end() + 1 + PICTURED_AROUND).min(messages.len())]
             });
+        // A moving avatar, icon or banner that came shows where its still
+        // does, and a card's own large pictures while it shows: otherwise
+        // the trim would take them from under what plays them, to be read
+        // again at once.
         let shown: HashSet<String> = pictures_on_screen(&self.state, timeline, true, true)
             .chain(
                 aside
                     .into_iter()
                     .flat_map(|aside| pictures_on_screen(&self.state, aside, true, false)),
             )
-            .map(str::to_owned)
+            .flat_map(|url| std::iter::once(url.to_owned()).chain(chat::moving_picture(url)))
+            .chain(self.effect_pictures.iter().cloned())
             .collect();
         let kept = |url: &String| shown.contains(url) || is_custom_emoji(url);
         self.state.pictures.retain(|url, _| kept(url));

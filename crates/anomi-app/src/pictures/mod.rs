@@ -105,12 +105,14 @@ pub fn find(state: &AppState, address: Option<&str>) -> Option<image::Handle> {
 /// The address of the moving version of a collectible's still picture:
 /// Discord serves a decoration's or nameplate's `/static` PNG and, beside
 /// it, an `/animated` APNG. Any other address is its own. While the
-/// profile switches hold collectibles still, a collectible has none, so its
-/// APNG is never asked for. `animated_url` in `src/ui/pictures.rs`.
+/// profile switches hold collectibles still, or Messages' "Play GIFs, emoji
+/// and stickers" is Never ([`set_moving_pictures`]), a collectible has
+/// none, so its APNG is never asked for. `animated_url` in
+/// `src/ui/pictures.rs`.
 pub fn animated_url(url: &str) -> String {
     match url.strip_suffix("/static") {
         Some(base) if url.contains("/collectibles-shop/") => {
-            if MOVING_COLLECTIBLES.get() {
+            if MOVING_COLLECTIBLES.get() && MOVING_PICTURES.get() {
                 format!("{base}/animated")
             } else {
                 String::new()
@@ -125,8 +127,35 @@ pub fn set_moving_collectibles(moving: bool) {
     MOVING_COLLECTIBLES.set(moving);
 }
 
+/// The address of the moving version of an avatar, a member's avatar, a
+/// server's icon or a banner whose hash starts with `a_`: the animated WebP
+/// Discord's client asks for ([`chat::moving_picture`]). None for any other
+/// picture, and none while moving pictures are off ([`set_moving_pictures`]),
+/// so that none is asked for. The places that may play ask for it; their
+/// views decide when it plays.
+pub fn moving_url(still: Option<&str>) -> Option<String> {
+    still
+        .filter(|_| MOVING_PICTURES.get())
+        .and_then(chat::moving_picture)
+}
+
+/// Whether moving versions may be asked for at all: not while Messages'
+/// "Play GIFs, emoji and stickers" is Never, which holds everything still,
+/// under the pointer too. Off, [`moving_url`] and [`animated_url`] give none.
+pub fn set_moving_pictures(moving: bool) {
+    MOVING_PICTURES.set(moving);
+}
+
+/// Whether moving versions may be asked for ([`set_moving_pictures`]): the
+/// keys of the places that ask for them read it, so a change builds them
+/// again.
+pub fn moving_pictures() -> bool {
+    MOVING_PICTURES.get()
+}
+
 thread_local! {
     static MOVING_COLLECTIBLES: Cell<bool> = const { Cell::new(true) };
+    static MOVING_PICTURES: Cell<bool> = const { Cell::new(true) };
 }
 
 /// Asks the core for the pictures the rows on screen want, at most
@@ -173,6 +202,25 @@ mod tests {
         assert_eq!(animated_url(animated), animated);
         let avatar = "https://cdn.discordapp.com/avatars/5/abc.png/static";
         assert_eq!(animated_url(avatar), avatar, "only collectibles have one");
+    }
+
+    #[test]
+    fn moving_pictures_come_as_webp_and_none_under_never() {
+        let still = "https://cdn.discordapp.com/avatars/1/a_x.png?size=128";
+        let moving = "https://cdn.discordapp.com/avatars/1/a_x.webp?size=128&animated=true";
+        assert_eq!(moving_url(Some(still)).as_deref(), Some(moving));
+        let plain = "https://cdn.discordapp.com/avatars/1/x.png?size=128";
+        assert_eq!(moving_url(Some(plain)), None, "a still hash has none");
+        assert_eq!(moving_url(None), None);
+        // "Play GIFs, emoji and stickers" = Never asks for nothing moving.
+        let decoration = "https://cdn.discordapp.com/media/v1/collectibles-shop/5/static";
+        set_moving_pictures(false);
+        assert!(!moving_pictures());
+        assert_eq!(moving_url(Some(still)), None);
+        assert_eq!(animated_url(decoration), "", "collectibles held too");
+        set_moving_pictures(true);
+        assert_eq!(moving_url(Some(still)).as_deref(), Some(moving));
+        assert!(animated_url(decoration).ends_with("/5/animated"));
     }
 
     #[test]

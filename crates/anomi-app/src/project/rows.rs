@@ -9,6 +9,7 @@
 #![allow(clippy::needless_update)]
 
 use iced::Color;
+use iced::widget::image;
 use yapfast_core::application::AppState;
 use yapfast_core::chat::{ChatRoom, MarkKind, Presence as CorePresence};
 use yapfast_core::network::Network;
@@ -69,6 +70,47 @@ pub fn avatar(state: &AppState, name: &str, tint_key: &str, address: Option<&str
         picture: crate::pictures::find(state, address),
         ..Avatar::default()
     }
+}
+
+/// An avatar that may move: [`avatar`], with the picture of its moving
+/// version ([`crate::pictures::moving_url`]) once that came. For the places
+/// that may play it; their views decide when it does.
+pub fn moving_avatar(
+    state: &AppState,
+    name: &str,
+    tint_key: &str,
+    address: Option<&str>,
+) -> Avatar {
+    Avatar {
+        initial: initial(name),
+        tint: tint(tint_key),
+        picture: moving_or_still(state, address),
+        ..Avatar::default()
+    }
+}
+
+/// The picture at `address`, or its moving version once that came. Both
+/// are looked up, so that an area building its rows in
+/// [`crate::pictures::noting`] asks for and watches both.
+pub fn moving_or_still(state: &AppState, address: Option<&str>) -> Option<image::Handle> {
+    let still = crate::pictures::find(state, address);
+    let moving = crate::pictures::moving_url(address);
+    moving
+        .and_then(|moving| crate::pictures::find(state, Some(&moving)))
+        .or(still)
+}
+
+/// A decoration's or a nameplate's picture: its moving APNG
+/// ([`crate::pictures::animated_url`]) once that came, else the still, both
+/// looked up as [`moving_or_still`] does.
+pub fn moving_collectible(state: &AppState, still: Option<&str>) -> Option<image::Handle> {
+    let shown = crate::pictures::find(state, still);
+    let moving = still
+        .map(crate::pictures::animated_url)
+        .filter(|moving| !moving.is_empty() && Some(moving.as_str()) != still);
+    moving
+        .and_then(|moving| crate::pictures::find(state, Some(&moving)))
+        .or(shown)
 }
 
 /// A picture that may be on its way: none without an address, `Waiting`
@@ -178,5 +220,52 @@ mod tests {
     #[test]
     fn a_name_keeps_its_tint() {
         assert_eq!(tint("Bob"), tint("bob"));
+    }
+
+    fn picture() -> std::sync::Arc<yapfast_core::chat::Picture> {
+        crate::pictures::install();
+        std::sync::Arc::new(yapfast_core::chat::Picture {
+            width: 1,
+            height: 1,
+            rgba: yapfast_core::chat::Pixels::new(1, 1, vec![1, 2, 3, 255]),
+            ..Default::default()
+        })
+    }
+
+    /// The avatar shown, as the id of its handle, and what it looked up.
+    fn shown(state: &AppState, still: &str) -> (Option<iced::advanced::image::Id>, Vec<String>) {
+        let mut watch = crate::pictures::Watch::default();
+        let avatar = crate::pictures::noting(state, &mut watch, || {
+            moving_avatar(state, "Bob", "Bob", Some(still))
+        });
+        let mut asked: Vec<String> = watch.addresses().map(str::to_owned).collect();
+        asked.sort();
+        (avatar.picture.map(|handle| handle.id()), asked)
+    }
+
+    #[test]
+    fn a_moving_avatar_shows_its_webp_once_it_came() {
+        let still = "https://cdn.discordapp.com/avatars/1/a_bob.png?size=128";
+        let moving = "https://cdn.discordapp.com/avatars/1/a_bob.webp?size=128&animated=true";
+        let mut state = AppState::default();
+        let (still_picture, moving_picture) = (picture(), picture());
+        state.pictures.insert(still.into(), still_picture.clone());
+        let id = |picture: &yapfast_core::chat::Picture| {
+            crate::pictures::handle(picture).map(|handle| handle.id())
+        };
+        let (before, asked) = shown(&state, still);
+        assert_eq!(before, id(&still_picture), "the still until it comes");
+        assert_eq!(asked, [still, moving], "both asked for and watched");
+        state.pictures.insert(moving.into(), moving_picture.clone());
+        assert_eq!(shown(&state, still).0, id(&moving_picture));
+        // Never asks for no moving version and shows the still.
+        crate::pictures::set_moving_pictures(false);
+        let (held, asked) = shown(&state, still);
+        crate::pictures::set_moving_pictures(true);
+        assert_eq!(held, id(&still_picture));
+        assert_eq!(asked, [still]);
+        // A still hash has no moving version.
+        let plain = "https://cdn.discordapp.com/avatars/1/bob.png?size=128";
+        assert_eq!(shown(&state, plain).1, [plain]);
     }
 }

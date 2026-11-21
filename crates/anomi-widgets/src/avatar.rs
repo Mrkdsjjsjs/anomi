@@ -143,8 +143,12 @@ impl<'a> Portrait<'a> {
     }
 
     /// Whether an animated avatar and decoration play: Discord's client
-    /// animates them while the pointer is on their row or message, so the
-    /// screen hands a still motion otherwise.
+    /// animates them while the pointer is on their row or message, while a
+    /// profile shows and while someone speaks in a call, so the screen
+    /// hands a still motion otherwise. They play from their first frame
+    /// each time they start or resume, show it while they don't play, and
+    /// are capped: beyond `picture::MOVING` distinct moving pictures, they
+    /// hold it until a slot frees.
     pub fn motion(mut self, motion: Motion) -> Self {
         self.motion = motion;
         self
@@ -211,7 +215,9 @@ fn face<'a, Message: 'a>(
                 .side(size)
                 .fit(Fit::Cover)
                 .opacity(opacity)
-                .motion(motion);
+                .motion(motion)
+                .from_start()
+                .capped();
             // Round stays round at whatever size it is laid out at.
             if shape == Shape::Circle {
                 face.round().boxed()

@@ -103,8 +103,16 @@ pub fn tiles(
                 let person = &stage.participants[index];
                 let before = shown.participants.iter().find(|old| old.id == person.id);
                 let same = before == Some(person);
+                // Their picture, and its moving version, which the tile
+                // plays while they speak: asked for, and built again as
+                // either comes.
+                let still = person.avatar.as_deref();
+                let moving = crate::pictures::moving_url(still);
+                requests.want(state, still);
+                requests.want(state, moving.as_deref());
                 let context = hash((
-                    picture_at(state, person.avatar.as_deref()),
+                    picture_at(state, still),
+                    picture_at(state, moving.as_deref()),
                     lives.camera(&person.id).is_some_and(Live::has_frame),
                     person.local && camera_starting,
                 ));
@@ -112,11 +120,6 @@ pub fn tiles(
                 take(key, context, same, &|| participant(state, person, lives))
             }
         });
-    }
-    for person in stage.participants {
-        if let Some(avatar) = person.avatar.as_deref() {
-            requests.want(state, [avatar]);
-        }
     }
     #[cfg(test)]
     {
@@ -303,8 +306,10 @@ fn participant(state: &AppState, person: &Participant, lives: &Lives) -> Tile {
         } else {
             name(person)
         };
+        // Its moving version once it came: the tile plays it while they
+        // speak (stage, grid and picture in picture alike).
         Fill::Avatar {
-            avatar: rows::avatar(state, name(person), key, person.avatar.as_deref()),
+            avatar: rows::moving_avatar(state, name(person), key, person.avatar.as_deref()),
             connected: person.connected,
         }
     };

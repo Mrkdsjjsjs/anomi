@@ -9,7 +9,7 @@ use yapfast_lang::tr;
 use anomi_vm::kind::Expected;
 use anomi_vm::sidebar::server_header::ServerHeader;
 
-use crate::pictures;
+use crate::project::rows;
 
 pub(super) fn build(core: &Application, id: &str) -> ServerHeader {
     let state = &core.state;
@@ -19,10 +19,13 @@ pub(super) fn build(core: &Application, id: &str) -> ServerHeader {
             ..ServerHeader::default()
         };
     };
+    // Its moving version once it came, which the header plays under the
+    // pointer; asked for with the still as the header shows.
     let banner = match server.banner.as_deref() {
         None | Some("") => Expected::None,
         Some(address) => {
-            pictures::find(state, Some(address)).map_or(Expected::Waiting, Expected::Ready)
+            let shown = rows::moving_or_still(state, Some(address));
+            shown.map_or(Expected::Waiting, Expected::Ready)
         }
     };
     ServerHeader {

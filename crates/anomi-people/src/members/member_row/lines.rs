@@ -83,6 +83,9 @@ pub fn column<'a>(
     container(extent(lines)).center_y(Fill).width(Fill).boxed()
 }
 
+/// The name and its marks. A style that moves (a DM group's; in a server a
+/// name wears its face alone) plays with `motion`, which only the copy
+/// under the pointer has; an offline member's, faded, holds still.
 fn name_line<'a>(
     member: &'a Member,
     gems: bool,
@@ -93,7 +96,8 @@ fn name_line<'a>(
     let name = styled_name(&member.name, member.name_style)
         .size(NAME)
         .weight(iced::font::Weight::Medium)
-        .opacity(faded);
+        .opacity(faded)
+        .motion(motion);
     let name = match member.color {
         Some(color) => name.ink(color),
         None => name.ink((|palette: &Palette| palette.secondary) as fn(&Palette) -> Color),

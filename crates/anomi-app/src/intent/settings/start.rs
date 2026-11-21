@@ -110,4 +110,6 @@ fn apply(saved: &Saved) {
     super::games::source::detect(saved);
     let moving = crate::layout::carry::cosmetics(saved).moving;
     crate::pictures::set_moving_collectibles(moving);
+    // Never asks for no moving version, before anything is shown.
+    crate::pictures::set_moving_pictures(saved.animate != crate::layout::Animate::Never);
 }

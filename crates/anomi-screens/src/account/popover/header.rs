@@ -53,6 +53,8 @@ pub fn header<'a>(account: &'a Account, look: Look, motion: Motion) -> impl View
                 ..container::Style::default()
             });
         match &profile.banner {
+            // A moving one plays while the popover is open, from its first
+            // frame each time it starts.
             Some(handle) => stack![
                 ground,
                 picture(handle.clone())
@@ -61,6 +63,8 @@ pub fn header<'a>(account: &'a Account, look: Look, motion: Motion) -> impl View
                     .fit(Fit::Cover)
                     .radius(border::top(CORNER))
                     .motion(motion)
+                    .from_start()
+                    .capped()
             ]
             .boxed(),
             None => ground.boxed(),
@@ -81,10 +85,13 @@ pub fn header<'a>(account: &'a Account, look: Look, motion: Motion) -> impl View
     });
     // The dot sits over the ring's lower right, cut out in the ring's colour.
     let dot = status_dot(presence, DOT, look.dot_ring());
+    // A style that moves loops while the popover is open, as a profile's
+    // heading does.
     let name = styled_name(&account.name, profile.name_style)
         .size(typography::size::DIALOG_TITLE)
         .weight(Weight::Bold)
-        .ink(look.ink());
+        .ink(look.ink())
+        .motion(motion);
     let mut line = row![name]
         .spacing(NAME_GAP)
         .align_y(Alignment::Center)

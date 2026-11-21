@@ -24,6 +24,8 @@ pub struct Picture {
     shape: Shape,
     opacity: f32,
     motion: Motion,
+    from_start: bool,
+    capped: bool,
 }
 
 /// `handle` at its own size, square-cornered and still; the setters say
@@ -60,6 +62,8 @@ impl Picture {
             shape: Shape::default(),
             opacity: 1.0,
             motion: Motion::default(),
+            from_start: false,
+            capped: false,
         }
     }
 
@@ -115,6 +119,23 @@ impl Picture {
         self
     }
 
+    /// Plays a moving picture from its first frame each time it starts or
+    /// resumes playing, rather than at the shared clock's frame, and shows
+    /// that frame while it doesn't play: an avatar as the pointer comes
+    /// onto its row, a banner as a profile opens ([`Player::from_start`]).
+    pub fn from_start(mut self) -> Self {
+        self.from_start = true;
+        self
+    }
+
+    /// One of the pictures of which at most [`MOVING`](super::MOVING)
+    /// distinct ones play at once (avatars, decorations, banners); the
+    /// others hold their first frame until a slot frees.
+    pub fn capped(mut self) -> Self {
+        self.capped = true;
+        self
+    }
+
     fn intrinsic(&self, renderer: &Renderer) -> Size {
         use iced::advanced::image::Renderer as _;
         let size = self
@@ -159,6 +180,7 @@ impl<Message> widget::Widget<Message, Theme, Renderer> for Picture {
     ) {
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             let player = tree.state.downcast_mut::<Player>();
+            player.set_mode(self.from_start, self.capped);
             let due = self.showing(|handle| {
                 player.update(handle, layout.bounds(), viewport, self.motion, *now)
             });

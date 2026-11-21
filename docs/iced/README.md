@@ -438,8 +438,12 @@ view asks:
 | `motion.members_live()` | Front; Visible under `Usual` | the member list's presence |
 | `motion.playing()` | as `members_live()`, unless `never` | transitions and loops; `still()` is its opposite |
 | `motion.watched()` | `playing()`, and not `idle` | what only decorates: moving pictures, a skeleton's sweep, the typing dots |
+| `motion.awake().watched()` | `playing()`, idle or not | what someone watches without touching the window: a speaking call tile's avatar |
 
-Hidden, all but `front` are false, whatever the setting. Every
+Hidden, all but `front` are false, whatever the setting.
+`motion.awake()` is the same motion with `idle` false: it lifts the 15 s
+rule and nothing else, so an awake motion still holds hidden, visible
+under What matters or Rest, and with animations off. Every
 animation takes its duration from `motion.duration(token)` or
 `motion.animation(...)`, which are zero while `still()`. An animation
 either lives in the app's state, interpolated in `view` at the frame time
@@ -480,6 +484,15 @@ it's hidden nothing ticks, polls or wakes, whatever the setting.
 | The member list's presence | yes | yes | waits for the focus | waits | waits |
 | Transitions: popups, glides, the rings' colour, a list's rows | yes | yes | land at once | land | land |
 | Loops: GIFs, emoji, stickers, the typing dots, a skeleton, a spinner | until 15 s idle | until 15 s idle | no | no | no |
+| Cosmetics: animated avatars, server icons, banners, decorations, name styles, a profile's effect, each where it plays ([widgets](widgets.md#widgets-anomi_widgets)) | until 15 s idle | until 15 s idle | no | no | no |
+| A speaking call tile's animated avatar (`motion.awake()`) | while the call shows | while the call shows | no | no | no |
+
+Of the cosmetic pictures, avatars with their decorations, the rail's faces
+and banners, at most `picture::MOVING`, eight distinct ones, play at once;
+the others hold their first frame until a slot frees, two seconds after
+the last frame one played at. Each plays from its first frame as it
+starts or resumes, and shows that frame while it doesn't play. Emoji,
+GIFs, stickers and an effect's layers aren't capped.
 
 ### The setting
 

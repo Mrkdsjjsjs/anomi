@@ -24,8 +24,20 @@ const DOT_IN: f32 = 10.0;
 const SIDE_DOT: f32 = 38.0;
 const SIDE_DOT_IN: f32 = 8.0;
 
+/// How the head's moving pictures play in `place`, as Discord's card has
+/// them: while the card shows on the popout and the full profile, docked
+/// while the pointer is on it, never in the editor's preview.
+fn playing(card: &Card, place: Place, motion: Motion) -> Motion {
+    match place {
+        Place::Popout | Place::Side => motion,
+        Place::Panel if card.touch.pointed => motion,
+        Place::Panel | Place::Preview => Motion::default(),
+    }
+}
+
 /// The banner and the avatar over its edge, `size.head()` tall. The
-/// banner's top corners are the card's, less the theme's 2 px border.
+/// banner's top corners are the card's, less the theme's 2 px border; a
+/// moving one plays as the avatar does, from its first frame each time.
 pub fn view<'a>(
     card: &'a Card,
     place: Place,
@@ -41,7 +53,9 @@ pub fn view<'a>(
             .height(size.banner)
             .fit(Fit::Cover)
             .radius(corner)
-            .motion(motion)
+            .motion(playing(card, place, motion))
+            .from_start()
+            .capped()
             .boxed(),
         _ => {
             let fill = card
@@ -80,7 +94,7 @@ pub fn view<'a>(
 }
 
 /// The avatar in its ring, the dot cut from the same ground. An animated
-/// one plays while the pointer is on the card, as Discord's does.
+/// one plays as [`playing`] says.
 fn avatar<'a>(
     card: &'a Card,
     place: Place,
@@ -105,11 +119,7 @@ fn avatar<'a>(
         .presence(presence)
         .dot(dot, (corner, corner))
         .decoration(card.decoration.as_ref())
-        .motion(if card.touch.pointed {
-            motion
-        } else {
-            Motion::default()
-        })
+        .motion(playing(card, place, motion))
         .view();
     let ground = inks.ground;
     let side = size.avatar + 2.0 * size.ring;
@@ -127,5 +137,38 @@ fn avatar<'a>(
             .boxed()
     } else {
         ringed.boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use anomi_theme::Motion;
+    use anomi_vm::people::profile::Touch;
+
+    fn front() -> Motion {
+        Motion {
+            front: true,
+            ..Motion::default()
+        }
+    }
+
+    #[test]
+    fn the_head_plays_while_shown_and_docked_while_pointed() {
+        let card = Card::default();
+        assert!(playing(&card, Place::Popout, front()).watched());
+        assert!(playing(&card, Place::Side, front()).watched());
+        assert!(!playing(&card, Place::Panel, front()).watched());
+        assert!(!playing(&card, Place::Preview, front()).watched());
+        let pointed = Card {
+            touch: Touch {
+                pointed: true,
+                ..Touch::default()
+            },
+            ..Card::default()
+        };
+        assert!(playing(&pointed, Place::Panel, front()).watched());
+        assert!(!playing(&pointed, Place::Preview, front()).watched());
     }
 }

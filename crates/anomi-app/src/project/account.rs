@@ -57,6 +57,8 @@ struct Key {
     status: Option<String>,
     presence: Option<String>,
     profile: Option<Arc<Profile>>,
+    /// Moving versions may be asked for (`pictures::moving_pictures`).
+    moving: bool,
     /// How many of the account's pictures the core has.
     pictures: usize,
 }
@@ -87,6 +89,7 @@ impl Key {
             status: state.account_status.clone(),
             presence: state.discord_presence.clone(),
             profile: state.account_profile.clone(),
+            moving: pictures::moving_pictures(),
             pictures: 0,
         };
         let mut here = 0;
@@ -98,11 +101,14 @@ impl Key {
         key
     }
 
-    /// Each picture the card and its popover show.
+    /// Each picture the card and its popover show: the avatar's moving
+    /// version too, which the popover plays while open and the card under
+    /// the pointer, and the popover's moving banner.
     fn addresses(&self, mut each: impl FnMut(&str)) {
         let plate = self.plate.as_ref().map(|plate| &*plate.picture);
         let decoration = self.cosmetics.decoration(self.decoration.as_deref());
-        for address in [self.avatar.as_deref(), decoration, plate]
+        let moving = pictures::moving_url(self.avatar.as_deref());
+        for address in [self.avatar.as_deref(), moving.as_deref(), decoration, plate]
             .into_iter()
             .flatten()
         {
@@ -142,7 +148,9 @@ fn card(state: &AppState, key: &Key, account: &mut Account) {
         .as_deref()
         .unwrap_or_else(|| display_part(key.account.as_deref().unwrap_or("Preview")));
     account.name = name.to_owned();
-    account.avatar = rows::avatar(state, name, name, key.avatar.as_deref());
+    // Its moving version once it came: the card plays it under the pointer
+    // and the popover while it's open.
+    account.avatar = rows::moving_avatar(state, name, name, key.avatar.as_deref());
     // The decoration that plays once the popover asked for it, as the
     // popover always plays it and the card under the pointer.
     let still = key.cosmetics.decoration(key.decoration.as_deref());

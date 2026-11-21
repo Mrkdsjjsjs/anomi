@@ -54,6 +54,8 @@ struct Key {
     open: BTreeSet<String>,
     call: Option<String>,
     can_join: bool,
+    /// Moving versions may be asked for (`pictures::moving_pictures`).
+    moving: bool,
 }
 
 pub(super) fn show(
@@ -79,6 +81,7 @@ pub(super) fn show(
                 || key.open != layout.open_folders
                 || key.call.as_deref() != call
                 || key.can_join != (state.discord_online || state.preview)
+                || key.moving != pictures::moving_pictures()
         });
     if !fresh {
         if let Some(key) = &mut shown.key {
@@ -94,6 +97,7 @@ pub(super) fn show(
         open: layout.open_folders.clone(),
         call: call.map(str::to_owned),
         can_join: state.discord_online || state.preview,
+        moving: pictures::moving_pictures(),
     };
     pictures::noting(state, &mut shown.pictures, || build(state, &key, rail));
     seen(state, &shown.seen, requests);
@@ -255,10 +259,12 @@ fn server_row(
     unread: bool,
     mentions: u64,
 ) -> Server {
-    // On the theme's ground until its icon comes, as Slint's server rows.
+    // On the theme's ground until its icon comes, as Slint's server rows;
+    // a moving icon's moving version once it came, which plays under the
+    // pointer (a folder's previews hold it still).
     let avatar = Avatar {
         initial: rows::initials(&server.name),
-        picture: pictures::find(state, server.icon.as_deref()),
+        picture: rows::moving_or_still(state, server.icon.as_deref()),
         ..Avatar::default()
     };
     let tip = if server.unavailable {
@@ -304,7 +310,7 @@ fn unread_dms(state: &AppState) -> Vec<Dm> {
             name: room.name.clone(),
             avatar: Avatar {
                 initial: rows::initial(&room.name),
-                picture: pictures::find(state, room.avatar.as_deref()),
+                picture: rows::moving_or_still(state, room.avatar.as_deref()),
                 ..Avatar::default()
             },
             // Discord counts each of a DM's messages; Matrix counts its
@@ -327,7 +333,8 @@ pub(super) fn call_room(state: &AppState) -> Option<&str> {
 
 /// Remembers the rows in view, by id, and asks for their pictures: a
 /// server's icon, a folder's first four servers' (its tile shows them), an
-/// unread DM's picture.
+/// unread DM's picture; and a server's or a DM's moving version, so that it
+/// plays as soon as the pointer comes (a folder's previews never play).
 pub(super) fn seen_now(
     state: &AppState,
     shown: &mut Shown,
@@ -340,11 +347,14 @@ pub(super) fn seen_now(
 
 fn seen(state: &AppState, ids: &[String], requests: &mut Requests) {
     let mut wanted = Vec::new();
+    let mut moving = Vec::new();
     for id in ids {
         if let Some(server) = state.servers.iter().find(|server| server.id == *id) {
             wanted.extend(server.icon.as_deref());
+            moving.extend(pictures::moving_url(server.icon.as_deref()));
         } else if let Some(room) = state.rooms.iter().find(|room| room.id == *id) {
             wanted.extend(room.avatar.as_deref());
+            moving.extend(pictures::moving_url(room.avatar.as_deref()));
         } else {
             wanted.extend(
                 state
@@ -357,4 +367,5 @@ fn seen(state: &AppState, ids: &[String], requests: &mut Requests) {
         }
     }
     requests.want(state, wanted);
+    requests.want(state, moving.iter().map(String::as_str));
 }

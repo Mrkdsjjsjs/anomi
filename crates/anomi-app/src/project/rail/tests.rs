@@ -195,6 +195,31 @@ fn the_rows_in_view_ask_for_their_pictures() {
 }
 
 #[test]
+fn a_moving_icon_in_view_is_asked_for_and_a_folders_previews_are_not() {
+    let mut state = rail_state();
+    let address = |n: usize, kind: &str| {
+        format!("https://cdn.discordapp.com/icons/{n}/a_icon.{kind}?size=128")
+    };
+    for (n, server) in state.servers.iter_mut().enumerate() {
+        Arc::make_mut(server).icon = Some(address(n, "png"));
+    }
+    let mut requests = Requests::default();
+    let in_view = vec!["a".into(), "f".into()];
+    seen_now(&state, &mut Shown::default(), in_view, &mut requests);
+    let asked: Vec<String> = requests
+        .take(Instant::now())
+        .into_iter()
+        .flat_map(|action| match action {
+            Action::LoadPictures(urls) => urls,
+            _ => Vec::new(),
+        })
+        .collect();
+    let moving = |n| format!("{}&animated=true", address(n, "webp"));
+    assert!(asked.contains(&moving(0)), "{asked:?}");
+    assert!(!asked.contains(&moving(1)) && !asked.contains(&moving(2)));
+}
+
+#[test]
 fn a_discord_servers_place_may_be_moved_outside_the_preview() {
     let mut state = rail_state();
     for server in &mut state.servers {

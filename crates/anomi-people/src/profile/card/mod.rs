@@ -120,7 +120,7 @@ pub fn card(card: &Card, place: Place, motion: Motion) -> Element<'_, people::In
         layers = layers.push(
             effect(shown, motion)
                 .radius(size.radius)
-                .play(Play::Hover)
+                .play(play(place))
                 .on_wanted(Intent::EffectWanted(place).into())
                 .boxed(),
         );
@@ -174,6 +174,16 @@ pub fn card(card: &Card, place: Place, motion: Motion) -> Element<'_, people::In
         .on_enter(Intent::Pointed(place, true).into())
         .on_exit(Intent::Pointed(place, false).into())
         .boxed()
+}
+
+/// When the card's profile effect plays: on the popout, the full profile
+/// and docked, from the moment the card shows, once all its layers have
+/// come, as Discord's; in the editor's preview, under the pointer.
+fn play(place: Place) -> Play {
+    match place {
+        Place::Popout | Place::Panel | Place::Side => Play::Open,
+        Place::Preview => Play::Hover,
+    }
 }
 
 /// The card's ground: its place's colour in a 1 px edge, or a theme's two
@@ -291,4 +301,17 @@ fn wash<'a>(
 #[cfg(feature = "shots")]
 pub fn shots() -> Vec<crate::shots::Shot> {
     shots::shots()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_effect_plays_from_the_open_but_in_the_preview() {
+        assert_eq!(play(Place::Popout), Play::Open);
+        assert_eq!(play(Place::Panel), Play::Open);
+        assert_eq!(play(Place::Side), Play::Open);
+        assert_eq!(play(Place::Preview), Play::Hover);
+    }
 }

@@ -23,6 +23,15 @@
 //!   and a small animation keeps them all after one round and decodes no
 //!   more (`decode`). The frame showing comes from one clock that runs
 //!   only while something plays (`clock`).
+//! - What only decorates plays as Discord's client plays it. A picture
+//!   [`Picture::from_start`] starts from its first frame each time it
+//!   starts or resumes playing, rather than at the shared clock's frame, so
+//!   no frame is decoded only to be skipped, and shows that frame while it
+//!   doesn't play. A [`Picture::capped`] one plays only while it holds one
+//!   of [`MOVING`] slots (`slots`), and holds its first frame otherwise.
+//!   Avatars with their decorations (`avatar::Portrait`) and the rail's
+//!   faces are both, as a profile's banner should be; emoji, GIFs, stickers
+//!   and an effect's layers are neither.
 //! - [`sample`] draws the fake Discord's moving GIF; its stills are
 //!   `anomi_vm::fixtures::pictures`, which fixtures fill avatars from.
 //!
@@ -36,6 +45,7 @@ mod look;
 mod moving;
 mod player;
 pub mod sample;
+mod slots;
 mod store;
 mod widget;
 
@@ -47,6 +57,7 @@ use iced::widget::image;
 pub use look::Fit;
 pub use moving::{Find, Frames, Moving, forget, register, set_animations};
 pub use player::{Player, Shape};
+pub use slots::MOVING;
 pub use store::{BUDGET, bytes, clear};
 pub use widget::{Picture, live, picture};
 

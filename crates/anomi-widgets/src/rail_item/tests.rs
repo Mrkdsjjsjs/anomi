@@ -149,3 +149,5 @@ fn it_draws_marks_and_a_faded_item_without_failing() {
     let mut simulator = ui(item);
     assert!(simulator.snapshot(&Theme::default()).is_ok());
 }
+
+mod hover;

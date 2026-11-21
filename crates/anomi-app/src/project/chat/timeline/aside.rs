@@ -106,7 +106,7 @@ pub(crate) fn show(
         shown.wake = frame::wake(&aside.messages, now);
         shown.marks.1.clone_from(&aside.seen);
         shown.look = Some(look);
-        light(core, timeline, shown);
+        light(core, timeline, shown, requests);
         want(core, timeline, shown, requests);
     }
     timeline.ready = aside.ready;

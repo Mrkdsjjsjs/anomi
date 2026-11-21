@@ -138,9 +138,35 @@ pub(crate) fn make(rgba: &[u8], width: u32, height: u32, look: &Look) -> Vec<u8>
 /// as it would have converted them, so it draws the same pixels. The handle
 /// owns them, and they can't change while it, or the renderer drawing it,
 /// lives (`iced_tiny_skia::premultiplied`). What draws it is the only
-/// reader: no copy is made of it (`player::copy`).
+/// reader: no copy is made of it ([`copy`]).
 pub(crate) fn handle(look: &Look, pixels: Vec<u8>) -> image::Handle {
     iced_tiny_skia::premultiplied::from_rgba(look.width, look.height, pixels)
+}
+
+/// `still`'s copy as `look` draws it; none for a picture it can't read.
+/// A copy reads straight RGBA, so a picture already in the renderer's
+/// format, as a copy or a frame is, draws as it is rather than read wrong.
+pub(crate) fn copy(still: &image::Handle, look: &Look) -> Option<image::Handle> {
+    if iced_tiny_skia::premultiplied::is_premultiplied(still) {
+        return None;
+    }
+    let pixels = match still {
+        image::Handle::Rgba {
+            width,
+            height,
+            pixels,
+            ..
+        } => make(pixels, *width, *height, look),
+        image::Handle::Bytes(_, bytes) => {
+            let decoded = ::image::load_from_memory(bytes).ok()?.into_rgba8();
+            make(decoded.as_raw(), decoded.width(), decoded.height(), look)
+        }
+        image::Handle::Path(_, path) => {
+            let decoded = ::image::open(path).ok()?.into_rgba8();
+            make(decoded.as_raw(), decoded.width(), decoded.height(), look)
+        }
+    };
+    Some(handle(look, pixels))
 }
 
 /// The part of a picture a copy shows, in its pixels.

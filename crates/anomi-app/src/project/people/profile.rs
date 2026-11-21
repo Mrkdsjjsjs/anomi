@@ -39,7 +39,9 @@ struct Made {
     view: Arc<ProfileView>,
     key: Key,
     pictures: Watch<()>,
-    /// Its profile effect's pictures were asked for, as it was about to play.
+    /// All its profile effect's pictures were asked for: as it was made
+    /// while animations may play, as Discord's card fetches every layer
+    /// before it plays any, or once it was about to play.
     effect: bool,
 }
 
@@ -54,7 +56,8 @@ struct Key {
     activities: usize,
     /// The window leaves the full profile room for its frame above it.
     framed: bool,
-    /// Animations may play: a moving banner is asked for.
+    /// Animations may play (not Never): the moving avatar, decoration and
+    /// banner are asked for, and every picture of the effect.
     moving: bool,
 }
 
@@ -124,9 +127,10 @@ fn make(
     (card, made)
 }
 
-/// Notes and asks for the pictures of `view`'s profile effect: its still
-/// always, as the card shows it at rest, and its layers once it is about
-/// to play (`all`).
+/// Notes the pictures of `view`'s profile effect, for its card to ask for:
+/// its still always, as the card shows it at rest, and with `all` its
+/// layers, which the card asks for as it's made while animations may play,
+/// so they have all come by the time it plays (`Play::Open`).
 fn note_effect(state: &AppState, view: &ProfileView, all: bool, watch: &mut Watch<()>) {
     if let Some(effect) = card::effect_of(state, &view.profile) {
         let still = effect.still.as_deref();
@@ -184,7 +188,8 @@ fn popout(
     });
     let unchanged = was.is_some_and(|made| made.same(state, view, key));
     if !unchanged {
-        let effect = same_person && shown.popout.as_ref().is_some_and(|made| made.effect);
+        let asked = same_person && shown.popout.as_ref().is_some_and(|made| made.effect);
+        let effect = key.moving || asked;
         let (mut made_card, made) = make(core, view, key, effect, false, requests);
         if same_person {
             made_card.touch = if was_large {
@@ -239,7 +244,8 @@ fn panel(
     if was.is_some_and(|made| made.same(state, view, key)) && vm.people.profile.panel.is_some() {
         return;
     }
-    let effect = same_person && shown.panel.as_ref().is_some_and(|made| made.effect);
+    let asked = same_person && shown.panel.as_ref().is_some_and(|made| made.effect);
+    let effect = key.moving || asked;
     let (mut made_card, made) = make(core, view, key, effect, true, requests);
     if same_person && let Some(old) = vm.people.profile.panel.take() {
         made_card.touch = old.touch;
@@ -249,7 +255,8 @@ fn panel(
 }
 
 /// A card's profile effect is about to play: its pictures are asked for,
-/// and the card is made again as they come.
+/// and the card is made again as they come. A no-op once the card asked
+/// for them as it was made, and under Never, which fetches no layer.
 pub(crate) fn effect_wanted(
     state: &AppState,
     panel: bool,
@@ -263,6 +270,7 @@ pub(crate) fn effect_wanted(
     };
     if let Some(made) = made
         && !made.effect
+        && made.key.moving
     {
         made.effect = true;
         note_effect(state, &made.view, true, &mut made.pictures);
@@ -297,5 +305,73 @@ pub(crate) fn gone(state: &AppState, layer: Layer, vm: &mut Vm, shown: &mut Show
     match layer {
         Layer::FullProfile => vm.people.full_profile = Default::default(),
         _ => vm.people.profile.card = Card::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use yapfast_core::application::{Application, ProfileView};
+    use yapfast_core::chat::{EffectLayer, Profile, ProfileEffect};
+
+    use anomi_vm::Vm;
+
+    use super::{Shown, show};
+    use crate::pictures::Requests;
+
+    const STILL: &str = "https://cdn.discordapp.com/assets/profile_effects/still.png#effect";
+    const LAYER: &str = "https://cdn.discordapp.com/assets/profile_effects/intro.png#effect";
+
+    /// What Bob's popout watches, made with animations `moving` or under
+    /// Never: his effect described, its pictures not come yet.
+    fn noted(moving: bool) -> Vec<String> {
+        let mut core = Application::default();
+        let layer = EffectLayer {
+            src: LAYER.into(),
+            x: 0,
+            y: 0,
+            start: 0,
+            duration: 1000,
+            looped: false,
+            loop_delay: 0,
+        };
+        core.state.profile_effects.push(Arc::new(ProfileEffect {
+            sku: "petals".into(),
+            still: Some(STILL.into()),
+            layers: vec![layer],
+            intermittent: false,
+        }));
+        let profile = Profile {
+            id: "2".into(),
+            name: "Bob".into(),
+            effect: Some("petals".into()),
+            ..Profile::default()
+        };
+        core.state.profile = Some(Arc::new(ProfileView {
+            profile,
+            ..ProfileView::default()
+        }));
+        let (mut vm, mut shown) = (Vm::default(), Shown::default());
+        show(
+            &core,
+            (0.0, moving),
+            &mut vm,
+            &mut shown,
+            &mut Requests::default(),
+        );
+        let made = shown.popout.as_ref().expect("the popout's card");
+        made.pictures.addresses().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn a_card_asks_for_every_layer_of_its_effect_as_it_is_made() {
+        let all = noted(true);
+        assert!(all.iter().any(|address| address == LAYER), "{all:?}");
+        assert!(all.iter().any(|address| address == STILL), "{all:?}");
+        // Under Never only the still, which shows at rest.
+        let held = noted(false);
+        assert!(held.iter().any(|address| address == STILL), "{held:?}");
+        assert!(!held.iter().any(|address| address == LAYER), "{held:?}");
     }
 }

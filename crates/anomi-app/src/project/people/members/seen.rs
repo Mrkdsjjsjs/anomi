@@ -1,6 +1,6 @@
 //! The pictures of the member list's rows: those a row shows, the moving
-//! ones its collectibles play under the pointer, and asking for those of
-//! the rows in view.
+//! ones it plays under the pointer or with the member's card open, and
+//! asking for those of the rows in view.
 
 use yapfast_core::application::AppState;
 use yapfast_core::chat::ChatMember;
@@ -34,23 +34,28 @@ pub(super) fn addresses<'a>(
     .flatten()
 }
 
-/// The moving pictures of a member's decoration and nameplate, which play
-/// under the pointer; none while the profile switches hold them still.
-pub(super) fn moving(state: &AppState, member: &ChatMember) -> Vec<String> {
+/// The moving pictures of a member's row that plays, pointed at or with
+/// their card open: their avatar's and decoration's, and with `plate`
+/// (pointed at) their nameplate's. No collectible's while the profile
+/// switches hold them still, and none at all under Never.
+pub(super) fn moving(state: &AppState, member: &ChatMember, with_plate: bool) -> Vec<String> {
     let plate = member
         .nameplate
         .as_ref()
-        .filter(|_| !state.hide_nameplates)
+        .filter(|_| with_plate && !state.hide_nameplates)
         .map(|plate| &*plate.picture);
-    [
+    let collectibles = [
         state.cosmetics.decoration(member.decoration.as_deref()),
         plate,
     ]
     .into_iter()
     .flatten()
     .map(pictures::animated_url)
-    .filter(|moving| !moving.is_empty())
-    .collect()
+    .filter(|moving| !moving.is_empty());
+    pictures::moving_url(member.avatar.as_deref())
+        .into_iter()
+        .chain(collectibles)
+        .collect()
 }
 
 /// The rows in view changed: their pictures are asked for.

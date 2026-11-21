@@ -25,7 +25,8 @@ use yapfast_discord::voice::{CHANNELS, FRAME, Listener, Microphone, SAMPLE_RATE,
 use crate::{
     audio_io::{LastingInput, LastingOutput},
     echo_gate::{EchoGate, Measure},
-    noise::{Denoiser, Rnnoise, Sent, Suppressor},
+    noise::{Carried, Denoiser, Rnnoise, Sent, Suppressor},
+    rebuild::Rebuild,
     stream_worker::EchoFeed,
     their_noise::{Strong, Theirs},
     volume::Cleaning,
@@ -133,6 +134,8 @@ impl Hearing {
 
 impl Listener for Hearing {
     fn tick(&self, voices: &[(u64, &[i16])]) {
+        // On the call's thread, raised: back up if SIGXCPU put it back.
+        crate::audio_io::keep_priority();
         let now = Instant::now();
         let deafened = self.deafened.load(Ordering::Relaxed);
         let output = lock(&self.output);
@@ -923,6 +926,8 @@ struct CaptureRequest {
     stop: Arc<AtomicBool>,
     talking: Arc<AtomicBool>,
     opened: mpsc::SyncSender<Result<()>>,
+    /// Made by the thread that asks, which isn't real-time.
+    modules: Modules,
 }
 
 impl MicrophoneThread {
@@ -945,14 +950,22 @@ impl MicrophoneThread {
                 // stream's encoder, it loses audio, and the call sends
                 // gaps: others hear a robotic voice.
                 // The suppressor's model loads first, at normal priority:
-                // DeepFilterNet's takes longer than a real-time thread may
-                // run without waiting (`audio_io`'s RLIMIT_RTTIME).
-                let mut denoiser =
-                    Some(Denoiser::new(crate::noise::chosen(), crate::noise::limit()));
+                // DeepFilterNet's takes as long as a real-time thread may
+                // run without waiting (`audio_io`'s RLIMIT_RTTIME). Raised,
+                // the thread makes none itself: another suppressor chosen
+                // later loads on a thread of its own ([`Suppression`]), and
+                // each capture's WebRTC modules come made ([`Modules`]). The
+                // suppression goes from capture to capture, one loading
+                // included, so a mute meanwhile wastes no load.
+                let mut suppression =
+                    Suppression::new(Denoiser::new(crate::noise::chosen(), crate::noise::limit()));
                 crate::audio_io::raise_capture_priority();
                 for request in waiting {
-                    denoiser = request.run(denoiser);
+                    suppression = request.run(suppression);
                 }
+                // The call is over: its model goes at normal priority.
+                crate::audio_io::lower_priority();
+                drop(suppression);
             })
             .context("could not start the Discord microphone")?;
         let _ = requests.send(request);
@@ -1129,6 +1142,7 @@ fn play_back(speaker: Option<&str>, queue: Receiver<[i16; BLOCK]>) -> Result<()>
         Some(PLAYBACK_SPEAKER_QUEUE),
     )?;
     for mut block in queue {
+        crate::audio_io::keep_priority();
         let volume = crate::volume::speakers();
         for sample in &mut block {
             *sample = (f32::from(*sample) * volume).clamp(-32768.0, 32767.0) as i16;
@@ -1253,6 +1267,7 @@ pub fn speakers(
             let mut waiting = VecDeque::with_capacity(QUEUE + 1);
             let mut surplus = Surplus::default();
             while !stopped.load(Ordering::Relaxed) {
+                crate::audio_io::keep_priority();
                 while let Ok(frame) = queue.try_recv() {
                     waiting.push_back(frame);
                     if waiting.len() > QUEUE
@@ -1300,15 +1315,23 @@ pub fn speakers(
 /// The microphone's processing, block by block: WebRTC cancels echo, unless
 /// turned off, and filters out rumble, the chosen suppressor takes out noise and hears
 /// speech, WebRTC controls the gain of what's left, and Yapfast levels it and
-/// sets its volume. The gate decides what's sent.
+/// sets its volume. The gate decides what's sent. Its thread is real-time
+/// in a call and in the microphone test, so what takes long to make, a
+/// suppressor or WebRTC's echo cancellation switched, is made on a thread
+/// of its own while the one before goes on (`crate::rebuild`). The rest is
+/// made where it's needed, each bounded well under a block: the reverb's
+/// remover, 0.7 MB and two FFT plans; the declicker; RNNoise, for someone
+/// else's voice.
 struct Processing {
     echo: AudioProcessingModule,
     /// Whether `echo` cancels echo, or only filters out rumble, as
     /// [`crate::noise::echo_cancellation`] said when it was made.
     cancelling: bool,
+    /// Makes `echo` anew as echo cancellation is switched.
+    new_echo: Rebuild<bool, AudioProcessingModule>,
     /// Takes out the room's reverb while asked to.
     dereverb: Option<crate::dereverb::Dereverb>,
-    denoiser: Denoiser,
+    suppression: Suppression,
     gain: AudioProcessingModule,
     leveler: crate::leveling::Leveler,
     gate: Gate,
@@ -1323,18 +1346,21 @@ struct Processing {
 }
 
 impl Processing {
-    /// Takes up `denoiser` if it's the suppressor chosen.
-    fn new(denoiser: Option<Denoiser>) -> Self {
-        let cancelling = crate::noise::echo_cancellation();
-        let chosen = crate::noise::chosen();
-        Self {
-            echo: echo_module(cancelling),
+    /// Starts with `suppression`, which gives way to the suppressor chosen
+    /// if it's another, and WebRTC's `modules`; it makes nothing slow itself.
+    fn new(suppression: Suppression, modules: Modules) -> Self {
+        let Modules {
+            echo,
             cancelling,
+            gain,
+        } = modules;
+        Self {
+            echo,
+            cancelling,
+            new_echo: Rebuild::new("yapfast-echo"),
             dereverb: None,
-            denoiser: denoiser
-                .filter(|denoiser| denoiser.suppressor() == chosen)
-                .unwrap_or_else(|| Denoiser::new(chosen, crate::noise::limit())),
-            gain: AudioProcessingModule::new(false, true, false, false),
+            suppression,
+            gain,
             leveler: crate::leveling::Leveler::default(),
             gate: Gate::default(),
             talk: crate::push_to_talk::Talk::default(),
@@ -1358,19 +1384,30 @@ impl Processing {
     /// push-to-talk while the key is up. `lightly`, the suppressor does
     /// only what it must, to catch up ([`Pace`]).
     fn block(&mut self, block: &mut [i16], lightly: bool) -> &[[f32; BLOCK]] {
-        let cancelling = crate::noise::echo_cancellation();
-        if cancelling != self.cancelling {
+        let (cancelling, chosen) = (crate::noise::echo_cancellation(), crate::noise::chosen());
+        self.block_as(block, lightly, cancelling, chosen)
+    }
+
+    /// [`Self::block`], with echo cancellation `cancelling` and the
+    /// suppressor `chosen`, as the settings say there.
+    fn block_as(
+        &mut self,
+        block: &mut [i16],
+        lightly: bool,
+        cancelling: bool,
+        chosen: Suppressor,
+    ) -> &[[f32; BLOCK]] {
+        let made = self
+            .new_echo
+            .poll(self.cancelling, cancelling, move || echo_module(cancelling));
+        if let Some(echo) = made {
             tracing::info!(cancelling, "Discord microphone switches echo cancellation");
-            self.echo = echo_module(cancelling);
+            let old = std::mem::replace(&mut self.echo, echo);
+            self.new_echo.retire(old);
             self.cancelling = cancelling;
         }
         let _ = self.echo.process_stream(block, SAMPLE_RATE as i32, 1);
-        let chosen = crate::noise::chosen();
-        if self.denoiser.suppressor() != chosen {
-            tracing::info!(?chosen, "Discord microphone switches noise suppression");
-            self.denoiser = Denoiser::new(chosen, crate::noise::limit());
-        }
-        self.denoiser.limit(crate::noise::limit());
+        self.suppression.follow(chosen, crate::noise::limit());
         for (value, sample) in self.samples.iter_mut().zip(block.iter()) {
             *value = f32::from(*sample);
         }
@@ -1400,7 +1437,7 @@ impl Processing {
             Some(false) if self.tested => Sent::Always,
             Some(false) => Sent::Never,
         };
-        let speech = self.denoiser.block(&mut self.samples, sent, lightly);
+        let speech = self.suppression.block(&mut self.samples, sent, lightly);
         for (sample, value) in block.iter_mut().zip(&self.samples) {
             *sample = value.clamp(-32768.0, 32767.0) as i16;
         }
@@ -1434,13 +1471,130 @@ impl Processing {
 }
 
 /// WebRTC's module that comes first on the microphone: AEC3 and the
-/// high-pass filter while `cancelling`, else the filter alone.
+/// high-pass filter while `cancelling`, else the filter alone. WebRTC sets
+/// its parts up again for each new format it's handed, AEC3's buffers and
+/// filters included, so it's handed a block of silence at the microphone's
+/// and, while cancelling, a frame at the speakers': it's set up where it's
+/// made, not on the microphone's real-time thread at the first of each.
 fn echo_module(cancelling: bool) -> AudioProcessingModule {
     let mut echo = AudioProcessingModule::new(cancelling, false, true, false);
     if cancelling {
         let _ = echo.set_stream_delay_ms(ECHO_DELAY_MS);
+        let _ = echo.process_reverse_stream(
+            &mut [0i16; FRAME_SAMPLES],
+            SAMPLE_RATE as i32,
+            i32::from(CHANNELS),
+        );
     }
+    let _ = echo.process_stream(&mut [0i16; BLOCK], SAMPLE_RATE as i32, 1);
     echo
+}
+
+/// WebRTC's gain control, after the suppressor, set up for the
+/// microphone's blocks as [`echo_module`] is.
+fn gain_module() -> AudioProcessingModule {
+    let mut gain = AudioProcessingModule::new(false, true, false, false);
+    let _ = gain.process_stream(&mut [0i16; BLOCK], SAMPLE_RATE as i32, 1);
+    gain
+}
+
+/// WebRTC's two modules on the microphone, made and set up for a capture
+/// by the thread that asks for it, or before the microphone test's thread
+/// is raised, rather than on the microphone's real-time thread.
+struct Modules {
+    echo: AudioProcessingModule,
+    /// Whether `echo` cancels echo.
+    cancelling: bool,
+    gain: AudioProcessingModule,
+}
+
+impl Modules {
+    fn new() -> Self {
+        let cancelling = crate::noise::echo_cancellation();
+        Self {
+            echo: echo_module(cancelling),
+            cancelling,
+            gain: gain_module(),
+        }
+    }
+}
+
+/// The microphone's noise suppressor, and the next as another is chosen.
+struct Suppression {
+    denoiser: Denoiser,
+    next: Rebuild<Suppressor, Carried>,
+    /// The next, once loaded, heard on the same blocks as the one in use
+    /// until its output has caught up with its input, and how many blocks
+    /// that leaves, the last of which fades from one to the other.
+    warming: Option<(Denoiser, usize)>,
+    /// The block as the next hears it.
+    heard: [f32; BLOCK],
+}
+
+impl Suppression {
+    fn new(denoiser: Denoiser) -> Self {
+        Self {
+            denoiser,
+            next: Rebuild::new("yapfast-denoise"),
+            warming: None,
+            heard: [0.0; BLOCK],
+        }
+    }
+
+    /// Follows the suppressor `chosen`, at most `limit` dB, once a block.
+    /// Another chosen loads on a thread of its own, DeepFilterNet's 0.2 s of
+    /// a core included, while the one before goes on, so the microphone
+    /// neither waits nor has a gap. Loaded, it hears the same blocks until
+    /// it puts out sound rather than the silence it starts with, 40 ms for
+    /// DeepFilterNet, and takes over fading in over a block
+    /// ([`Self::block`]); the one it replaces is dropped on that thread. The
+    /// strength chosen meanwhile applies to the one that comes, and another
+    /// choice waits for the fade.
+    fn follow(&mut self, chosen: Suppressor, limit: f32) {
+        if self.warming.is_none() {
+            let has = self.denoiser.suppressor();
+            let loaded = self
+                .next
+                .poll(has, chosen, move || Carried(Denoiser::new(chosen, limit)));
+            if let Some(Carried(next)) = loaded {
+                let blocks = next.lag_blocks() + 1;
+                self.warming = Some((next, blocks));
+            }
+        }
+        self.denoiser.limit(limit);
+        if let Some((next, _)) = &mut self.warming {
+            next.limit(limit);
+        }
+    }
+
+    /// Takes the noise out of `block`, as [`Denoiser::block`] does, with
+    /// the suppressor in use, and the next beside it while it catches up.
+    fn block(&mut self, block: &mut [f32; BLOCK], sent: Sent, lightly: bool) -> bool {
+        let Some((next, left)) = &mut self.warming else {
+            return self.denoiser.block(block, sent, lightly);
+        };
+        self.heard = *block;
+        let speech = next.block(&mut self.heard, sent, lightly);
+        let speech_before = self.denoiser.block(block, sent, lightly);
+        *left -= 1;
+        if *left > 0 {
+            return speech_before;
+        }
+        let step = 1.0 / BLOCK as f32;
+        for (at, (sample, next)) in block.iter_mut().zip(&self.heard).enumerate() {
+            let share = (at + 1) as f32 * step;
+            *sample += (next - *sample) * share;
+        }
+        if let Some((next, _)) = self.warming.take() {
+            tracing::info!(
+                chosen = ?next.suppressor(),
+                "Discord microphone switches noise suppression"
+            );
+            let old = std::mem::replace(&mut self.denoiser, next);
+            self.next.retire(Carried(old));
+        }
+        speech
+    }
 }
 
 /// Runs the microphone through a call's processing for [`GateMeter`]
@@ -1449,7 +1603,9 @@ fn echo_module(cancelling: bool) -> AudioProcessingModule {
 /// once.
 fn measure(microphone: Option<&str>, shared: &MeterShared) -> Result<()> {
     let mut stream = open_microphone(microphone)?;
-    let mut processing = Processing::new(None);
+    // Made before the thread is raised, as a call's microphone thread does.
+    let denoiser = Denoiser::new(crate::noise::chosen(), crate::noise::limit());
+    let mut processing = Processing::new(Suppression::new(denoiser), Modules::new());
     let mut block = [0i16; BLOCK];
     let mut shown = f32::NEG_INFINITY;
     let mut raised = false;
@@ -1462,6 +1618,7 @@ fn measure(microphone: Option<&str>, shared: &MeterShared) -> Result<()> {
             crate::audio_io::raise_capture_priority();
             raised = true;
         }
+        crate::audio_io::keep_priority();
         processing.tested = playback.is_some();
         processing.block(&mut block, false);
         // A full queue drops the block: the microphone never waits for the
@@ -1475,6 +1632,11 @@ fn measure(microphone: Option<&str>, shared: &MeterShared) -> Result<()> {
             .open
             .store(processing.gate.is_open(), Ordering::Relaxed);
     }
+    // Its model and modules go at normal priority.
+    if raised {
+        crate::audio_io::lower_priority();
+    }
+    drop(processing);
     Ok(())
 }
 
@@ -1499,25 +1661,29 @@ pub fn capture(
         stop: stop.clone(),
         talking: talking.clone(),
         opened,
+        modules: Modules::new(),
     })?;
+    // Made first, so a microphone that opens too late, or not at all, is
+    // stopped as this returns, rather than send while the call shows muted.
+    let capture = Capture {
+        stop,
+        talking,
+        track,
+    };
     result
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| anyhow!(tr!("The microphone didn't open in time.")))?
         .context(tr!(
             "Could not open your microphone. Check permissions or choose another device."
         ))?;
-    Ok(Capture {
-        stop,
-        talking,
-        track,
-    })
+    Ok(capture)
 }
 
 impl CaptureRequest {
-    /// Captures until stopped, with `denoiser` if it's the suppressor
-    /// chosen, and returns the one it used, or `denoiser` if the microphone
-    /// didn't open.
-    fn run(self, denoiser: Option<Denoiser>) -> Option<Denoiser> {
+    /// Captures until stopped with `suppression`, which gives way to the
+    /// suppressor chosen if it's another, and returns it, with one still
+    /// loading for the next capture to take.
+    fn run(self, suppression: Suppression) -> Suppression {
         let mut stream = match open_microphone(self.microphone.as_deref()) {
             Ok(stream) => {
                 let _ = self.opened.send(Ok(()));
@@ -1525,11 +1691,11 @@ impl CaptureRequest {
             }
             Err(error) => {
                 let _ = self.opened.send(Err(error));
-                return denoiser;
+                return suppression;
             }
         };
-        // The modules aren't Send, so they live on this thread.
-        let mut processing = Processing::new(denoiser);
+        // The suppressor isn't Send, so it lives on this thread.
+        let mut processing = Processing::new(suppression, self.modules);
         let reverse = self.reverse.lock().unwrap();
         // Drop what played before the microphone opened.
         while let Ok(played) = reverse.try_recv() {
@@ -1543,6 +1709,7 @@ impl CaptureRequest {
             let reading = Instant::now();
             stream.read(&mut block);
             let read = Instant::now();
+            crate::audio_io::keep_priority();
             while let Ok(mut played) = reverse.try_recv() {
                 processing.played(&mut played);
                 recycle(played);
@@ -1569,7 +1736,7 @@ impl CaptureRequest {
         }
         self.talking.store(false, Ordering::Relaxed);
         let _ = self.track.pause();
-        Some(processing.denoiser)
+        processing.suppression
     }
 }
 
@@ -1626,7 +1793,8 @@ fn processes_a_recording() {
     // The same echo cancellation alone, to hear what it leaves.
     let mut echo = AudioProcessingModule::new(true, false, true, false);
     let mut echoed = Vec::new();
-    let mut processing = Processing::new(None);
+    let denoiser = Denoiser::new(crate::noise::chosen(), crate::noise::limit());
+    let mut processing = Processing::new(Suppression::new(denoiser), Modules::new());
     let (mut processed, mut sent) = (Vec::new(), Vec::new());
     let (mut opened, mut blocks) = (0, 0);
     let mut took = std::time::Duration::ZERO;
@@ -2738,5 +2906,235 @@ mod tests {
         assert!((100..400).contains(&light), "{light} light blocks");
         assert!(pace.most < BEHIND + BLOCK_TIME);
         assert!(pace.times > 10);
+    }
+
+    /// 10 ms of hiss with a tone in it, in 16-bit range, as the microphone's
+    /// processing hands its suppressor.
+    fn noisy_block(index: usize, seed: &mut u32) -> Vec<f32> {
+        (0..BLOCK)
+            .map(|at| {
+                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (*seed >> 16) as f32 / 65536.0 * 1200.0 - 600.0;
+                let time = (index * BLOCK + at) as f32 / SAMPLE_RATE as f32;
+                noise + 3000.0 * (time * 220.0 * std::f32::consts::TAU).sin()
+            })
+            .collect()
+    }
+
+    /// How long the calling thread has been held up since it started: the
+    /// time since, less what it spent waiting for a core while other
+    /// threads had them, as tests beside it or a build may. What's left is
+    /// what it ran and waited for itself, as long as a real-time thread,
+    /// which nothing else takes a core from, would be held. Linux tells the
+    /// wait in `schedstat`; without it, all the time counts.
+    struct Held {
+        started: Instant,
+        waited: Duration,
+    }
+
+    impl Held {
+        fn start() -> Self {
+            let waited = waited_for_a_core();
+            Self {
+                started: Instant::now(),
+                waited,
+            }
+        }
+
+        fn elapsed(&self) -> Duration {
+            let time = self.started.elapsed();
+            time.saturating_sub(waited_for_a_core().saturating_sub(self.waited))
+        }
+    }
+
+    /// The calling thread's time waiting for a core since it started.
+    fn waited_for_a_core() -> Duration {
+        std::fs::read_to_string("/proc/thread-self/schedstat")
+            .ok()
+            .and_then(|stat| stat.split_whitespace().nth(1)?.parse().ok())
+            .map_or(Duration::ZERO, Duration::from_nanos)
+    }
+
+    /// One block through the microphone's processing, as its thread runs
+    /// it, every 10 ms: how long it held the thread, and the level it left.
+    fn processed(
+        processing: &mut Processing,
+        index: usize,
+        seed: &mut u32,
+        cancelling: bool,
+        chosen: Suppressor,
+    ) -> (Duration, f32) {
+        let mut block = [0i16; BLOCK];
+        for (sample, value) in block.iter_mut().zip(noisy_block(index, seed)) {
+            *sample = value as i16;
+        }
+        let held = Held::start();
+        processing.block_as(&mut block, false, cancelling, chosen);
+        let held = held.elapsed();
+        thread::sleep(BLOCK_TIME);
+        (held, processing.level)
+    }
+
+    /// Choosing DeepFilterNet while the microphone runs, in a call or in
+    /// the microphone test, where its thread is real-time, loads it on a
+    /// thread of its own. No block, at the change, while it loads or as it
+    /// takes over, holds the microphone's thread for two blocks' time,
+    /// where loading it there took 0.2 s of a core and could get the
+    /// program killed; meanwhile the sound goes on through the suppressor
+    /// before, off here, at its level. Switching echo cancellation holds it
+    /// no longer either.
+    #[test]
+    fn choosing_deep_filter_net_never_holds_the_microphone_up() {
+        let suppression = Suppression::new(Denoiser::new(Suppressor::Off, crate::noise::limit()));
+        let mut processing = Processing::new(suppression, Modules::new());
+        let cancelling = processing.cancelling;
+        let mut seed = 29;
+        let mut longest = Duration::ZERO;
+        let mut index = 0;
+        let mut run = |processing: &mut Processing, cancelling, chosen| {
+            let (held, level) = processed(processing, index, &mut seed, cancelling, chosen);
+            index += 1;
+            longest = longest.max(held);
+            level
+        };
+        for _ in 0..10 {
+            run(&mut processing, cancelling, Suppressor::Off);
+        }
+        let started = Instant::now();
+        let mut meanwhile = 0;
+        while processing.suppression.denoiser.suppressor() != Suppressor::DeepFilterNet {
+            let level = run(&mut processing, cancelling, Suppressor::DeepFilterNet);
+            if processing.suppression.denoiser.suppressor() == Suppressor::Off {
+                assert!(
+                    level > -40.0,
+                    "the sound goes on, block {meanwhile}: {level} dB"
+                );
+                meanwhile += 1;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "DeepFilterNet loads in time"
+            );
+        }
+        for _ in 0..5 {
+            run(&mut processing, cancelling, Suppressor::DeepFilterNet);
+        }
+        let started = Instant::now();
+        while processing.cancelling == cancelling {
+            run(&mut processing, !cancelling, Suppressor::DeepFilterNet);
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "echo cancellation switches in time"
+            );
+        }
+        for _ in 0..5 {
+            run(&mut processing, !cancelling, Suppressor::DeepFilterNet);
+        }
+        eprintln!(
+            "DeepFilterNet took over after {meanwhile} blocks; the longest block held the \
+             thread {longest:?}"
+        );
+        assert!(meanwhile > 0, "it loaded while the sound went on");
+        assert!(
+            processing.suppression.denoiser.deep(),
+            "DeepFilterNet itself, not RNNoise standing in"
+        );
+        assert!(
+            longest < 2 * BLOCK_TIME,
+            "a block held the thread {longest:?}"
+        );
+    }
+
+    /// The suppressor in use, RNNoise, goes on exactly as it did while
+    /// DeepFilterNet loads to take its place, and no block holds the
+    /// thread meanwhile.
+    #[test]
+    fn the_suppressor_in_use_goes_on_unchanged_while_another_loads() {
+        const LIMIT: f32 = 30.0;
+        let mut suppression = Suppression::new(Denoiser::new(Suppressor::RNNoise, LIMIT));
+        let mut alone = Rnnoise::new(LIMIT);
+        let mut seed = 29;
+        let (mut longest, mut meanwhile) = (Duration::ZERO, 0);
+        let started = Instant::now();
+        let noisy = |index, seed: &mut u32| -> [f32; BLOCK] {
+            noisy_block(index, seed).try_into().unwrap()
+        };
+        // Turned down by more than the limit, and then some: a hole, as the
+        // first 20 ms of a cold DeepFilterNet are, at -70 dB.
+        let rms = |block: &[f32]| {
+            (block.iter().map(|value| value * value).sum::<f32>() / BLOCK as f32).sqrt()
+        };
+        let quiet = |block: &[f32], heard: &[f32]| rms(block) < rms(heard) * 0.01;
+        for index in 0.. {
+            let mut block = noisy(index, &mut seed);
+            let mut expected = block;
+            let took = Held::start();
+            suppression.follow(Suppressor::DeepFilterNet, LIMIT);
+            suppression.block(&mut block, Sent::Gated, false);
+            longest = longest.max(took.elapsed());
+            // Taken over at this block, fading in.
+            if suppression.denoiser.suppressor() == Suppressor::DeepFilterNet {
+                assert!(
+                    !quiet(&block, &expected),
+                    "it takes over with sound, not silence"
+                );
+                meanwhile = index;
+                break;
+            }
+            alone.block(&mut expected);
+            assert_eq!(block, expected, "RNNoise goes on as it was, block {index}");
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "DeepFilterNet loads in time"
+            );
+            thread::sleep(BLOCK_TIME);
+        }
+        for index in 0..5 {
+            let mut block = noisy(index, &mut seed);
+            let heard = block;
+            let took = Held::start();
+            suppression.follow(Suppressor::DeepFilterNet, LIMIT);
+            suppression.block(&mut block, Sent::Gated, false);
+            longest = longest.max(took.elapsed());
+            assert!(
+                !quiet(&block, &heard),
+                "no hole after it takes over, block {index}"
+            );
+        }
+        eprintln!(
+            "DeepFilterNet took over after {meanwhile} blocks of RNNoise; the longest block \
+             took {longest:?}"
+        );
+        assert!(meanwhile > 0, "it loaded while RNNoise went on");
+        assert!(
+            suppression.denoiser.deep(),
+            "DeepFilterNet itself, not RNNoise standing in"
+        );
+        assert!(longest < 2 * BLOCK_TIME, "a block took {longest:?}");
+    }
+
+    /// Another suppressor chosen while DeepFilterNet loads wins: DeepFilterNet,
+    /// loaded for nothing, never takes over, and the one chosen last does.
+    #[test]
+    fn a_suppressor_chosen_while_another_loads_wins() {
+        const LIMIT: f32 = 30.0;
+        let mut suppression = Suppression::new(Denoiser::new(Suppressor::RNNoise, LIMIT));
+        suppression.follow(Suppressor::DeepFilterNet, LIMIT);
+        assert!(suppression.next.building(), "DeepFilterNet loads");
+        let started = Instant::now();
+        while suppression.denoiser.suppressor() != Suppressor::Off {
+            suppression.follow(Suppressor::Off, LIMIT);
+            suppression.block(&mut [0.0; BLOCK], Sent::Gated, false);
+            assert_ne!(
+                suppression.denoiser.suppressor(),
+                Suppressor::DeepFilterNet,
+                "the one loaded for nothing never takes over"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the one chosen last comes in time"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 }

@@ -414,7 +414,21 @@ directory. The sign-in screen scrolls when it is taller than the window.
   "Invalid file type" for a folder. winit takes drops on X11 and Windows; on
   Wayland, where it has none, Yapfast keeps a data device for each seat on
   winit's own connection, which a small thread watches, and takes
-  `text/uri-list`. A drop is taken only where the composer can take files,
+  `text/uri-list`. The thread sleeps on winit's socket and on a pipe that
+  stops it, with no timer; closing the window to the tray leaves it, as the
+  connection stays open. winit closes the connection as its event loop
+  ends, so the client stops the thread before that (iced as the app drops
+  inside the loop, Slint as its loop returns): it lets go of its objects on
+  the open connection, even while a drop's list is still coming, and the
+  client waits for it, at most 100 ms. A connection that breaks ends the
+  thread on its own, which forgets its objects rather than destroying them,
+  as the display may already be gone; so does a stop that comes after the
+  display closed, as when a panic unwinds past winit's loop, which the
+  thread tells by its socket's device and inode, should another file have
+  taken the socket's number. A dropped list past 1 MiB is refused. The
+  paths it lists are looked at on a thread of their own, as a network mount
+  can stall that, so the watching thread is always free to stop. A drop is
+  taken only where the composer can take files,
   as a paste is. They wait above the text as tiles, with a preview for pictures and an
   X to take each out, until the message is sent; text can be typed beside
   them, and the message may be the files alone. A message carries up to ten

@@ -78,8 +78,10 @@ pub struct Desktop {
     pub(crate) notifier: Option<Notifier>,
     /// The taskbar flashes for a message that came behind other windows.
     pub(crate) flashing: bool,
-    /// Files dragged over the window are followed on Wayland.
-    pub(crate) drops: bool,
+    /// Files dragged over the window, followed on Wayland from the first
+    /// window on, and stopped as the app drops (`drop::watch`).
+    #[cfg(target_os = "linux")]
+    pub(crate) drops: Option<drop::Watching>,
     /// The folder pictures pasted into the composer are saved in, from the
     /// first paste; it goes as the app ends.
     pub(crate) pasted: Option<tempfile::TempDir>,

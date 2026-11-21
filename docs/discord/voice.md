@@ -417,8 +417,11 @@ Windows they join MMCSS's "Pro Audio" task, as Discord's and browsers' audio
 threads do, so a game using every core doesn't hold them up past the 40 ms
 the speakers have queued. On Linux they ask for `SCHED_FIFO` at priority 10,
 below PipeWire's, which works where the user's limits allow real-time
-priority, as PipeWire's set them for its group; otherwise they stay as they
-were. The microphone's thread, which runs the noise suppressor, raises its
+priority, as PipeWire's set them for its group; otherwise they ask rtkit for
+`SCHED_RR`, under its limit on how long a real-time thread runs without
+sleeping ([Processor cores](../cpu.md#what-keeps-every-core) says what
+happens to one that runs too long). The microphone's thread, which runs the
+noise suppressor, raises its
 priority a step below theirs (`audio_io::raise_capture_priority`): MMCSS's
 "Audio" task on Windows, `SCHED_FIFO` at 9 on Linux. Above every ordinary
 thread, a stream's x264 encoder or a game on a weak processor doesn't hold it
@@ -820,8 +823,19 @@ button beside Leave in the call panel turns suppression off, shown red while
 it's off, and on again to the kind last used, wherever it was chosen:
 DeepFilterNet unless RNNoise was. A Yapfast call has no such button, as WebRTC
 suppresses its noise. A
-call going on switches at its next block, after DeepFilterNet's 0.2 s load if
-switching to it.
+call going on switches without a gap: the suppressor chosen loads on a thread
+of its own, `yapfast-denoise` (`Suppression` in `discord_audio.rs`, through
+`crate::rebuild`), while the one before goes on, DeepFilterNet's 0.2 s. A
+suppressor starts out silent for as long as its output lags its input, the
+first 20 ms of DeepFilterNet's 70 dB down, so once loaded it hears the same
+blocks beside the one in use until it has caught up, 40 ms for DeepFilterNet,
+10 for RNNoise, and fades in over the last; the one it replaces is dropped on
+that thread, which then ends. The microphone's thread, real-time in a call,
+never loads a model itself: DeepFilterNet's 0.2 s of a core is as long as Linux
+lets a real-time thread run without sleeping before it kills the program (see
+[Processor cores](../cpu.md#what-keeps-every-core)). Choices made while one
+loads or fades in wait for it, and only the last is loaded next, so at most
+two suppressors are held at once, beside one going back to be dropped.
 
 The microphone's thread keeps an estimate of how much audio waits in the
 microphone's buffer (`Pace` in `discord_audio.rs`): a read that waits found
@@ -842,7 +856,16 @@ Muting closes the microphone, but the call's microphone thread,
 `yapfast-discord-in`, waits with the suppressor until the call ends, 39 MiB
 for DeepFilterNet, so unmuting or switching microphones doesn't load it
 again. What it kept from before made no difference: after 30 s of another
-room, the PESQ of what the gate sent moved by at most 0.02.
+room, the PESQ of what the gate sent moved by at most 0.02. The thread loads
+its first suppressor before it's raised; one chosen while muted loads on its
+own thread from the first block after unmuting, the kept one going on
+meanwhile, and one still loading as the microphone mutes or changes is taken
+up by the next capture rather than loaded again. As the call ends, the thread
+goes back to normal priority before it frees its suppressor. WebRTC's modules
+for each capture are made, and set up for the microphone's and the speakers'
+formats, by the thread that asks for the microphone. A microphone that
+doesn't open within 5 s is stopped as the call gives up on it, so one that
+opens late never sends while the call shows the microphone off.
 
 "Noise suppression strength" limits how far noise is turned down: Full takes
 out all it can, Medium at most 30 dB and Light 20 dB (`noise_strength`, Medium
@@ -939,9 +962,11 @@ reference, nor are Yapfast's own sounds.
 Settings, Voice & video, can turn echo cancellation off, for headphones; it's
 on unless turned off (`echo_cancellation` in `layout.json`,
 `noise::set_echo_cancellation`). Off, the microphone's first module is the
-high-pass filter alone, made again at the next block, as switching the
-suppressor is, and the speakers' thread stops handing its frames over as the
-reference. It saves at most 0.3% of a core, and with headphones AEC3 already
+high-pass filter alone, made again on a thread of its own, `yapfast-echo`, as
+switching the suppressor is, and set up there for the microphone's and the
+speakers' formats, which WebRTC otherwise does at the first block of each; it
+takes over a block or so later. The speakers' thread stops handing its frames
+over as the reference. It saves at most 0.3% of a core, and with headphones AEC3 already
 stops suppressing about 6 s after it finds no echo, so the setting says to
 turn it off only with headphones: with speakers, everyone else hears
 themselves. `YAPFAST_ECHO_CANCELLATION=off` runs `processes_a_recording`

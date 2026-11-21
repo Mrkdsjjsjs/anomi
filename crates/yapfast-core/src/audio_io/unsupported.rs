@@ -13,6 +13,17 @@ pub fn raise_priority(_: super::Priority) -> Result<&'static str, String> {
     Err(UNSUPPORTED.to_owned())
 }
 
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn lowered() -> Option<Result<bool, std::io::Error>> {
+    None
+}
+
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn forget_this_thread() {}
+
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn lower_priority() {}
+
 #[cfg(feature = "discord")]
 pub fn full_speed(_: bool) {}
 

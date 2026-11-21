@@ -50,6 +50,10 @@ futures-util.workspace = true
 # tray click brought. Already in the tree through winit.
 wayland-client = "0.31.15"
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
+# The thread following dragged files waits on winit's socket and on the pipe
+# that stops it at once, with no timer. Already in the tree through
+# wayland-client.
+rustix = { version = "1.1.5", features = ["event"] }
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 
 # The tray icon, the event a later start sets to show the window, giving

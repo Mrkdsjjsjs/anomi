@@ -141,7 +141,7 @@ pub fn echo_cancellation() -> bool {
 }
 
 #[cfg(feature = "discord")]
-pub(crate) use denoise::{BLOCK, Deep, Denoiser, Rnnoise, Sent};
+pub(crate) use denoise::{BLOCK, Carried, Deep, Denoiser, Rnnoise, Sent};
 
 #[cfg(feature = "discord")]
 mod denoise {
@@ -274,6 +274,18 @@ mod denoise {
             self.suppressor
         }
 
+        /// How many blocks its output starts behind its input: what it puts
+        /// out before it has heard that many is silence.
+        pub(crate) fn lag_blocks(&self) -> usize {
+            match self.network {
+                Network::DeepFilterNet(_) => {
+                    (DEEP_FILTER_NET_LAG + crate::declick::DELAY).div_ceil(BLOCK)
+                }
+                Network::RNNoise(_) => 1,
+                Network::Off(_) => 0,
+            }
+        }
+
         /// Takes the noise out of 10 ms of mono, in 16-bit range, in place,
         /// and returns whether it's speech. DeepFilterNet's output is 30 ms
         /// behind its input, 31 with the declicker, RNNoise's 10 ms.
@@ -348,6 +360,34 @@ mod denoise {
                     network.process_frame(&mut self.clean, block) >= SPEECH_PROBABILITY
                 }
             }
+        }
+    }
+
+    /// A [`Denoiser`] on its way to another thread, whole: one loaded on a
+    /// thread of its own for the microphone's real-time thread, or the one
+    /// it replaced going back to be dropped there (`crate::rebuild`).
+    pub(crate) struct Carried(pub(crate) Denoiser);
+
+    // SAFETY: a Denoiser isn't Send only for DeepFilterNet's model: tract
+    // keeps some of its tensors in `Rc`s (`TValue::Var`) and its operators'
+    // states as `Box<dyn OpState>`, which doesn't promise Send. Every clone
+    // of those `Rc`s lives inside the one `DfTract` the Denoiser owns: a
+    // Denoiser never copies its model, as `Deep::of` does, nor lends its
+    // parts out, and neither tract nor libDF keeps a part of a model
+    // anywhere else, in a static or a thread-local (tract-linalg's only
+    // thread-local is a scratch buffer of the thread that runs a block, and
+    // libDF's is a random generator for training). So the whole Denoiser
+    // moving takes every handle to those counts with it, and no two threads
+    // ever touch one, which is all `Rc` asks. The rest of it, RNNoise's state
+    // and the declicker included, is Send.
+    unsafe impl Send for Carried {}
+
+    impl Denoiser {
+        /// Whether DeepFilterNet itself runs, rather than RNNoise standing
+        /// in for a model that didn't load.
+        #[cfg(test)]
+        pub(crate) fn deep(&self) -> bool {
+            matches!(self.network, Network::DeepFilterNet(_))
         }
     }
 

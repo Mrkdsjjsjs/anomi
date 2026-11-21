@@ -248,6 +248,9 @@ pub fn run(
     let _control = test_control().map(|path| control(path, shell.clone()));
     // Until quit: closing the window to the tray doesn't end Yapfast.
     let result = slint::run_event_loop_until_quit();
+    // Its thread lets go of winit's display while Slint still keeps it open.
+    #[cfg(target_os = "linux")]
+    drop(WAYLAND_DROPS.take());
     let restart = shell.restarting();
     let late_gpu_failure = shell.gpu_failure();
     drop(shell);
@@ -808,16 +811,22 @@ fn dragged(drag: Drag) {
     });
 }
 
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// Follows files dragged over the window on Wayland, from the first
+    /// window on, until the event loop returns: Slint keeps winit's display
+    /// open until then (`run`).
+    static WAYLAND_DROPS: RefCell<Option<crate::drop::wayland::Watch>> =
+        const { RefCell::new(None) };
+}
+
 /// On Wayland, where winit takes no drops, a data device on winit's own
 /// connection does, once for every window, as it's the seat's.
 #[cfg(target_os = "linux")]
 fn watch_wayland_drops(window: &YapfastWindow) {
     use slint::winit_030::WinitWindowAccessor;
     use slint::winit_030::winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-    thread_local! {
-        static WATCHING: Cell<bool> = const { Cell::new(false) };
-    }
-    if WATCHING.get() {
+    if WAYLAND_DROPS.with_borrow(Option::is_some) {
         return;
     }
     let found = window.window().with_winit_window(|window| {
@@ -829,14 +838,14 @@ fn watch_wayland_drops(window: &YapfastWindow) {
     let Some(Some(display)) = found else {
         return;
     };
-    WATCHING.set(true);
-    // SAFETY: winit's display stays connected while its event loop runs,
-    // which is as long as Yapfast does.
-    unsafe {
+    // SAFETY: winit's display stays open while Slint keeps its event loop,
+    // which is past the watch's drop as the loop returns.
+    let watch = unsafe {
         crate::drop::wayland::watch(display, |drag| {
             let _ = slint::invoke_from_event_loop(move || dragged(drag));
-        });
-    }
+        })
+    };
+    WAYLAND_DROPS.set(watch);
 }
 
 thread_local! {

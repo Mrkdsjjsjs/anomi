@@ -329,6 +329,7 @@ dependencies = [
  "image",
  "ksni",
  "raw-window-handle",
+ "rustix 1.1.5",
  "tempfile",
  "tracing",
  "wayland-backend",

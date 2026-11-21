@@ -87,8 +87,15 @@ pub use lasting::{LastingInput, LastingOutput};
 ///
 /// `thread` names it for the log, which says at info level whether it was
 /// raised, and for [`NO_PRIORITY`], which leaves it at normal priority.
+///
+/// A raised thread does nothing that takes long without waiting: on Linux,
+/// past rtkit's limit on that, 200 ms, the kernel kills the whole program.
+/// What it needs made anew, such as a suppressor's model or WebRTC's echo
+/// cancellation, is made on a thread of its own (`crate::rebuild`). Should
+/// a job run too long all the same, every raised thread goes back to normal
+/// priority halfway there, and calls [`keep_priority`] between its blocks.
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
-pub fn raise_thread_priority(thread: &str) {
+pub fn raise_thread_priority(thread: &'static str) {
     raise(thread, Priority::Playback);
 }
 
@@ -103,7 +110,7 @@ pub fn raise_capture_priority() {
 }
 
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
-fn raise(thread: &str, priority: Priority) {
+fn raise(thread: &'static str, priority: Priority) {
     // Silent stand-ins have nothing to hold up, and a test run asks rtkit
     // for no real-time threads.
     if !devices() {
@@ -118,7 +125,15 @@ fn raise(thread: &str, priority: Priority) {
         return;
     }
     match platform::raise_priority(priority) {
-        Ok(how) => tracing::info!(thread, how, "an audio thread raised its priority"),
+        Ok(how) => {
+            let raised = Raised {
+                thread,
+                priority,
+                again: false,
+            };
+            let _ = RAISED.try_with(|held| held.set(Some(raised)));
+            tracing::info!(thread, how, "an audio thread raised its priority");
+        }
         Err(error) => {
             tracing::info!(
                 thread,
@@ -128,6 +143,105 @@ fn raise(thread: &str, priority: Priority) {
             crate::cpu::release_this_thread();
         }
     }
+}
+
+/// How the calling thread was raised: its name, its priority, and whether
+/// it has been raised again since SIGXCPU put it back.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+struct Raised {
+    thread: &'static str,
+    priority: Priority,
+    again: bool,
+}
+
+thread_local! {
+    static RAISED: std::cell::Cell<Option<Raised>> = const { std::cell::Cell::new(None) };
+}
+
+/// For a raised audio thread, between its blocks. On Linux, a job that ran
+/// halfway to the time a real-time thread may run without waiting has
+/// SIGXCPU put every raised thread back at normal priority, rather than let
+/// the kernel kill the program (`audio_io/pulse.rs`). The thread finds out
+/// here, says so, and asks to be raised again, its block over and with it
+/// whatever ran long; put back a second time as the one that ran long, it
+/// stays at normal priority, on every core, until it ends, as a thread that
+/// couldn't be raised does. The others, put back beside it, rise each time.
+/// A thread the handler couldn't put back logs an error, as Linux may kill
+/// the program at the limit. Otherwise it costs an atomic load.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn keep_priority() {
+    let Ok(Some(raised)) = RAISED.try_with(std::cell::Cell::get) else {
+        return;
+    };
+    let Some(put) = platform::lowered() else {
+        return;
+    };
+    let thread = raised.thread;
+    let ran_long = match put {
+        Ok(ran_long) => ran_long,
+        Err(error) => {
+            tracing::error!(
+                thread,
+                %error,
+                "an audio thread ran too long without waiting and couldn't go back to normal priority"
+            );
+            return;
+        }
+    };
+    if raised.again && ran_long {
+        tracing::warn!(
+            thread,
+            "an audio thread ran too long without waiting a second time and went back to normal \
+             priority; it stays there, on every core"
+        );
+        stay_at_normal_priority();
+        return;
+    }
+    match platform::raise_priority(raised.priority) {
+        Ok(how) => {
+            // Only the thread that ran long counts it: the others went back
+            // beside it.
+            let again = Raised {
+                again: raised.again || ran_long,
+                ..raised
+            };
+            let _ = RAISED.try_with(|held| held.set(Some(again)));
+            tracing::warn!(
+                thread,
+                how,
+                ran_long,
+                "an audio thread went back to normal priority, as it or another ran too long \
+                 without waiting, and raised it again"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                thread,
+                %error,
+                "an audio thread went back to normal priority, as one ran too long without \
+                 waiting; it stays there, on every core"
+            );
+            stay_at_normal_priority();
+        }
+    }
+}
+
+/// Puts the calling thread, raised, back at normal priority as it ends, so
+/// what it frees then, a suppressor's model among it, goes there.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn lower_priority() {
+    if let Ok(Some(_)) = RAISED.try_with(std::cell::Cell::get) {
+        platform::lower_priority();
+        let _ = RAISED.try_with(|held| held.set(None));
+    }
+}
+
+/// The calling thread, put back at normal priority, stays there.
+fn stay_at_normal_priority() {
+    platform::forget_this_thread();
+    let _ = RAISED.try_with(|held| held.set(None));
+    crate::cpu::release_this_thread();
 }
 
 /// Which audio threads a thread joins in priority.

@@ -41,7 +41,11 @@ through the chosen speakers, and the bar beside the button shows its level, as
 the input sensitivity's does. It plays the microphone as Discord calls process
 it, with the noise suppression chosen and its strength, taking out the room's
 echo, evening out the voice and the microphone's volume, at the speakers'
-volume, and a change to any of them is heard at once. It plays before the voice
+volume, and a change to any of them is heard at once, but for DeepFilterNet,
+which takes over once it has loaded, 0.2 s later, the suppressor before
+playing meanwhile, and fades in over 40 ms; switching quickly between
+suppressors loads only the one chosen last. Turning echo cancellation on or off is the same, a block or so
+later. It plays before the voice
 gate and push to talk, so no key needs holding, and push-to-talk's key up
 doesn't turn DeepFilterNet down to its encoder as it does in a call. Nothing
 is sent. Through speakers the microphone hears itself, so the page says to use
@@ -50,7 +54,14 @@ headphones.
 The test runs on the sensitivity's meter (`GateMeter` in
 `crates/yapfast-core/src/discord_audio.rs`): its thread, `yapfast-gate-meter`,
 hands each processed 10 ms block to a thread that plays it,
-`yapfast-mic-test`, through a queue of four blocks. A full queue drops the
+`yapfast-mic-test`, through a queue of four blocks. Both run at real-time
+priority while the test plays, as a call's do (see [Processor
+cores](cpu.md#what-keeps-every-core)), so neither makes anything slow
+itself: the meter opens the microphone, then makes its suppressor and
+WebRTC's modules before it's raised, another suppressor chosen during the
+test loads on a thread of its own, `yapfast-denoise`, which ends once it's
+handed over, and the meter goes back to normal priority before it frees
+them as the test ends. A full queue drops the
 block, so the microphone never waits for the speakers, and speakers whose clock
 runs slower than the microphone's can't make the test later and later. The
 speakers keep 30 ms queued, give way to the default ones when they won't open,

@@ -6,6 +6,11 @@
 //! window made again needs nothing new. Each step becomes what winit's own
 //! events become on X11 and Windows (`crate::window`): the composer's
 //! `Done::Hovered` and `Done::Dropped`.
+//!
+//! winit closes its display as its event loop drops, and iced drops the
+//! app before that, inside the loop as it exits: the watch goes with the
+//! app (`Desktop::drops`), so its thread lets go of the display while it's
+//! still open.
 
 use anomi_desktop::drop::Drag;
 use iced::{Task, window};
@@ -14,17 +19,23 @@ use crate::app::App;
 use crate::intent::chat::composer::{self, Done};
 use crate::message::Message;
 
+/// The watch a window started, once it's started: the task that starts it
+/// on the window fills it, and the app holds it until it drops.
+#[cfg(target_os = "linux")]
+pub type Watching = std::sync::Arc<std::sync::OnceLock<anomi_desktop::drop::wayland::Watch>>;
+
 /// Starts following files dragged over the window, once, where the window
 /// is on Wayland.
 #[cfg(target_os = "linux")]
 pub fn watch(app: &mut App, id: window::Id) -> Task<Message> {
-    if app.desktop.drops {
+    if app.desktop.drops.is_some() {
         return Task::none();
     }
     let Some(tell) = app.desktop.tell.clone() else {
         return Task::none();
     };
-    app.desktop.drops = true;
+    let watching = Watching::default();
+    app.desktop.drops = Some(watching.clone());
     window::run(id, move |window| {
         let Some(display) = anomi_desktop::drop::wayland::display(window) else {
             return;
@@ -32,9 +43,13 @@ pub fn watch(app: &mut App, id: window::Id) -> Task<Message> {
         let report = move |drag| {
             let _ = tell.send(super::Heard::Drag(drag));
         };
-        // SAFETY: winit's display stays connected while its event loop
-        // runs, which is as long as the app does.
-        unsafe { anomi_desktop::drop::wayland::watch(display, report) };
+        // SAFETY: winit's display stays open until its event loop drops,
+        // after the app and with it the watch.
+        let watch = unsafe { anomi_desktop::drop::wayland::watch(display, report) };
+        if let Some(watch) = watch {
+            // Only this task fills it; a second watch would stop as it drops.
+            let _ = watching.set(watch);
+        }
     })
     .discard()
 }

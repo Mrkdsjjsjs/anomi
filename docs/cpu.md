@@ -92,23 +92,50 @@ page changes. Afterwards nothing runs: the system keeps the masks.
 
 ## What keeps every core
 
-- **A call's audio threads** (`yapfast-discord-call`, `-in`, `-out`) raise
-  their priority as they start (`audio_io::raise_thread_priority`). On
-  Linux they ask for `SCHED_FIFO` themselves where the user's limits allow
-  real-time priority (`ulimit -r`), and else ask rtkit, on the system bus,
-  for `SCHED_RR` at the same priority, 10 or 9. rtkit raises only threads
-  of a process whose `RLIMIT_RTTIME` is within its own limit, 200 ms by
-  default, so Yapfast lowers it to that first: a real-time thread that ran
-  so long without once waiting would end the process. The soft limit goes
-  to half that, where Linux sends SIGXCPU instead, on which the thread that
-  ran too long goes back to normal priority (`audio_io/pulse.rs`), and the
-  next raise logs it: a long job on an audio thread stutters rather than
-  ends the call. The microphone's thread loads its suppressor's model
-  before it asks, as DeepFilterNet's took longer than that. At real-time
-  priority they stay on Yapfast's cores, where they run ahead of any game
-  thread. A thread whose priority couldn't be raised, or that
-  `YAPFAST_VOICE_NO_PRIORITY` keeps at normal priority, runs on every core
-  instead, so it needn't wait beside a game's threads.
+- **A call's audio threads** (`yapfast-discord-call`, `-in`, `-out`), and
+  the microphone test's (`yapfast-gate-meter` once it plays back, and
+  `yapfast-mic-test`), raise their priority as they start
+  (`audio_io::raise_thread_priority`). On Linux they ask for `SCHED_FIFO`
+  themselves where the user's limits allow real-time priority (`ulimit
+  -r`), and else ask rtkit, on the system bus, for `SCHED_RR` at the same
+  priority: 10 for the call's and the speakers', 9 for a microphone's.
+  Either way the policy carries `SCHED_RESET_ON_FORK`, so a thread one of
+  them starts begins at normal priority. At real-time priority they stay
+  on Yapfast's cores, where they run ahead of any game thread. A thread
+  whose priority couldn't be raised, or that `YAPFAST_VOICE_NO_PRIORITY`
+  keeps at normal priority, runs on every core instead, so it needn't wait
+  beside a game's threads.
+
+  rtkit raises only threads of a process whose `RLIMIT_RTTIME` is within
+  its own limit, 200 ms by default, so Yapfast lowers it to that first:
+  the processor time a real-time thread may take without sleeping, which
+  Linux counts in scheduler ticks, a millisecond at 1000 Hz, and starts
+  again each time the thread wakes at real-time priority from a sleep. At the hard limit Linux kills the
+  whole process with SIGKILL. So a raised thread makes nothing slow
+  itself: a suppressor chosen in a call or the microphone test loads on a
+  thread of its own (`yapfast-denoise`), as does WebRTC's echo
+  cancellation switched (`yapfast-echo`), while the one before goes on,
+  and each capture's WebRTC modules are made by the thread that asks for
+  the microphone (`crate::rebuild`, `discord_audio.rs`). The soft limit
+  goes to half the hard one, 100 ms, where Linux sends SIGXCPU, and moves
+  it a second on, so it comes once: Yapfast's handler then puts every
+  raised thread back at normal priority, by its id, as the signal goes to
+  the whole process and any of its threads may take it, and sets the soft
+  limit back (`audio_io/pulse.rs`). That leaves the thread that ran long
+  100 ms of its own time before the kill, and at normal priority Linux
+  stops counting. The handler keeps `SCHED_RESET_ON_FORK`: only a
+  privileged process may clear it, and asked to, Linux refuses the whole
+  change. Each thread finds out at its next block, logs it, and asks to be
+  raised again, its slow job over. The handler runs on the thread that ran
+  long, as Linux has that one take the signal first, and only that thread
+  counts it: put back a second time for its own long job, it stays at
+  normal priority, on every core, until it ends, while the threads put
+  back beside it rise again each time. A thread ending, as a call's
+  microphone does, goes back to normal priority first, so what it frees
+  then, a suppressor's model, is freed there. The same handler watches
+  the threads that raise themselves where the user's own limits set
+  `RLIMIT_RTTIME`. A long job on an audio thread stutters rather than ends
+  the call.
 - **libpulse's stream threads** (`threaded-ml`, one per stream) carry the
   samples to the sound server at normal priority, and run on every core.
 - **A browser** that opening a link starts runs on every core: `xdg-open`
@@ -151,7 +178,11 @@ show `0-31`. In a call, the three `yapfast-discord` audio threads show
 class `RR` (`FF` where the limits allow it) at priority 10 or 9, the rest
 `TS`. The log says `Yapfast runs on these logical CPUs` with the list, and
 for each audio thread how its priority was raised, such as `SCHED_RR 10
-through rtkit`. A stream worker (`pgrep -f -- --stream-worker`) shows its
+through rtkit`; each thread one SIGXCPU put back says "an audio thread
+went back to normal priority, as it or another ran too long without
+waiting, and raised it again", with `thread` and `ran_long`, and a
+handler that couldn't put one back logs an error. A
+stream worker (`pgrep -f -- --stream-worker`) shows its
 own masks the same way: the cores chosen on every thread, x264's too.
 
 ## What it can't promise

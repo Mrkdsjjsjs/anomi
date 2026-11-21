@@ -90,6 +90,21 @@ pub fn raise_priority(priority: super::Priority) -> Result<&'static str, String>
     })
 }
 
+/// Windows ends no audio thread for running long without waiting, so
+/// nothing puts one back at normal priority.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn lowered() -> Option<Result<bool, std::io::Error>> {
+    None
+}
+
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn forget_this_thread() {}
+
+/// Windows ends no audio thread for running long, so a raised one stays
+/// as it is as it ends.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+pub fn lower_priority() {}
+
 /// Opts this process out of power throttling and asks for a 1 ms timer, or
 /// gives both back to the system. Windows 11 may run a process whose window
 /// is minimized or hidden at EcoQoS, on efficient cores at a low clock, and

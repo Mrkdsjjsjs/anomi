@@ -41,8 +41,9 @@ fn body(state: &AppState) -> Body {
     }
     match state.selected_room() {
         None => Body::Nothing,
-        // `voice-panel`: a voice room shows its call, not its chat.
-        Some(room) if room.voice && !state.voice_chat => Body::Voice,
+        // `voice-panel`: a voice room shows its call; its chat, when open,
+        // sits beside it as Discord's chat panel, not in place of it.
+        Some(room) if room.voice => Body::Voice,
         Some(room) if room.forum => Body::Forum,
         Some(_) => Body::Messages,
     }
@@ -54,8 +55,13 @@ fn body(state: &AppState) -> Body {
 fn beside(state: &AppState, layout: &Layout) -> Beside {
     let thread = if state.new_thread().is_some() {
         Some(Aside::NewThread)
+    } else if state.aside.is_some() {
+        Some(Aside::Thread)
+    } else if state.voice_chat && state.selected_room().is_some_and(|room| room.voice) {
+        // The voice channel's chat, beside its stage.
+        Some(Aside::Chat)
     } else {
-        state.aside.as_ref().map(|_| Aside::Thread)
+        None
     };
     Beside {
         search: state.search_shown().is_some(),

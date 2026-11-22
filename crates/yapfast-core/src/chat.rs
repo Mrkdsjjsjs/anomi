@@ -2217,6 +2217,43 @@ pub struct EmbedField {
     pub inline: bool,
 }
 
+/// A Discord message's activity: an invite to join, watch or listen to a
+/// party, or a request to join or stream one, as Discord's client shows it
+/// on a card.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageActivity {
+    /// What it asks; [`MessageActivityKind::Other`] for a type this client shows
+    /// no card for.
+    pub kind: MessageActivityKind,
+    /// The activity's name, such as "Dota 2".
+    pub name: String,
+    /// The application's id; with `icon` it makes the card's picture.
+    pub application_id: Option<String>,
+    /// The card's picture's address: the asset Discord named, or an
+    /// address standing for the application's icon.
+    pub icon: Option<String>,
+    /// The party it invites to, when Discord named one.
+    pub party_id: Option<String>,
+}
+
+/// What a message's activity asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MessageActivityKind {
+    /// A type this client shows no card for.
+    #[default]
+    Other,
+    /// Join the sender's party.
+    Join,
+    /// Watch the sender's party.
+    Spectate,
+    /// Listen along with the sender's party.
+    Listen,
+    /// The sender asks to join this account's party.
+    JoinRequest,
+    /// The sender asks this account to stream.
+    StreamRequest,
+}
+
 /// A Discord message's container of components, or a run of components
 /// outside one, which shows without a frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2387,6 +2424,8 @@ pub struct ChatMessage {
     /// A Discord voice message's recording, its first attachment, which
     /// plays in place of a file card: [`Command::PlayVoiceMessage`].
     pub voice: Option<VoiceMessage>,
+    /// The Discord activity it invites to, when it's one.
+    pub activity: Option<MessageActivity>,
     /// What it tells of, when it's a notice in place of a message, such as
     /// Discord's that someone pinned one; its body says it after its
     /// author's name.

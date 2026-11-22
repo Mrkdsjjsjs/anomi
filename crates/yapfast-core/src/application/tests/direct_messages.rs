@@ -110,12 +110,18 @@ fn discord_text_channels_write_without_matrix_trust_and_read_once_read() {
     app.state.trusted = false;
     app.dispatch(Action::SyncDiscordReads(true));
     app.apply(discord_event(snapshot(true)));
-    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
-    let effects = app.dispatch(Action::SelectRoom("discord:10:21".into()));
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::Backend(Command::Open(id))] if id == "discord:10:21"
-    ));
+    let effects = app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
+    assert!(
+        effects.iter().any(
+            |effect| matches!(effect, Effect::Backend(Command::Open(id)) if id == "discord:10:21")
+        ),
+        "navigating opens the restored channel"
+    );
+    // Clicking the channel already open does nothing, as in Discord's client.
+    assert!(
+        app.dispatch(Action::SelectRoom("discord:10:21".into()))
+            .is_empty()
+    );
     let effects = app.apply(Event::Timeline {
         room: "discord:10:21".into(),
         messages: timeline(vec![]),

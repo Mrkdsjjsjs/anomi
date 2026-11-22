@@ -17,13 +17,15 @@ pub(crate) use aside::{after as aside_after, let_go as aside_let_go};
 pub(crate) use search::compact as search_compact;
 
 use iced::Task;
+use yapfast_core::application::Action;
 
 use anomi_vm::chat::Intent;
 
 use crate::app::App;
 use crate::message::Message;
 
-/// `Search`, `Pins`, `Threads`, `ThreadPanel`, `NewThread`, `Forum` and `NewPost`.
+/// `Search`, `Pins`, `Threads`, `ThreadPanel`, `ChannelPanel`, `NewThread`,
+/// `Forum` and `NewPost`.
 pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
     match intent {
         Intent::Search(intent) => search::search(app, intent),
@@ -31,12 +33,23 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
         Intent::Threads(intent) => threads::popover(app, intent),
         Intent::NewThread(intent) => threads::new(app, intent),
         Intent::ThreadPanel(intent) => aside::handle(app, intent),
+        Intent::ChannelPanel(intent) => channel_panel(app, intent),
         Intent::Forum(intent) => forum::forum(app, intent),
         Intent::NewPost(intent) => forum::new_post(app, intent),
         intent => {
             tracing::debug!(?intent, "not threads', forums', search's or pins'");
             Task::none()
         }
+    }
+}
+
+/// A voice channel's chat beside its stage: the cross closes it, the stage
+/// filling the body again.
+fn channel_panel(app: &mut App, intent: anomi_vm::chat::channel_panel::Intent) -> Task<Message> {
+    use anomi_vm::chat::channel_panel::Intent as I;
+    match intent {
+        I::Close => app.dispatch(Action::ShowVoiceChat(false)),
+        _ => Task::none(),
     }
 }
 

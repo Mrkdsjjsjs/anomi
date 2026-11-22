@@ -205,7 +205,17 @@ fn notified(app: &mut App, clicked: Clicked) -> Task<Message> {
     } else {
         Task::none()
     };
-    let opened = app.dispatch(Action::OpenChat(clicked.room));
+    // The room already showing is not rebuilt; the list goes to its newest
+    // message instead, as Discord's client does for the open channel.
+    let opened = if app.core.state.selected.as_ref() == Some(&clicked.room) {
+        app.shown
+            .timeline
+            .asks
+            .push(crate::project::chat::timeline::Ask::End);
+        Task::none()
+    } else {
+        app.dispatch(Action::OpenChat(clicked.room))
+    };
     Task::batch([shown, settings, opened])
 }
 

@@ -336,8 +336,7 @@ fn opening_a_channel_shows_the_messages_around_its_last_read_one() {
     };
     let mut app = connected();
     app.apply(unread_channel(true, 50));
-    app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
-    let effects = app.dispatch(Action::SelectRoom(general.into()));
+    let effects = app.dispatch(Action::Navigate(Navigation::Server("discord:10".into())));
     let open = effects.iter().position(
         |effect| matches!(effect, Effect::Backend(Command::Open(room)) if room == general),
     );
@@ -347,6 +346,8 @@ fn opening_a_channel_shows_the_messages_around_its_last_read_one() {
         Some("d:50"),
         "nothing shows yet, so the messages around the last read one load with the newest"
     );
+    // Clicking the channel already open does nothing, as in Discord's client.
+    assert!(app.dispatch(Action::SelectRoom(general.into())).is_empty());
     let effects = show(&mut app, (100..110).collect());
     assert!(around(&effects).is_none(), "asked once");
     assert_eq!(app.state.first_unread, None);
@@ -542,9 +543,10 @@ fn a_matrix_rooms_new_replies_follow_its_receipt_or_its_newest_message() {
             messages: calling(items, &["e:1", "e:3", "e:5"], &[]),
         });
     };
-    // Its receipt is on the second message: the third is new.
+    // Its receipt is on the second message: the third is new. The receipt
+    // moved the open room's read line itself; clicking it again is nothing.
     app.apply(rooms("e:2"));
-    app.dispatch(Action::SelectRoom("dm".into()));
+    assert!(app.dispatch(Action::SelectRoom("dm".into())).is_empty());
     show(&mut app, &["e:1", "e:2", "e:3"]);
     assert_eq!(highlighted(&app, false), ["e:3"]);
 

@@ -12,7 +12,7 @@
 //! with it; one Discord refuses, which the room's notice tells, or whose
 //! poll closed first, shows what the core has again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
 use yapfast_core::application::AppState;
@@ -41,6 +41,9 @@ pub(crate) struct Kept {
     /// The room's notice as the last vote went: Discord refusing a vote
     /// says so there.
     pub notice: Option<String>,
+    /// The activity invites this account took (accepted or declined), by
+    /// the message's item: their buttons went.
+    pub taken_activities: HashSet<String>,
 }
 
 /// A poll's own on this device.

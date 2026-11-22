@@ -34,11 +34,12 @@ const CARD_GAP: f32 = 4.0;
 /// A role's card starts this far above its mention (`role-y - 8px`).
 const ROLE_ABOVE: f32 = 8.0;
 
-/// `Components`, `Poll`, `Cards` and `BotForms`.
+/// `Components`, `Poll`, `Cards`, `Activity` and `BotForms`.
 pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
     match intent {
         Intent::Components(intent) => self::components(app, intent),
         Intent::Poll(intent) => poll::handle(app, intent),
+        Intent::Activity(intent) => activity(app, intent),
         Intent::Cards(cards::Intent::OpenServer(server)) => {
             close_card(app);
             app.dispatch(Action::Navigate(Navigation::Server(server)))
@@ -48,6 +49,32 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
             tracing::debug!(?intent, "not the bots'");
             Task::none()
         }
+    }
+}
+
+/// A message's activity card: taking it puts its buttons away; accepting
+/// also opens the way to start the stream (the Go Live dialog).
+fn activity(app: &mut App, intent: anomi_vm::chat::activity::Intent) -> Task<Message> {
+    use anomi_vm::chat::activity::Intent as I;
+    let (key, accept) = match intent {
+        I::Accept(key) => (key, true),
+        I::Decline(key) => (key, false),
+        _ => return Task::none(),
+    };
+    let Some(message) = app.shown.timeline.message(key) else {
+        return Task::none();
+    };
+    app.shown
+        .timeline
+        .kept
+        .taken_activities
+        .insert(message.item.clone());
+    app.shown.timeline.again.push(key);
+    app.refresh();
+    if accept {
+        crate::intent::voice::share::open(app, Spot::default())
+    } else {
+        Task::none()
     }
 }
 

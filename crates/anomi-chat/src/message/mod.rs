@@ -121,6 +121,13 @@ pub fn ending(message: &Message, end: f32, motion: Motion) -> impl View<chat::In
             .map(chat::Intent::from)
             .boxed(),
     );
+    if let Some(activity) = &message.activity {
+        rest = rest.push(
+            crate::activity::view(activity, message.key, motion)
+                .map(chat::Intent::from)
+                .boxed(),
+        );
+    }
     if let Some(note) = &message.hidden_card {
         rest = rest.push(notice::hidden(note, size));
     }

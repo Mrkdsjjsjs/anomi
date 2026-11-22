@@ -42,6 +42,9 @@ pub fn view<'a>(vm: &'a Vm, motion: Motion, docking: &Docking) -> Element<'a, In
             Aside::NewThread => chat::threads::new::view(&vm.chat.new_thread, motion)
                 .map(Intent::from)
                 .boxed(),
+            Aside::Chat => chat::channel_panel::view(vm, motion)
+                .map(Intent::from)
+                .boxed(),
         };
         return container(panel).width(width).height(Fill).boxed();
     }

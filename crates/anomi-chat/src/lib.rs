@@ -5,9 +5,11 @@
 //! places them in the window. F01 keeps this list and `shots.rs`; see
 //! docs/iced/README.md for the rules every screen follows.
 
+pub mod activity;
 pub mod attachments;
 pub mod bot_forms;
 pub mod cards;
+pub mod channel_panel;
 pub mod components;
 pub mod composer;
 pub mod embeds;

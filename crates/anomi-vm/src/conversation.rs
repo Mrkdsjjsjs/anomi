@@ -101,6 +101,8 @@ pub enum Aside {
     Thread,
     /// The form that starts one, C25's.
     NewThread,
+    /// A voice channel's chat beside its stage, as Discord opens it.
+    Chat,
 }
 
 /// A forum post open as the conversation.

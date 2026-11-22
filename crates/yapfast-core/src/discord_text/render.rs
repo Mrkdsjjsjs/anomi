@@ -147,8 +147,40 @@ pub(super) fn found(
         voice: chat_voice(message),
         notice: chat_notice(message),
         used: used_command(discord, guild, server, message),
+        activity: chat_activity(message),
         ..Default::default()
     }
+}
+
+/// The activity a message invites to, with its kind by the card it shows.
+pub(super) fn chat_activity(message: &Message) -> Option<crate::chat::MessageActivity> {
+    let activity = message.activity.as_ref()?;
+    Some(crate::chat::MessageActivity {
+        kind: match activity.kind {
+            yapfast_discord::message::MessageActivityKind::Join => {
+                crate::chat::MessageActivityKind::Join
+            }
+            yapfast_discord::message::MessageActivityKind::Spectate => {
+                crate::chat::MessageActivityKind::Spectate
+            }
+            yapfast_discord::message::MessageActivityKind::Listen => {
+                crate::chat::MessageActivityKind::Listen
+            }
+            yapfast_discord::message::MessageActivityKind::JoinRequest => {
+                crate::chat::MessageActivityKind::JoinRequest
+            }
+            yapfast_discord::message::MessageActivityKind::StreamRequest => {
+                crate::chat::MessageActivityKind::StreamRequest
+            }
+            yapfast_discord::message::MessageActivityKind::Other => {
+                crate::chat::MessageActivityKind::Other
+            }
+        },
+        name: activity.name.clone(),
+        application_id: activity.application_id.clone(),
+        icon: activity.icon.clone(),
+        party_id: activity.party_id.clone(),
+    })
 }
 
 /// The line above an app's answer: who used which command, in `guild`'s

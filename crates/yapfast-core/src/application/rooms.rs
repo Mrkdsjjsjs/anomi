@@ -902,6 +902,28 @@ impl Application {
     /// Selects a room; with `chat`, a voice channel shows its chat rather
     /// than its call.
     fn select_showing(&mut self, id: String, chat: bool) -> Vec<Effect> {
+        // Clicking the room already open does nothing, as in Discord's
+        // client: rebuilding it blinks the chat and the composer and opens
+        // the room again in the backend for nothing. An open screen over the
+        // chat still gives way, and a voice channel's chat and its call
+        // still switch, as they do in Discord's client. Only the read line
+        // follows a receipt that arrived while the room was open.
+        if self.state.selected.as_ref() == Some(&id)
+            && self.state.dm_screen.is_none()
+            && self.state.browse.is_none()
+        {
+            let wants_chat = self
+                .state
+                .rooms
+                .iter()
+                .any(|room| room.id == id && chat && room.voice_chat());
+            if self.state.voice_chat == wants_chat {
+                if let Some(room) = self.state.rooms.iter().find(|room| room.id == id) {
+                    self.state.seen = room.last_read.clone();
+                }
+                return vec![];
+            }
+        }
         // A thread beside the channel goes when another room shows.
         let changes = self.state.selected.as_ref() != Some(&id)
             && self

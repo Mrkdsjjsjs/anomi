@@ -47,7 +47,7 @@ view-models in `anomi-vm/src/chat/<area>.rs`. See [the index](../tasks.md).
 - **Done when:** containers, sections with thumbnails, link and action buttons, the failed-interaction line. I08.
 
 ### C07 · Polls (Sonnet · M)
-- **Owns:** `anomi-chat/src/poll/`, `anomi-vm/src/chat/poll.rs`.
+- **Owns:** `anomi-chat/src/poll/`, `anomi-vm/src/chat/poll.rs`, `anomi-chat/src/activity.rs`, `anomi-vm/src/chat/activity.rs` (a message's activity card beside its poll).
 - **After:** C02, F12.
 - **Ports:** `PollView` (`ui/messages.slint:690`), `PollDialog` (`ui/dialogs.slint:932`); `src/ui/polls.rs`.
 - **Shots:** `chan/bot_embed_card_poll.png`, `dialog/create_poll.png`.
@@ -161,7 +161,7 @@ view-models in `anomi-vm/src/chat/<area>.rs`. See [the index](../tasks.md).
 - **Done when:** search, Create, joined, other active and older sections, avatars and counts. I13.
 
 ### C24 · The thread beside a channel (Sonnet · M)
-- **Owns:** `anomi-chat/src/threads/panel.rs`, `anomi-vm/src/chat/thread_panel.rs`.
+- **Owns:** `anomi-chat/src/threads/panel.rs`, `anomi-vm/src/chat/thread_panel.rs`, `anomi-chat/src/channel_panel.rs`, `anomi-vm/src/chat/channel_panel.rs` (a voice channel's chat beside its stage, the same panel shape).
 - **After:** C01, C14.
 - **Ports:** `ThreadPanel` (`ui/thread.slint:13`); `src/ui/refresh.rs:3979` (`show_aside`); `src/ui/callbacks.rs:755`, `:1131`, `:2738`.
 - **Shots:** `forum/post_open.png`, `thread/panel_menu.png`, `thread/panel.png`.

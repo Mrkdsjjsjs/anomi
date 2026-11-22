@@ -106,6 +106,8 @@ pub struct Message {
     pub components: super::components::Components,
     /// Its poll: C07. Wired by F01; keep it.
     pub poll: super::poll::Poll,
+    /// Its activity card: a request to stream. Wired by F01; keep it.
+    pub activity: Option<super::activity::Activity>,
     /// The editor it turns into while edited: C13. Wired by F01; keep it.
     pub editing: super::inline_edit::InlineEdit,
 }

@@ -14,8 +14,8 @@ use crate::chat::SendOptions;
 use super::{
     channels::SharedPreviews,
     render::{
-        chat_card, chat_embed, chat_notice, chat_poll, chat_voice, custom_emoji, rendered, sent_id,
-        system_body, used_command,
+        chat_activity, chat_card, chat_embed, chat_notice, chat_poll, chat_voice, custom_emoji,
+        rendered, sent_id, system_body, used_command,
     },
     *,
 };
@@ -1805,6 +1805,7 @@ impl OpenChannel {
         ChatMessage {
             id,
             item: format!("d:{}", message.id),
+            activity: chat_activity(message),
             application_id: message.application_id.clone(),
             interaction: message
                 .interaction

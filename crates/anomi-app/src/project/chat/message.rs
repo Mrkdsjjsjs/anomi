@@ -9,6 +9,7 @@
 //! [`addresses`] names every picture a row shows, so the timeline asks for
 //! those in view and builds a row again when one of them comes or goes.
 
+mod activity;
 mod author;
 mod body;
 
@@ -122,6 +123,7 @@ pub(crate) fn build(cx: &Context<'_>, message: &ChatMessage, key: u64) -> Messag
         if let Some(poll) = &message.poll {
             built.poll = poll::card(cx, message, poll, key);
         }
+        built.activity = activity::card(cx, message);
         built.components = components::components(cx, message, key);
         built.failed = (cx.state.interaction_failed.as_ref())
             .filter(|(item, _)| *item == message.item)
@@ -150,6 +152,9 @@ pub(crate) fn addresses<'a>(
         each(reply.avatar.as_deref().unwrap_or_default());
     } else if let Some(used) = &message.used {
         each(used.avatar.as_deref().unwrap_or_default());
+    }
+    if let Some(activity) = &message.activity {
+        each(activity.icon.as_deref().unwrap_or_default());
     }
     if collapsed(message, revealed) {
         return;

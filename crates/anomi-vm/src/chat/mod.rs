@@ -12,9 +12,11 @@
 //! dialog and a video full screen are fields of their own
 //! (`reactions::Dialog`, `poll::Dialog`, `video::FullScreen`).
 
+pub mod activity;
 pub mod attachments;
 pub mod bot_forms;
 pub mod cards;
+pub mod channel_panel;
 pub mod commands;
 pub mod components;
 pub mod composer;
@@ -75,6 +77,7 @@ pub enum Intent {
     Embeds(embeds::Intent),
     Components(components::Intent),
     Poll(poll::Intent),
+    Activity(activity::Intent),
     Cards(cards::Intent),
     Video(video::Intent),
     Viewer(viewer::Intent),
@@ -93,6 +96,7 @@ pub enum Intent {
     Pins(pins::Intent),
     Threads(threads::Intent),
     ThreadPanel(thread_panel::Intent),
+    ChannelPanel(channel_panel::Intent),
     NewThread(new_thread::Intent),
     Forum(forum::Intent),
     NewPost(new_post::Intent),
@@ -107,6 +111,7 @@ crate::parts!(Intent in Chat:
     Embeds(embeds::Intent),
     Components(components::Intent),
     Poll(poll::Intent),
+    Activity(activity::Intent),
     Cards(cards::Intent),
     Video(video::Intent),
     Viewer(viewer::Intent),
@@ -125,6 +130,7 @@ crate::parts!(Intent in Chat:
     Pins(pins::Intent),
     Threads(threads::Intent),
     ThreadPanel(thread_panel::Intent),
+    ChannelPanel(channel_panel::Intent),
     NewThread(new_thread::Intent),
     Forum(forum::Intent),
     NewPost(new_post::Intent),

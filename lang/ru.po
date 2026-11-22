@@ -2039,6 +2039,9 @@ msgstr "Закрыть поиск"
 msgid "close the DM"
 msgstr "закрыть личные сообщения"
 
+msgid "Close the channel's chat"
+msgstr "Закрыть чат канала"
+
 msgid "Close thread"
 msgstr "Закрыть ветку"
 
@@ -7185,6 +7188,9 @@ msgstr "Громкость стрима"
 msgid "Stream settings"
 msgstr "Настройки трансляции"
 
+msgid "Stream request"
+msgstr "Запрос на трансляцию"
+
 msgid "Stream Quality"
 msgstr "Качество трансляции"
 
@@ -7493,6 +7499,9 @@ msgstr "Динамики не открылись вовремя."
 
 msgid "The stream ended before it started."
 msgstr "Трансляция закончилась, не начавшись."
+
+msgid "The stream request expired."
+msgstr "Срок действия запроса истёк"
 
 msgid "The stream is full."
 msgstr "Трансляция переполнена."
@@ -8343,6 +8352,9 @@ msgstr "Пользователь не может писать на сервер�
 
 msgid "User Settings"
 msgstr "Настройки пользователя"
+
+msgid "User {} wants you to stream"
+msgstr "Пользователь {} просит вас провести трансляцию"
 
 msgid "User volume"
 msgstr "Громкость пользователя"

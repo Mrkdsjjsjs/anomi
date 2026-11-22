@@ -49,9 +49,11 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
         Intent::Poll(anomi_vm::chat::poll::Intent::PickEmoji(index, spot)) => {
             pickers::for_poll(app, index, spot)
         }
-        Intent::Components(_) | Intent::Poll(_) | Intent::Cards(_) | Intent::BotForms(_) => {
-            bots::handle(app, intent)
-        }
+        Intent::Components(_)
+        | Intent::Poll(_)
+        | Intent::Cards(_)
+        | Intent::Activity(_)
+        | Intent::BotForms(_) => bots::handle(app, intent),
         Intent::Video(_) | Intent::Viewer(_) | Intent::VoiceMessage(_) => {
             crate::media::handle(app, intent)
         }
@@ -69,6 +71,7 @@ pub fn handle(app: &mut App, intent: Intent) -> Task<Message> {
         | Intent::Pins(_)
         | Intent::Threads(_)
         | Intent::ThreadPanel(_)
+        | Intent::ChannelPanel(_)
         | Intent::NewThread(_)
         | Intent::Forum(_)
         | Intent::NewPost(_) => places::handle(app, intent),

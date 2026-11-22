@@ -196,6 +196,78 @@ pub struct Message {
     /// What a voice message's recording, its first attachment, sounds like.
     #[serde(default)]
     pub voice: Option<VoiceMessage>,
+    /// The activity it invites to, when it's one: a party to join, watch
+    /// or listen to, or a request to join or stream one.
+    #[serde(default)]
+    pub activity: Option<MessageActivity>,
+}
+
+/// A message's activity invite, as Discord's client shows it on a card.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MessageActivity {
+    pub kind: MessageActivityKind,
+    /// The activity's name, such as "Dota 2".
+    pub name: String,
+    /// The application's id; with `icon` it makes the card's picture.
+    pub application_id: Option<String>,
+    /// The card's picture's address: the asset Discord named, or an
+    /// address standing for the application's icon.
+    pub icon: Option<String>,
+    /// The party it invites to, when Discord named one.
+    pub party_id: Option<String>,
+}
+
+impl MessageActivity {
+    /// Discord's activity, for the kinds a card shows; `None` otherwise.
+    pub fn of(value: &Value) -> Option<Self> {
+        let kind = match value.get("type")?.as_u64()? {
+            1 => MessageActivityKind::Join,
+            2 => MessageActivityKind::Spectate,
+            3 => MessageActivityKind::Listen,
+            4 => MessageActivityKind::JoinRequest,
+            5 => MessageActivityKind::StreamRequest,
+            _ => return None,
+        };
+        let application = value["application_id"].as_str().map(str::to_owned);
+        // The card's picture: the asset Discord named, or the application's
+        // own icon, which the picture pipeline asks Discord for.
+        let icon = value["assets"]["large_image"]
+            .as_str()
+            .and_then(|key| crate::activity::asset(application.as_deref(), key))
+            .map(String::from)
+            .or_else(|| {
+                application.as_deref().and_then(|id| {
+                    id.bytes()
+                        .all(|byte| byte.is_ascii_digit())
+                        .then(|| format!("discord-app-icon:{id}"))
+                })
+            });
+        Some(Self {
+            kind,
+            name: value["name"].as_str().unwrap_or_default().to_owned(),
+            application_id: application,
+            icon,
+            party_id: value["party_id"].as_str().map(str::to_owned),
+        })
+    }
+}
+
+/// What a message's activity asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MessageActivityKind {
+    /// A type this client shows no card for.
+    #[default]
+    Other,
+    /// Join the sender's party.
+    Join,
+    /// Watch the sender's party.
+    Spectate,
+    /// Listen along with the sender's party.
+    Listen,
+    /// The sender asks to join this account's party.
+    JoinRequest,
+    /// The sender asks this account to stream.
+    StreamRequest,
 }
 
 /// The interaction an app's message answers, from its
@@ -979,6 +1051,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         ephemeral: value["flags"].as_u64().unwrap_or_default() & EPHEMERAL != 0,
         loading: value["flags"].as_u64().unwrap_or_default() & LOADING != 0,
         voice: VoiceMessage::of(shown),
+        activity: MessageActivity::of(&value["activity"]),
     })
 }
 

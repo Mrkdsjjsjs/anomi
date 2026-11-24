@@ -668,13 +668,15 @@ impl Engine {
             Image::Vector { svg, bounds, .. } => {
                 crate::stats::mark(crate::stats::Kind::Svg);
                 let physical_bounds = *bounds * _transformation;
+                // Anomi's own (an SVG turned): where it lays pixels, its
+                // bounds turned, as the damage counts them.
+                let reach = physical_bounds.rotate(svg.rotation);
 
-                if !touches(physical_bounds, _clip_bounds) {
+                if !touches(reach, _clip_bounds) {
                     return;
                 }
 
-                let clip_mask =
-                    (!unmasked(physical_bounds, _clip_bounds)).then_some(_clip_mask as &_);
+                let clip_mask = (!unmasked(reach, _clip_bounds)).then_some(_clip_mask as &_);
 
                 let center = physical_bounds.center();
                 let radians = f32::from(svg.rotation);
@@ -1066,6 +1068,88 @@ mod tests {
                 (!quad.bounds.is_within(&clip)).then_some(&mask),
             );
         }
+    }
+
+    /// Anomi's own (an SVG turned): a turned SVG is drawn turned, as large
+    /// as upright and in its place. Stock drew it unturned, smaller by the
+    /// turn's cosine and nearer the origin: nothing at a quarter turn, and
+    /// at half a turn a copy as large far from its place.
+    #[cfg(feature = "svg")]
+    #[test]
+    fn a_turned_svg_is_drawn_turned_in_its_place() {
+        use crate::core::{Radians, svg};
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+        // A bar down the left of its box.
+        let handle = svg::Handle::from_memory(
+            &br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect x="2" y="2" width="6" height="20" fill="black"/></svg>"#[..],
+        );
+        let size = (256_u32, 192_u32);
+        let bounds = Rectangle::new(Point::new(100.0, 80.0), Size::new(40.0, 40.0));
+        let clip = Rectangle::new(Point::ORIGIN, Size::new(256.0, 192.0));
+        let lit = |turn: f32| -> Vec<(f32, f32)> {
+            let mut frame = vec![0_u32; (size.0 * size.1) as usize];
+            let mut mask = tiny_skia::Mask::new(size.0, size.1).expect("mask");
+            let mut engine = Engine::new();
+            engine.clip.set(&mut mask, clip);
+            let image = Image::Vector {
+                svg: svg::Svg {
+                    handle: handle.clone(),
+                    color: Some(Color::WHITE),
+                    rotation: Radians(turn),
+                    opacity: 1.0,
+                },
+                bounds,
+                clip_bounds: clip,
+            };
+            engine.draw_image(
+                &image,
+                Transformation::IDENTITY,
+                &mut tiny_skia::PixmapMut::from_bytes(
+                    bytemuck::cast_slice_mut(&mut frame),
+                    size.0,
+                    size.1,
+                )
+                .expect("frame"),
+                &mut mask,
+                clip,
+            );
+            frame
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| **pixel >> 24 > 128)
+                .map(|(at, _)| ((at as u32 % size.0) as f32, (at as u32 / size.0) as f32))
+                .collect()
+        };
+        let upright = lit(0.0);
+        assert!(!upright.is_empty());
+        assert!(
+            upright.iter().all(|&(x, _)| (102.0..115.0).contains(&x)),
+            "the bar on the left"
+        );
+        let reach = bounds.rotate(Radians(FRAC_PI_4)).expand(1.0);
+        for turn in [FRAC_PI_4, FRAC_PI_2, PI] {
+            let turned = lit(turn);
+            let (many, few) = (
+                turned.len().max(upright.len()),
+                turned.len().min(upright.len()),
+            );
+            assert!(
+                few * 10 >= many * 8,
+                "{turn}: {} pixels, upright {}",
+                turned.len(),
+                upright.len()
+            );
+            assert!(
+                turned
+                    .iter()
+                    .all(|&(x, y)| reach.contains(Point::new(x, y))),
+                "{turn}: in its place"
+            );
+        }
+        assert!(
+            lit(PI).iter().all(|&(x, _)| (125.0..138.0).contains(&x)),
+            "half a turn: on the right"
+        );
     }
 
     #[test]

@@ -69,8 +69,13 @@ pub enum Fill {
     Camera(Live),
     /// A stream this account watches (`StreamPicture`, `:840`): its newest
     /// picture, whole, or until the first a turning ring over what it waits
-    /// for.
-    Watched { frame: Option<Live>, status: String },
+    /// for; `stuck` when there's nothing to wait for, as its video can't be
+    /// shown: a still mark over why.
+    Watched {
+        frame: Option<Live>,
+        status: String,
+        stuck: bool,
+    },
     /// A stream not watched: the screen icon over a "Watch stream" pill, on
     /// its preview, dimmed, when Discord has one (`StreamPreview`, `:849`;
     /// `:1033`).
@@ -322,6 +327,7 @@ mod tests {
             fill: Fill::Watched {
                 frame: None,
                 status: String::new(),
+                stuck: false,
             },
             chip: Chip {
                 name: "Bob".into(),

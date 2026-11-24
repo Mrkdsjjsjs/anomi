@@ -100,6 +100,7 @@ fn each_tile_shows_large_what_it_is_and_a_stream_keeps_its_stand_in() {
         user: "bob".into(),
         name: "Bob".into(),
         opening: true,
+        unreadable: false,
         frames: None,
         viewers: vec!["alice".into()],
     }));
@@ -186,6 +187,7 @@ fn a_moved_stream_keeps_its_picture() {
             user: user.into(),
             name: user.into(),
             opening: false,
+            unreadable: false,
             frames: Some(frames.clone()),
             viewers: vec!["alice".into()],
         }))
@@ -215,6 +217,53 @@ fn a_moved_stream_keeps_its_picture() {
     lives.follow(&app.core.state.voice);
     let carols = &lives.watched.as_ref().expect("carol's stream").1;
     assert!(*carols != live && !carols.has_frame(), "a Live of its own");
+    drop(app);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+/// A watched stream whose video comes in no codec this client decodes
+/// says so where it said it waited, with a still mark rather than the
+/// turning ring, and goes back to waiting when that changes: its tile is
+/// built again as it does.
+#[test]
+fn a_stream_that_cant_be_read_says_so_in_its_tile() {
+    let (mut app, folder) = in_call("unreadable-stream");
+    streaming(&mut app);
+    let frames = Arc::new(Frames::create(4, 2).expect("frames"));
+    let watch = |unreadable: bool| {
+        Some(Box::new(Watching {
+            user: "bob".into(),
+            name: "Bob".into(),
+            opening: true,
+            unreadable,
+            frames: Some(frames.clone()),
+            viewers: vec!["alice".into()],
+        }))
+    };
+    let fill = |app: &App| app.vm.voice.stage.tiles[1].fill.clone();
+    let says = |app: &App| match fill(app) {
+        Fill::Watched {
+            frame: None,
+            status,
+            stuck,
+        } => (status, stuck),
+        other => panic!("Bob's stream waiting: {other:?}"),
+    };
+    app.core.state.voice.watching = watch(false);
+    app.show(Reach::VOICE);
+    assert_eq!(says(&app), ("Waiting for Bob's picture...".into(), false));
+    app.core.state.voice.watching = watch(true);
+    app.show(Reach::VOICE);
+    assert_eq!(
+        says(&app),
+        (
+            "Can't show Bob's stream: its video is in a format that isn't supported".into(),
+            true
+        )
+    );
+    app.core.state.voice.watching = watch(false);
+    app.show(Reach::VOICE);
+    assert!(!says(&app).1, "waiting again");
     drop(app);
     let _ = std::fs::remove_dir_all(folder);
 }

@@ -158,6 +158,7 @@ fn watch_context(
     hash((
         &watched.user,
         watched.frames.is_some(),
+        watched.unreadable,
         lives
             .watched
             .as_ref()
@@ -238,10 +239,16 @@ pub fn own_status(phase: Option<SharePhase>, hidden: bool) -> &'static str {
     }
 }
 
-/// What a stream watched says until its first picture.
+/// What a stream watched says until its first picture, or while its video
+/// can't be shown.
 pub fn watch_status(watched: &yapfast_core::voice::Watching) -> String {
     if watched.frames.is_none() {
         tr!("Connecting to {}'s stream...", watched.name)
+    } else if watched.unreadable {
+        tr!(
+            "Can't show {}'s stream: its video is in a format that isn't supported",
+            watched.name
+        )
     } else {
         tr!("Waiting for {}'s picture...", watched.name)
     }
@@ -263,6 +270,7 @@ fn stream(
             Fill::Watched {
                 frame: frame.filter(|live| live.has_frame()).cloned(),
                 status: watch_status(watched),
+                stuck: watched.unreadable && watched.frames.is_some(),
             }
         }
         None => Fill::Offer {

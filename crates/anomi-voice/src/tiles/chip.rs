@@ -35,14 +35,20 @@ const MARK: f32 = 14.0;
 const SHRINKS: Length = Length::Fluid(Constraint::Max);
 
 /// The chip; `spinning`, the ring turning in place of its mark while
-/// `motion` lets it.
-pub fn view(chip: &Chip, spinning: Option<Motion>) -> Element<'_, Intent> {
+/// `motion` lets it, or the still mark of a video that can't be shown
+/// (`true`).
+pub fn view(chip: &Chip, spinning: Option<(Motion, bool)>) -> Element<'_, Intent> {
     let mut parts: Row<Element<'_, Intent>> = Row::new()
         .spacing(SPACING)
         .align_y(Alignment::Center)
         .height(HEIGHT);
-    if let Some(motion) = spinning {
-        parts = parts.push(spinner(Icon::Loader, MARK, Color::WHITE, motion).boxed());
+    if let Some((motion, stuck)) = spinning {
+        let mark = if stuck {
+            super::spinner::stuck(MARK, Color::WHITE)
+        } else {
+            spinner(MARK, Color::WHITE, motion)
+        };
+        parts = parts.push(mark.boxed());
     } else if let Some(mark) = chip.mark {
         parts = parts.push(mark_icon(mark));
     }

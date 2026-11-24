@@ -218,36 +218,33 @@ pub struct MessageActivity {
 }
 
 impl MessageActivity {
-    /// Discord's activity, for the kinds a card shows; `None` otherwise.
-    pub fn of(value: &Value) -> Option<Self> {
-        let kind = match value.get("type")?.as_u64()? {
+    /// Discord's activity, from the message it came with: the message's
+    /// `activity` names the kind, and its `application` the app and picture.
+    pub fn of(message: &Value) -> Option<Self> {
+        let activity = &message["activity"];
+        let application = &message["application"];
+        // 6 is a request to stream, as Discord's client shows it; 5 comes
+        // from other builds for the same request.
+        let kind = match activity["type"].as_u64()? {
             1 => MessageActivityKind::Join,
             2 => MessageActivityKind::Spectate,
             3 => MessageActivityKind::Listen,
             4 => MessageActivityKind::JoinRequest,
-            5 => MessageActivityKind::StreamRequest,
+            5 | 6 => MessageActivityKind::StreamRequest,
             _ => return None,
         };
-        let application = value["application_id"].as_str().map(str::to_owned);
-        // The card's picture: the asset Discord named, or the application's
-        // own icon, which the picture pipeline asks Discord for.
-        let icon = value["assets"]["large_image"]
-            .as_str()
-            .and_then(|key| crate::activity::asset(application.as_deref(), key))
-            .map(String::from)
-            .or_else(|| {
-                application.as_deref().and_then(|id| {
-                    id.bytes()
-                        .all(|byte| byte.is_ascii_digit())
-                        .then(|| format!("discord-app-icon:{id}"))
-                })
-            });
         Some(Self {
             kind,
-            name: value["name"].as_str().unwrap_or_default().to_owned(),
-            application_id: application,
-            icon,
-            party_id: value["party_id"].as_str().map(str::to_owned),
+            name: activity["name_override"]
+                .as_str()
+                .or_else(|| activity["name"].as_str())
+                .or_else(|| application["name"].as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            application_id: application["id"].as_str().map(str::to_owned),
+            // The app's own icon, which the picture pipeline asks Discord for.
+            icon: crate::activity::icon_url(application),
+            party_id: activity["party_id"].as_str().map(str::to_owned),
         })
     }
 }
@@ -1051,7 +1048,7 @@ pub fn parse(value: &Value) -> Option<Message> {
         ephemeral: value["flags"].as_u64().unwrap_or_default() & EPHEMERAL != 0,
         loading: value["flags"].as_u64().unwrap_or_default() & LOADING != 0,
         voice: VoiceMessage::of(shown),
-        activity: MessageActivity::of(&value["activity"]),
+        activity: MessageActivity::of(value),
     })
 }
 
@@ -2817,6 +2814,43 @@ mod tests {
         .unwrap();
         assert_eq!(message.attachments.len(), 1);
         assert_eq!(message.components[0].rows.len(), 1);
+    }
+
+    #[test]
+    fn reads_a_stream_request_from_its_activity_and_application() {
+        // As Discord's client sends it: the activity names the kind, the
+        // application the game and its icon.
+        let message = parse(&json!({
+            "id": "1", "channel_id": "11", "type": 0, "content": "<@2>",
+            "author": {"id": "2", "username": "bob"},
+            "activity": {"name_override": "Dota 2", "type": 6},
+            "application": {
+                "id": "356875988589740042",
+                "name": "Dota 2",
+                "icon": "6b4b3fa4c83555d3008de69d33a60588",
+            },
+        }))
+        .unwrap();
+        let activity = message.activity.expect("a stream request");
+        assert_eq!(activity.kind, MessageActivityKind::StreamRequest);
+        assert_eq!(activity.name, "Dota 2");
+        assert_eq!(
+            activity.application_id.as_deref(),
+            Some("356875988589740042")
+        );
+        assert_eq!(
+            activity.icon.as_deref(),
+            Some(
+                "https://cdn.discordapp.com/app-icons/356875988589740042/6b4b3fa4c83555d3008de69d33a60588.png?size=160"
+            )
+        );
+        // A plain message has none.
+        let plain = parse(&json!({
+            "id": "2", "channel_id": "11", "type": 0, "content": "hi",
+            "author": {"id": "2", "username": "bob"},
+        }))
+        .unwrap();
+        assert!(plain.activity.is_none());
     }
 
     #[test]

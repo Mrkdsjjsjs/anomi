@@ -7,7 +7,7 @@
 //! which the stage leaves to this panel.
 
 use iced::widget::{column, container, row, rule, stack, svg, text};
-use iced::{Alignment, Fill, Padding};
+use iced::{Alignment, Fill, Padding, alignment};
 use yapfast_lang::tr;
 
 use anomi_theme::prelude::*;
@@ -78,7 +78,8 @@ pub fn view(vm: &Vm, motion: Motion) -> impl View<chat::Intent> + '_ {
             left: LEFT,
         })
         .height(HEIGHT)
-        .width(Fill),
+        .width(Fill)
+        .align_y(alignment::Vertical::Center),
         container(rule::horizontal(1).style(catalog::rule::line)).align_bottom(Fill),
     ];
     let body = column![

@@ -150,6 +150,7 @@ fn a_preview_in_sight_waits_for_the_next_upload_and_none_behind() {
         user: "bob".into(),
         name: "Bob".into(),
         opening: true,
+        unreadable: false,
         frames: None,
         viewers: vec![],
     }));

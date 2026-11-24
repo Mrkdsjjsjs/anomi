@@ -438,7 +438,7 @@ view asks:
 | Ask | True | For |
 | --- | --- | --- |
 | `motion.front` | focused, painted or not | what asks for attention ([what follows the focus](#what-follows-the-focus)) |
-| `motion.live()` | Front; Visible unless the setting is `Nothing` | what matters: the clocks, video, cameras, who's typing, the previews of streams |
+| `motion.live()` | Front; Visible unless the setting is `Nothing` | what matters: the clocks, video, cameras, who's typing, the previews of streams, and, unless `never`, the loader of a watched stream waiting for its picture |
 | `motion.members_live()` | Front; Visible under `Usual` | the member list's presence |
 | `motion.playing()` | as `members_live()`, unless `never` | transitions and loops; `still()` is its opposite |
 | `motion.watched()` | `playing()`, and not `idle` | what only decorates: moving pictures, a skeleton's sweep, the typing dots |
@@ -487,7 +487,8 @@ it's hidden nothing ticks, polls or wakes, whatever the setting.
 | The previews of streams not watched | yes | yes | yes | no | no |
 | The member list's presence | yes | yes | waits for the focus | waits | waits |
 | Transitions: popups, glides, the rings' colour, a list's rows | yes | yes | land at once | land | land |
-| Loops: GIFs, emoji, stickers, the typing dots, a skeleton, a spinner | until 15 s idle | until 15 s idle | no | no | no |
+| Loops: GIFs, emoji, stickers, the typing dots, a skeleton | until 15 s idle | until 15 s idle | no | no | no |
+| The loader of a watched stream waiting for its picture (`tiles::spinner`), which standing still would read as a hang; where it doesn't turn, or with animations off, a still clock in its place | yes | yes | yes | no: the clock | no: the clock, drawn once |
 | Cosmetics: animated avatars, server icons, banners, decorations, name styles, a profile's effect, each where it plays ([widgets](widgets.md#widgets-anomi_widgets)) | until 15 s idle | until 15 s idle | no | no | no |
 | A speaking call tile's animated avatar (`motion.awake()`) | while the call shows | while the call shows | no | no | no |
 

@@ -527,12 +527,52 @@ Watching works the same way in reverse. Clicking someone's LIVE badge, or their
 tile in the call, sends op 20 and starts a worker with a watch job. The worker
 connects as a viewer, offers AV1, H265, H264 and VP8 for decoding only (H265
 only where it's built, on Linux and Windows), and asks for video with op 15. It
-learns the streamer's SSRCs and codec from op 12 and op 14: Discord names the
-RTX SSRC only in op 12's `streams`, in the one with the video's SSRC, and
-one it doesn't name is the SSRC after the video's. A packet's payload type
-gives its codec. On the video's SSRC, a packet whose payload type names none
-goes with the codec the frames are already put together in; the codec op 4
-or op 14 named, which can be out of date, counts only before there are any.
+learns the streamer's SSRCs from op 12: Discord names the RTX SSRC only in
+op 12's `streams`, in the one with the video's SSRC, and one it doesn't name
+is the SSRC after the video's. The codec comes from the packets alone: op 4's
+and op 14's `video_codec` name what this client should send, which for a
+viewer that encodes nothing is H264 whatever the stream is in. A packet's
+payload type gives its codec, in the numbering this viewer offered, which
+Discord's server keeps to (an H265 stream comes as 103 and its resends as
+104, AV1 as 107 and 108).
+
+Payload type 96 is Discord's probe, reserved for testing the path's
+bandwidth (docs.discord.food, the codec object): never video, nor a resend.
+Discord's server sends them to a viewer on the stream's RTX SSRC, their
+payload no resend's, so they're dropped there (`Held::unwrap_rtx`); taken for
+resends, as before, the first two bytes of one read as a sequence number put
+a packet tens of thousands ahead of the stream, the reorder buffer started
+over there, and every packet of the stream was late until its numbering
+caught up: in a user's log, a stream minutes old showed nothing at all for
+as long, `late` taking every video packet, or hung where it showed, at a
+probe after its numbering passed half the range. On the video's SSRC a
+probe keeps its place in the sequence, as padding does, and nothing else. A
+resend never starts the buffer nor starts it over far ahead
+(`Reorder::insert_aside`): a retransmission is of a packet already sent.
+
+The packets also say which codec they're in (`stream_connection::fits`):
+every 50 packets with a payload, their first bytes are held against each
+codec's payload format as WebRTC senders pack it (H264's and H265's unit
+headers, AV1's aggregation and OBU headers, VP8's descriptor and frame tag,
+all of which DAVE leaves readable). A stream's packets all fit its own
+codec; bytes of no codec fit H264's one time in six at most and the others'
+far less. A payload type whose packets misfit the codec it names one time
+in five or more, or that names none, is read in the one codec this viewer
+decodes that every packet fits, logged once at warn ("a watched stream's
+video isn't in the codec its payload type names", with `payload_type`,
+`named` and `codec`); with none or several, it can't be read, logged once at
+warn ("… is in no codec this viewer decodes", with `payload_type`, `named`
+and `decodes`), and its packets keep only their place, so nothing is put
+together and no keyframe asked for. Until a verdict, a payload type that
+names no codec is read as none. The worker hears it
+(`StreamReceiver::unreadable`) and tells the window (`Report::Unreadable`,
+`Watching::unreadable`), whose tile then says "Can't show {name}'s stream:
+its video is in a format that isn't supported" under the screen crossed out,
+still, rather than wait for ever; the sound plays on, and a later verdict
+that the packets fit takes it back to waiting. A codec that changes midway
+comes under its own payload type, and the frames start over from its
+keyframe in it.
+
 It then puts RTP packets back in order (`rtp::Reorder`) and together into frames
 (`rtp::Assembler`: VP8 descriptors, H264 single units, STAP-A and FU-A, and
 H265 single units, aggregation and fragmentation units, as Annex B; AV1's
@@ -561,7 +601,11 @@ indication, at most every 500 ms. It sends a receiver report every second
 (packets lost, the highest received, and the streamer's last sender report
 echoed). With `YAPFAST_LOG=debug` it logs what it received every 5 s (`stream
 received`): packets out of order, resent, recovered, given up on, and keyframes
-asked for. The worker decodes with libvpx or with the FFmpeg H264 decoder in
+asked for, Discord's probes (`probes`), resends and probes that fit nowhere
+(`stray`) and video packets read as no codec (`unknown`); while no frame
+reaches the decoder it logs the same at info every 5 s, with the codec
+being put together (`assembling`) and a payload type that can't be read
+(`no_codec`). The worker decodes with libvpx or with the FFmpeg H264 decoder in
 libwebrtc's archive (`native/decode.c`), AV1 with the dav1d in the same
 archive (`native/av1.c`), a picture out for each frame in, or H265 with the
 HEVC decoder of `vendor/ffmpeg-src`'s FFmpeg (`native/hevc.c`), which
@@ -693,7 +737,13 @@ unticked, or by itself once the worker is gone.
 
 The fake server (`testing/fake_discord.ts`) checks what a stream sends, without
 DAVE, and streams its recordings to viewers; its header lists the controls
-that add a viewer or change a stream's codec. A streamer's op 12 in another
+that add a viewer or change a stream's codec. Its stream-codec control sends
+Discord's probes on the RTX SSRC with the video some minutes into its
+numbering (`?probes`, as in the user's log), the video under a payload type
+of its own (`?as=110`), none of it (`?blank`, a picture that never comes),
+or bytes of no codec in its packets (`?junk`):
+`watches_a_stream_whatever_comes_with_it` in
+`crates/yapfast-discord/tests/fake_server/calls.rs` watches each. A streamer's op 12 in another
 shape than the voice docs' Video payload (a field they don't name, other
 SSRCs than Ready gave, no fixed or source `max_resolution`, a frame rate
 outside 1 to 60) closes its connection with 4020, Bad request.

@@ -261,7 +261,8 @@ pub fn refresh(
     let (ticked, aside_ticked) =
         chat::poll::ticks(minute, &vm.chat, &mut shown.timeline, &mut shown.aside);
     if reach.touches(R::STATE | R::PICTURES | R::EMOJI | R::DAY) || ticked {
-        let open = vm.conversation.body == anomi_vm::conversation::Body::Messages;
+        let open = matches!(vm.conversation.body, anomi_vm::conversation::Body::Messages)
+            || (vm.conversation.body == anomi_vm::conversation::Body::Voice && state.voice_chat);
         chat::timeline::show(
             core,
             layout,

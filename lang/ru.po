@@ -1700,6 +1700,9 @@ msgstr "КАМЕРЫ"
 msgid "Cameras work on Linux and Windows for now."
 msgstr "Камеры пока работают только в Linux и Windows."
 
+msgid "Can't show {}'s stream: its video is in a format that isn't supported"
+msgstr "Не удаётся показать трансляцию {}: её видео в неподдерживаемом формате"
+
 msgid "Can't reach Discord's file storage."
 msgstr "Не удаётся связаться с хранилищем файлов Discord."
 

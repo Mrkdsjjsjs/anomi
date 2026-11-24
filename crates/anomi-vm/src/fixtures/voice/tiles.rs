@@ -158,6 +158,7 @@ fn watched() -> Tile {
         fill: Fill::Watched {
             frame: Some(Live::new(frame(640, 360))),
             status: String::new(),
+            stuck: false,
         },
         watch: false,
         viewers: alice_watches(),
@@ -231,6 +232,7 @@ pub fn waiting() -> Tile {
         fill: Fill::Watched {
             frame: None,
             status: tr!("Connecting to {}'s stream...", "Bob"),
+            stuck: false,
         },
         focused: false,
         can_hide_others: false,

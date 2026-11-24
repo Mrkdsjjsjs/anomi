@@ -129,6 +129,7 @@ fn the_still_the_store_and_a_watch_show_as_they_come() {
             user: "bob".into(),
             name: "Bob".into(),
             opening: false,
+            unreadable: false,
             frames: None,
             viewers: vec![],
         })),

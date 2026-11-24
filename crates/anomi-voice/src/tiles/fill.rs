@@ -62,9 +62,10 @@ pub fn view<'a>(tile: &'a Tile, room: Room, radius: f32, motion: Motion) -> Elem
         Filling::Watched {
             frame: None,
             status,
+            stuck,
         } => match middle {
-            Middle::Full(_) => waiting::line(status, motion).boxed(),
-            Middle::Glyph(side) => waiting::ring(side, room.raised(), motion).boxed(),
+            Middle::Full(_) => waiting::line(status, motion, *stuck).boxed(),
+            Middle::Glyph(side) => waiting::ring(side, room.raised(), motion, *stuck).boxed(),
             Middle::Empty | Middle::InChip => Space::new().boxed(),
         },
         Filling::Offer { preview } => offer(preview.as_ref(), room),

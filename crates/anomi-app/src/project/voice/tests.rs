@@ -116,13 +116,14 @@ fn a_stream_watched_shows_large_and_in_the_corner_off_screen() {
         user: "bob".into(),
         name: "Bob".into(),
         opening: true,
+        unreadable: false,
         frames: None,
         viewers: vec!["alice".into(), "bob".into()],
     }));
     app.show(Reach::VOICE);
     let stage = &app.vm.voice.stage;
     assert_eq!(stage.focused(), Some(1));
-    let Fill::Watched { frame, status } = &stage.tiles[1].fill else {
+    let Fill::Watched { frame, status, .. } = &stage.tiles[1].fill else {
         panic!("Bob's stream");
     };
     assert!(frame.is_none());

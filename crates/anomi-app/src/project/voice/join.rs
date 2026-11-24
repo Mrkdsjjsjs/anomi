@@ -36,7 +36,8 @@ fn dm_call(state: &AppState) -> Option<&ChatRoom> {
 pub fn show(state: &AppState, layout: &Layout, focused: bool, conversation: &mut Conversation) {
     let voice_here = here(state);
     let room = state.selected_room();
-    let panel = room.is_some_and(|room| room.voice && !state.voice_chat);
+    // A voice channel shows its stage; its chat, when open, sits beside it.
+    let panel = room.is_some_and(|room| room.voice);
     let dm = dm_call(state);
     let shown = dm.is_some_and(|room| voice_here || !room.people.is_empty() || room.incoming);
     conversation.call = if voice_here && (panel || shown) {

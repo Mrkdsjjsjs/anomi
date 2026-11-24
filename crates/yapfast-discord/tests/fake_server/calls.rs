@@ -1344,6 +1344,109 @@ async fn holds_a_watched_streams_video_and_keeps_its_sound() {
         .unwrap();
 }
 
+/// Bob's stream as in a user's log, and under payload types that aren't
+/// its codec's: each shows, in the codec its packets are in, from its
+/// first keyframe; one in a codec the viewer doesn't decode is told
+/// unreadable, and no keyframe is asked for it.
+fn watch_whatever_comes(watched: &yapfast_discord::stream::StreamServer, server: &str) {
+    let all = vec![Codec::Av1, Codec::H265, Codec::H264, Codec::Vp8];
+    // Discord's probes on the RTX SSRC, zeros, and the video some minutes
+    // into its numbering: taken for resends, they had every packet late
+    // and not one frame came. Then H265 under a payload type no codec has,
+    // and H264 under H265's.
+    for (codec, name, quirks, whole) in [
+        (Codec::H265, "h265", "probes", true),
+        (Codec::H264, "h264", "probes", true),
+        (Codec::H265, "h265", "as=110", false),
+        (Codec::H264, "h264", "as=103", false),
+    ] {
+        post_control(server, &format!("/_control/stream-codec?{quirks}"), name);
+        let frames = watch_frames(watched, all.clone(), 8);
+        assert!(frames[0].2, "{name}?{quirks} starts from a keyframe");
+        assert!(
+            frames.iter().all(|(read, _, _)| *read == codec),
+            "{name}?{quirks} read in {codec:?}"
+        );
+        if whole {
+            let expected = recording(codec);
+            for (index, (_, data, _)) in frames.iter().enumerate() {
+                assert!(
+                    data == &expected[index],
+                    "{name}?{quirks} frame {index} differs"
+                );
+            }
+        }
+    }
+
+    // VP8 under a payload type of its own, to a viewer that decodes H264
+    // and H265 alone: unreadable, and nothing comes. Bytes of no codec
+    // under H264's: put together as H264 until its packets tell, then
+    // unreadable. Either way nothing comes and no keyframe is asked for
+    // once it's told.
+    for (name, quirks, decodes, before_told) in [
+        ("vp8", "as=110", vec![Codec::H264, Codec::H265], false),
+        ("h264", "junk", all.clone(), true),
+    ] {
+        post_control(server, &format!("/_control/stream-codec?{quirks}"), name);
+        let receiver = StreamReceiver::start(watched.clone(), decodes).unwrap();
+        let started = std::time::Instant::now();
+        while !receiver.unreadable() {
+            assert!(
+                started.elapsed() < WAIT,
+                "{name}?{quirks} never told unreadable"
+            );
+            let came = receiver.next(Duration::from_millis(100)).is_some();
+            assert!(before_told || !came, "{name}?{quirks}: a frame came");
+        }
+        while receiver.try_next().is_some() {}
+        let asked = |viewer: serde_json::Value| viewer["keyframeRequests"].as_u64().unwrap_or(0);
+        let before = asked(stream_viewer(server));
+        assert!(
+            receiver.next(Duration::from_millis(1500)).is_none(),
+            "{name}?{quirks}: a frame came"
+        );
+        assert_eq!(
+            asked(stream_viewer(server)),
+            before,
+            "{name}?{quirks}: none asked for since"
+        );
+        assert!(receiver.unreadable());
+        assert_eq!(receiver.link(), Link::Connected);
+    }
+    stream_codec(server, "vp8");
+}
+
+/// Watches Bob's stream whatever comes with it: see
+/// [`watch_whatever_comes`].
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn watches_a_stream_whatever_comes_with_it() {
+    let Fixture {
+        _fake,
+        discord,
+        server,
+        guild,
+        lounge,
+        bob,
+        ..
+    } = Fixture::start("watches_a_stream_whatever_comes_with_it").await;
+    let assigned = discord.join(&guild, &lounge).await.unwrap();
+    let _call = timeout(
+        WAIT,
+        Call::connect(&assigned, &guild, &lounge, Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to voice")
+    .unwrap();
+    let watched = discord
+        .watch(&stream::key(&guild, &lounge, &bob))
+        .await
+        .unwrap();
+    tokio::task::spawn_blocking(move || watch_whatever_comes(&watched, server))
+        .await
+        .unwrap();
+}
+
 /// A call's audio, as [`Hearer`] hears it, why its connection dropped, and
 /// how often it connected where it moved.
 #[derive(Default)]

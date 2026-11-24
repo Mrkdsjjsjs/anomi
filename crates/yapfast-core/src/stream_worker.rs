@@ -409,6 +409,10 @@ pub enum Report {
     /// Sharing: the video reaches the stream server. Watching: the first
     /// picture is on screen.
     Streaming,
+    /// Watching: whether the stream's video comes in no codec this viewer
+    /// decodes (`StreamReceiver::unreadable`), so none of it can show and
+    /// none is waited for, as that changes.
+    Unreadable(bool),
     /// Sharing: how the stream goes out, once a second while it's live.
     Sending(StreamStats),
     /// Sharing: a preview of the stream for Discord to show, a JPEG as a
@@ -1478,6 +1482,8 @@ fn watch(
     let mut showing = Showing::default();
     let mut hold = Hold::default();
     let mut shown = false;
+    // What the window last heard of a video that can't be read.
+    let mut unreadable = false;
     while !stop.load(Ordering::Relaxed) {
         while let Ok(control) = sound.controls.try_recv() {
             match control {
@@ -1522,6 +1528,14 @@ fn watch(
             tracing::warn!(
                 "the stream's sound came back with its video: it stays wanted while watched"
             );
+        }
+        if receiver.unreadable() != unreadable {
+            unreadable = !unreadable;
+            tracing::info!(
+                unreadable,
+                "the window hears whether the stream's video can be read"
+            );
+            report(Report::Unreadable(unreadable));
         }
         let Some(mut frame) = receiver.next(Duration::from_millis(100)) else {
             continue;

@@ -80,6 +80,9 @@ pub struct Watching {
     pub name: String,
     /// Until the first picture shows.
     pub opening: bool,
+    /// Its video comes in no codec this client decodes: nothing of it can
+    /// show, and none is waited for, until that changes.
+    pub unreadable: bool,
     /// Their stream's pictures, once the worker has started.
     pub frames: Option<Arc<crate::frames::Frames>>,
     /// Who watches it, this account included, by user id, as Discord lists

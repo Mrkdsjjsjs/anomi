@@ -192,7 +192,16 @@
 // the rest. Op 12 names the stream's RTX SSRC only in its `streams`, as
 // Discord tells a viewer. As streams in a user's report did, ?unmarked
 // sends AV1 keyframes without N, and ?stray an empty packet of payload type
-// 96 on the video's SSRC before each frame, with op 4 naming H264.
+// 96 on the video's SSRC before each frame, with op 4 naming H264. As in
+// another user's log, ?probes sends Discord's probes, packets of payload
+// type 96 whose payload is zeros, on the stream's RTX SSRC: four with each
+// of the first ten frames and then one every twenty, the video's numbering
+// starting at 40000, as a stream some minutes old. ?as=110 sends the video
+// under that payload type, its resends under the next, whatever its codec;
+// ?blank sends the stream's sound and none of its video, a picture that
+// never comes, and ?junk the video's packets with bytes of no codec in
+// place of their payloads. The codec may come as ?codec=h265 rather than in
+// the body.
 // Alice has a DM with Bob, whose last two messages she hasn't read, and a
 // group DM, "Weekend plans", with Bob and Carol. POST /_control/dm makes Dave
 // write to her, opening a DM with her the first time, and POST
@@ -4588,8 +4597,10 @@ let streamCodec: "vp8" | "h264" | "h265" | "av1" = "vp8";
 /** How Bob's stream strays from the payload format, as streams in a user's
  *  report did: AV1 keyframes without N (`unmarked`), and an empty packet of
  *  payload type 96 on the video's SSRC before each frame, with op 4 naming
- *  H264 whatever the stream is in (`stray`). */
-let streamQuirks = { unmarked: false, stray: false };
+ *  H264 whatever the stream is in (`stray`); Discord's probes on its RTX
+ *  SSRC, with the video numbered from 40000 (`probes`); and the video under
+ *  a payload type of its own (`as`), not its codec's. */
+let streamQuirks = { unmarked: false, stray: false, probes: false, as: 0, blank: false, junk: false };
 /** A viewer that wants a stream's video at 0 gets none of its sound either
  *  (POST /_control/stream-sound-with-video). */
 let soundWithVideo = false;
@@ -4639,6 +4650,19 @@ const PLAYOUT_DELAY = Buffer.from([0xbe, 0xde, 0x00, 0x01, 0x52, 0x00, 0x00, 0x0
 /** 20 ms of Opus silence. */
 const OPUS_SILENCE = Buffer.from([0xf8, 0xff, 0xfe]);
 
+/** `length` bytes of no codec, the same for the same `seed`. */
+function junkOf(length: number, seed: number): Buffer {
+  const junk = Buffer.alloc(length);
+  let state = (seed * 2654435761) >>> 0 || 1;
+  for (let at = 0; at < length; at++) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    junk[at] = state & 0xff;
+  }
+  return junk;
+}
+
 /** Seals an RTP packet as "rtpsize" AES-GCM: header and extension preamble in the clear. */
 function sealRtp(packet: Buffer, key: Buffer, counter: number, clear = 16): Buffer {
   const nonce = Buffer.alloc(12);
@@ -4653,7 +4677,8 @@ function sealRtp(packet: Buffer, key: Buffer, counter: number, clear = 16): Buff
  *  disconnects, or a camera's to a call: `camera`'s frames at 30 a second. */
 function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(ws.data.ssrc!)!, camera?: { units: Buffer[] }[]) {
   let frame = 0;
-  let sequence = 1000;
+  const probing = !camera && streamQuirks.probes;
+  let sequence = probing ? 40_000 : 1000;
   let soundSequence = 7000;
   let rtxSequence = 3000;
   let counter = 1;
@@ -4674,7 +4699,9 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
   // its late resend is under way, and the `every` they were lost in.
   const lostLate = new Map<number, boolean>();
   let lostIn = -1;
-  const send = (payload: Buffer, marker: boolean, timestamp: number, payloadType: number) => {
+  const send = (data: Buffer, marker: boolean, timestamp: number, codecType: number) => {
+    const payloadType = !camera && streamQuirks.as > 0 && codecType !== 96 ? streamQuirks.as : codecType;
+    const payload = !camera && streamQuirks.junk && data.length > 0 ? junkOf(data.length, sequence) : data;
     const number = sequence++ & 0xffff;
     history.set(number, { payload, marker, timestamp, payloadType });
     history.delete((number - 1024) & 0xffff);
@@ -4761,7 +4788,7 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
     // A stream's viewer that wants its video at 0 gets its sound alone, or
     // nothing with /_control/stream-sound-with-video; wanted again, no
     // video until it asks for a keyframe.
-    const held = !camera && (watcher.videoWanted === false || watcher.awaitingKeyframe === true);
+    const held = !camera && (watcher.videoWanted === false || watcher.awaitingKeyframe === true || streamQuirks.blank);
     const quiet = !camera && watcher.videoWanted === false && soundWithVideo;
     if (watcher.restart && !held) {
       watcher.restart = false;
@@ -4770,6 +4797,11 @@ function streamTo(ws: Socket, key: Buffer, ssrc: number, watcher = watchers.get(
     // Which of the recording's frames goes now.
     const nth = frame - first;
     if (streamQuirks.stray && !camera && !held) send(Buffer.alloc(0), false, timestamp, 96);
+    // Discord's probes: on the RTX SSRC, payload type 96, zeros.
+    const probes = !probing || held ? 0 : frame < 10 ? 4 : frame % 20 === 0 ? 1 : 0;
+    for (let probe = 0; probe < probes; probe++) {
+      toViewer(packet(Buffer.alloc(250), false, timestamp, 96, ssrc + 1, rtxSequence++));
+    }
     if (held) {
       // No video: the sound below goes on.
     } else if (watcher.codec === "vp8") {
@@ -5492,9 +5524,10 @@ const udp = await Bun.udpSocket({
         if (data.length >= 8 && data[1] === 206 && (data[0]! & 0x1f) === 1) {
           const watcher = watcherOf();
           if (watcher) watcher.keyframeRequests++;
-          // Under /_control/stream-burst's &lose or /_control/stream-unreadable,
-          // Bob answers as a streamer does, from a keyframe.
-          if (watcher && watcher.stream !== "call" && (streamBurst?.lose || streamUnreadable > 0)) watcher.restart = true;
+          // Under /_control/stream-burst's &lose, /_control/stream-unreadable
+          // or stream-codec's ?as, Bob answers as a streamer does, from a
+          // keyframe.
+          if (watcher && watcher.stream !== "call" && (streamBurst?.lose || streamUnreadable > 0 || streamQuirks.as > 0)) watcher.restart = true;
           // A stream's video wanted again comes from the keyframe asked for.
           if (watcher?.awaitingKeyframe) {
             watcher.awaitingKeyframe = false;
@@ -10205,10 +10238,17 @@ const server = Bun.serve<SocketData>({
       });
     }
     if (req.method === "POST" && path === "/_control/stream-codec") {
-      const codec = (await req.text()).trim();
+      const codec = (await req.text()).trim() || (url.searchParams.get("codec") ?? "");
       if (codec !== "vp8" && codec !== "h264" && codec !== "h265" && codec !== "av1") return new Response("vp8, h264, h265 or av1\n", { status: 400 });
       streamCodec = codec;
-      streamQuirks = { unmarked: url.searchParams.has("unmarked"), stray: url.searchParams.has("stray") };
+      streamQuirks = {
+        unmarked: url.searchParams.has("unmarked"),
+        stray: url.searchParams.has("stray"),
+        probes: url.searchParams.has("probes"),
+        as: Number(url.searchParams.get("as") ?? 0),
+        blank: url.searchParams.has("blank"),
+        junk: url.searchParams.has("junk"),
+      };
       return new Response(`streams are ${codec}\n`);
     }
     if (req.method === "POST" && path === "/_control/chat-start") {

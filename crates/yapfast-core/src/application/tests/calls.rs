@@ -216,6 +216,7 @@ fn a_stream_not_watched_shows_its_preview_until_it_is_watched_or_ends() {
                     user: user.into(),
                     name: user.into(),
                     opening: true,
+                    unreadable: false,
                     frames: None,
                     viewers: vec![],
                 })
@@ -317,6 +318,7 @@ fn a_preview_on_screen_is_asked_for_again_as_often_as_discord_uploads_one() {
                     user: user.into(),
                     name: user.into(),
                     opening: true,
+                    unreadable: false,
                     frames: None,
                     viewers: vec![],
                 })
@@ -716,6 +718,7 @@ fn streams_sound_as_others_start_and_stop_watching() {
                 user: "sam".into(),
                 name: "sam".into(),
                 opening: false,
+                unreadable: false,
                 frames: None,
                 viewers: viewers.iter().map(|&viewer| viewer.into()).collect(),
             })

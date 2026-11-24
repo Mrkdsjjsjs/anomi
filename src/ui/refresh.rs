@@ -4440,6 +4440,11 @@ impl Adapter {
                 window.set_watch_status(
                     if watching.frames.is_none() {
                         tr!("Connecting to {}'s stream...", watching.name)
+                    } else if watching.unreadable {
+                        tr!(
+                            "Can't show {}'s stream: its video is in a format that isn't supported",
+                            watching.name
+                        )
                     } else {
                         tr!("Waiting for {}'s picture...", watching.name)
                     }

@@ -31,6 +31,7 @@ fn a_watched_streams_sound_is_cleaned_from_the_menu_of_its_tile() {
         user: STREAMER.into(),
         name: "Bob".into(),
         opening: false,
+        unreadable: false,
         frames: None,
         viewers: Vec::new(),
     }));
@@ -146,6 +147,7 @@ fn a_watched_streams_card_mutes_it_keeping_its_volume_and_stops_watching() {
         user: MUTED.into(),
         name: "Bob".into(),
         opening: false,
+        unreadable: false,
         frames: None,
         viewers: Vec::new(),
     }));

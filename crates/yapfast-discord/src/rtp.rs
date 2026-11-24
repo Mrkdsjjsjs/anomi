@@ -17,6 +17,11 @@ pub const H265: u8 = 103;
 pub const H265_RTX: u8 = 104;
 pub const AV1: u8 = 107;
 pub const AV1_RTX: u8 = 108;
+/// The payload type Discord reserves for probe packets, which test the
+/// path's bandwidth: never a codec's, nor a retransmission (docs.discord.food,
+/// Voice Connections, the codec object). Discord's server sends them to a
+/// stream's viewers on the stream's RTX SSRC.
+pub const PROBE: u8 = 96;
 
 /// The video codecs Yapfast sends or receives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -37,6 +42,16 @@ impl Codec {
             _ => None,
         }
     }
+
+    /// The codec whose retransmissions `payload_type` numbers.
+    pub fn from_rtx_payload_type(payload_type: u8) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|codec| codec.payload_types().1 == payload_type)
+    }
+
+    /// Every codec, in no order of preference.
+    pub const ALL: [Self; 4] = [Self::Vp8, Self::H264, Self::H265, Self::Av1];
 
     /// As Discord names it in session descriptions.
     pub fn from_name(name: &str) -> Option<Self> {
@@ -514,7 +529,7 @@ fn av1_payloads(frame: &[u8], keyframe: bool, blank: &mut impl FnMut() -> Vec<u8
 
 /// An unsigned LEB128 number and the bytes it took: at most eight, as AV1
 /// allows.
-fn read_leb128(bytes: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn read_leb128(bytes: &[u8]) -> Option<(usize, usize)> {
     let mut value = 0u64;
     for (index, &byte) in bytes.iter().enumerate().take(8) {
         value |= u64::from(byte & 0x7f) << (7 * index);
@@ -1456,18 +1471,19 @@ impl Held {
     }
 
     /// The packet a retransmission on `media`'s RTX SSRC carries (RFC 4588):
-    /// its sequence number, then its payload. None for padding, which a
-    /// server sends there to probe the path.
+    /// its sequence number, then its payload. None for padding, and for a
+    /// probe ([`PROBE`]): what its payload starts with is no sequence number,
+    /// so taken for one it would put a packet of the stream where none is.
     pub fn unwrap_rtx(packet: &Packet, media: u32) -> Option<Self> {
+        if packet.payload_type == PROBE {
+            return None;
+        }
         let (sequence, payload) = packet.payload.split_first_chunk::<2>()?;
         if payload.is_empty() {
             return None;
         }
-        let payload_type = [Codec::Vp8, Codec::H264, Codec::H265, Codec::Av1]
-            .into_iter()
-            .map(Codec::payload_types)
-            .find(|&(_, rtx)| rtx == packet.payload_type)
-            .map_or(packet.payload_type, |(media, _)| media);
+        let payload_type = Codec::from_rtx_payload_type(packet.payload_type)
+            .map_or(packet.payload_type, |codec| codec.payload_types().0);
         Some(Self {
             payload_type,
             marker: packet.marker,
@@ -1529,6 +1545,10 @@ pub enum Arrival {
     Recovered,
     /// A duplicate, or too late: the packets after it went on without it.
     Late,
+    /// A resend or a probe that fits nowhere: before any packet of the
+    /// stream, or far past the highest, where only the stream's own packets
+    /// may start it over ([`Reorder::insert_aside`]).
+    Stray,
 }
 
 impl Reorder {
@@ -1585,6 +1605,23 @@ impl Reorder {
         } else {
             Arrival::New
         }
+    }
+
+    /// A packet that can't tell where the stream is, a resend or a probe:
+    /// taken in its place among those received, or past the highest by
+    /// less than a restart, but never the first nor one that starts the
+    /// buffer over ([`Arrival::Stray`]). A retransmission is of a packet
+    /// already sent, so a sequence number far ahead of the stream's isn't
+    /// one; taken for a restart, every packet of the stream after it would
+    /// be late until the stream caught up with it.
+    pub fn insert_aside(&mut self, packet: Held, now: std::time::Instant) -> Arrival {
+        let Some(highest) = self.highest else {
+            return Arrival::Stray;
+        };
+        if self.extend(packet.sequence) > highest + AHEAD as u64 {
+            return Arrival::Stray;
+        }
+        self.insert(packet, now)
     }
 
     /// The packets ready in sequence, and how many were given up on.
@@ -2027,6 +2064,41 @@ mod tests {
         assert_eq!(reorder.counts(), Some((65536 + 4, 2)), "one wrap, two lost");
     }
 
+    /// A resend or a probe never starts the buffer, nor starts it over far
+    /// ahead of the stream, which would leave every packet of the stream
+    /// late until it caught up: in a user's log, for minutes. Where it
+    /// fits among the stream's packets it's taken as any.
+    #[test]
+    fn a_packet_aside_never_moves_the_stream() {
+        let at = |ms: u64| std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        let held = |sequence: u16| Held {
+            payload_type: H265,
+            marker: false,
+            sequence,
+            timestamp: 0,
+            ssrc: 5,
+            payload: vec![1],
+            orientation: None,
+        };
+        let mut reorder = Reorder::default();
+        assert_eq!(
+            reorder.insert_aside(held(0), at(0)),
+            Arrival::Stray,
+            "no stream yet"
+        );
+        assert_eq!(reorder.insert(held(40_000), at(0)), Arrival::New);
+        // 0 is 25536 past 40000, as a probe's zeros read: no restart.
+        assert_eq!(reorder.insert_aside(held(0), at(1)), Arrival::Stray);
+        assert_eq!(reorder.insert(held(40_001), at(2)), Arrival::New);
+        assert_eq!(reorder.ready(at(2)).0.len(), 2, "the stream goes on");
+        assert_eq!(reorder.insert_aside(held(40_001), at(3)), Arrival::Late);
+        assert_eq!(reorder.insert_aside(held(40_002), at(3)), Arrival::New);
+        assert_eq!(reorder.ready(at(3)).0[0].sequence, 40_002);
+        // The stream's own packets still start it over.
+        assert_eq!(reorder.insert(held(50_000), at(4)), Arrival::New);
+        assert_eq!(reorder.ready(at(4)).0[0].sequence, 50_000);
+    }
+
     #[test]
     fn bounds_what_a_sender_skipping_ahead_runs_up() {
         let at = |ms: u64| std::time::Instant::now() + std::time::Duration::from_millis(ms);
@@ -2191,6 +2263,15 @@ mod tests {
             ..resent
         };
         assert_eq!(Held::unwrap_rtx(&padding, 5), None);
+        // A probe of Discord's on the RTX SSRC: its zeros are no sequence
+        // number.
+        let zeros = [0; 200];
+        let probe = Packet {
+            payload_type: PROBE,
+            payload: &zeros,
+            ..resent
+        };
+        assert_eq!(Held::unwrap_rtx(&probe, 5), None);
     }
 
     #[test]

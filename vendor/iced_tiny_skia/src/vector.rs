@@ -31,6 +31,13 @@ impl Pipeline {
             .unwrap_or(Size::new(0, 0))
     }
 
+    /// Anomi's own (an SVG turned): `transform` takes `bounds` to the
+    /// pixels, turning them too. Stock read only its `sx` and `sy`, which
+    /// a turn makes the scale times its cosine, and drew the raster unturned
+    /// at that scale from the origin: a turning loader was drawn still,
+    /// smaller and nearer the window's top left the further round it was.
+    /// The raster is made at the transform's own scale, and an unturned one
+    /// is drawn pixel for pixel, as stock drew it.
     pub fn draw(
         &mut self,
         handle: &Handle,
@@ -41,14 +48,24 @@ impl Pipeline {
         transform: Transform,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
-        if let Some(image) = self.cache.borrow_mut().draw(
-            handle,
-            color,
-            Size::new(
-                (bounds.width * transform.sx) as u32,
-                (bounds.height * transform.sy) as u32,
-            ),
-        ) {
+        let turned = transform.kx != 0.0 || transform.ky != 0.0;
+        let (scale_x, scale_y) = if turned {
+            (
+                transform.sx.hypot(transform.ky),
+                transform.kx.hypot(transform.sy),
+            )
+        } else {
+            (transform.sx, transform.sy)
+        };
+        let size = Size::new(
+            (bounds.width * scale_x) as u32,
+            (bounds.height * scale_y) as u32,
+        );
+        let mut cache = self.cache.borrow_mut();
+        let Some(image) = cache.draw(handle, color, size) else {
+            return;
+        };
+        if !turned {
             pixels.draw_pixmap(
                 (bounds.x * transform.sx) as i32,
                 (bounds.y * transform.sy) as i32,
@@ -60,7 +77,26 @@ impl Pipeline {
                 Transform::default(),
                 clip_mask,
             );
+            return;
         }
+        // The raster's pixels, back to the bounds' units, then where the
+        // transform takes them, sampled smoothly as they turn.
+        let placed = transform.pre_translate(bounds.x, bounds.y).pre_scale(
+            bounds.width / size.width.max(1) as f32,
+            bounds.height / size.height.max(1) as f32,
+        );
+        pixels.draw_pixmap(
+            0,
+            0,
+            image,
+            &tiny_skia::PixmapPaint {
+                opacity,
+                quality: tiny_skia::FilterQuality::Bilinear,
+                ..tiny_skia::PixmapPaint::default()
+            },
+            placed,
+            clip_mask,
+        );
     }
 
     pub fn trim_cache(&mut self) {

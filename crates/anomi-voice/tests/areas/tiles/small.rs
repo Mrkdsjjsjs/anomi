@@ -36,6 +36,7 @@ fn states() -> Vec<(&'static str, Tile, &'static str)> {
     picture.fill = Fill::Watched {
         frame: None,
         status: "Waiting for Bob's picture...".into(),
+        stuck: false,
     };
     let hidden = Tile {
         fill: Fill::OwnScreen {

@@ -187,6 +187,7 @@ fn the_stream_watched_hears_whether_the_window_is_hidden() {
         user: "1400000000000000002".into(),
         name: "Bob".into(),
         opening: false,
+        unreadable: false,
         frames: Some(frames),
         viewers: Vec::new(),
     }));

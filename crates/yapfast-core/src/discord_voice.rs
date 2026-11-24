@@ -285,6 +285,7 @@ impl Watch {
             user: user.to_owned(),
             name,
             opening: true,
+            unreadable: false,
             frames: None,
             viewers: vec![],
         }));
@@ -863,9 +864,10 @@ pub(crate) async fn call(
                                 Some((std::time::Instant::now(), stats));
                             continue;
                         }
-                        // Only a video's worker reports these.
+                        // Only a video's worker or a watch reports these.
                         Some(
-                            Report::Opened { .. }
+                            Report::Unreadable(_)
+                            | Report::Opened { .. }
                             | Report::Needs { .. }
                             | Report::Finished
                             | Report::Screen { .. },
@@ -977,6 +979,11 @@ pub(crate) async fn call(
                         WatchEvent::Report(Some(Report::Streaming)) => {
                             if let Some(watching) = state.watching.as_mut() {
                                 watching.opening = false;
+                            }
+                        }
+                        WatchEvent::Report(Some(Report::Unreadable(unreadable))) => {
+                            if let Some(watching) = state.watching.as_mut() {
+                                watching.unreadable = unreadable;
                             }
                         }
                         WatchEvent::Report(Some(Report::Ended { error })) => stop = Some(error),

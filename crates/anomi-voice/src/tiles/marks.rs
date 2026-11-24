@@ -30,7 +30,11 @@ pub fn view(tile: &Tile, room: Room, motion: Motion) -> Element<'_, Intent> {
     top = top.push(Space::new().width(Fill).boxed());
     let mut marks = column![top, Space::new().height(Fill)];
     if room.chip {
-        let spinning = (room.middle == Middle::InChip).then_some(motion);
+        let stuck = matches!(
+            tile.fill,
+            anomi_vm::voice::tiles::Fill::Watched { stuck: true, .. }
+        );
+        let spinning = (room.middle == Middle::InChip).then_some((motion, stuck));
         marks = marks.push(chip::view(&tile.chip, spinning));
     }
     marks.padding(INSET).width(Fill).height(Fill).boxed()

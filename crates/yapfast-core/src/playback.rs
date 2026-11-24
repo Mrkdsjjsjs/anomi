@@ -174,6 +174,7 @@ impl Playback {
                 | Report::Sharing { .. }
                 | Report::Sending(_)
                 | Report::Streaming
+                | Report::Unreadable(_)
                 | Report::Preview { .. }
                 | Report::Screen { .. },
             )) => {}

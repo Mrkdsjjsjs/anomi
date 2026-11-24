@@ -516,6 +516,26 @@ its frames (its `PATCHES.md`, "Only what changed, read back and shown"):
 text by `reach::text_reach`, regions grouped and then `merged`. Both are
 public for it; nothing here changes.
 
+### A turned SVG drawn turned
+
+`vector.rs` `Pipeline::draw`, `engine.rs` `Engine::draw_image`. Stock read
+only the transform's `sx` and `sy`, which a turn makes the scale times the
+turn's cosine, and drew the raster unturned at that scale from the origin:
+a stream's loader, an SVG turning once a second, was drawn still, smaller
+and nearer the window's top left the further round it was (none at a
+quarter turn), while the damage repainted its place, so it vanished, and a
+stray copy showed where a larger damage presented one. Now the raster is
+made at the transform's own scale and drawn through the whole transform,
+sampled bilinearly; an unturned SVG is drawn pixel for pixel as stock drew
+it, so the shots, which turn none, come out byte for byte. Whether it
+touches the clip, and whether it needs the mask, go by its bounds turned,
+as the damage counts them. Test:
+`a_turned_svg_is_drawn_turned_in_its_place` (an eighth, a quarter and half
+a turn, as large as upright and in its place; stock fails it), and in
+`anomi-voice` `tiles::room::waits`.
+
+To carry over: both, until iced draws a turned SVG turned.
+
 ## Examined, not ported here
 
 - 15 (a quad's damage takes in its shadow's reach): master's
